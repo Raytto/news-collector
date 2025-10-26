@@ -1,6 +1,9 @@
 import json
 import re
 import calendar
+import re
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from typing import Dict, List
 
@@ -157,6 +160,64 @@ def gql_request(query: str, variables: Dict):
     if "errors" in payload:
         raise RuntimeError(f"GraphQL 请求失败: {payload['errors']}")
     return payload["data"]
+
+
+# -----------------------
+# Article detail fetching
+# -----------------------
+
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def _clean_text(text: str) -> str:
+    s = re.sub(r"\r\n?", "\n", text)
+    s = re.sub(r"\u00a0", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = "\n".join(line.rstrip() for line in s.splitlines())
+    return s.strip()
+
+
+def _pick_main(soup: BeautifulSoup):
+    selectors = [
+        ".rich-text",
+        "article .rich-text",
+        "article",
+        "main .content",
+        ".content",
+    ]
+    for sel in selectors:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            return node
+    return soup.body or soup
+
+
+def fetch_article_detail(url: str) -> str:
+    resp = requests.get(url, headers={"User-Agent": UA}, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup.find_all([
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "img",
+        "video",
+        "figure",
+        "iframe",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "form",
+    ]):
+        tag.decompose()
+    main = _pick_main(soup)
+    text = main.get_text("\n", strip=True)
+    return _clean_text(text)
 
 
 def fetch_listing(collection_id: str, locale: str) -> List[Dict]:

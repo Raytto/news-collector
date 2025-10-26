@@ -1,4 +1,8 @@
 import feedparser
+import re
+from typing import Optional
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -78,3 +82,68 @@ if __name__ == "__main__":
     items = process_entries(feed)
     for it in items[:10]:
         print(it["published"], "-", it["title"], "-", it["url"])
+
+
+# -----------------------
+# Article detail fetching
+# -----------------------
+
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def _clean_text(text: str) -> str:
+    s = re.sub(r"\r\n?", "\n", text)
+    s = re.sub(r"\u00a0", " ", s)
+    # collapse 3+ newlines to 2
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    # trim trailing spaces on lines
+    s = "\n".join(line.rstrip() for line in s.splitlines())
+    return s.strip()
+
+
+def _pick_main(soup: BeautifulSoup):
+    # Try site-specific containers first
+    selectors = [
+        "div.article__body",
+        "div.article-body",
+        "article .article__body",
+        "article .content",
+        "article",
+        "main .content",
+        "div.post-content",
+        ".content",
+    ]
+    for sel in selectors:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            return node
+    # Fallback to body
+    return soup.body or soup
+
+
+def fetch_article_detail(url: str) -> str:
+    resp = requests.get(url, headers={"User-Agent": UA}, timeout=30)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup.find_all([
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "img",
+        "video",
+        "figure",
+        "iframe",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "form",
+    ]):
+        tag.decompose()
+    main = _pick_main(soup)
+    text = main.get_text("\n", strip=True)
+    return _clean_text(text)

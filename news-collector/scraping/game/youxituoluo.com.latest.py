@@ -286,6 +286,63 @@ def collect_articles(html: str) -> List[Dict[str, str]]:
     return deduplicate(articles)
 
 
+# -----------------------
+# Article detail fetching
+# -----------------------
+
+def _clean_detail_text(text: str) -> str:
+    if not text:
+        return ""
+    s = re.sub(r"\r\n?", "\n", text)
+    s = re.sub(r"\u00a0", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = "\n".join(line.rstrip() for line in s.splitlines())
+    return s.strip()
+
+
+def _pick_main_detail(soup: BeautifulSoup):
+    selectors = [
+        "article .article-content",
+        "div.article-content",
+        "div.post-content",
+        "article",
+        "main",
+        ".content",
+        ".rich-text",
+    ]
+    for sel in selectors:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            return node
+    return soup.body or soup
+
+
+def fetch_article_detail(url: str) -> str:
+    headers = {"User-Agent": USER_AGENT, "Referer": BASE_URL}
+    resp = requests.get(url, headers=headers, timeout=20)
+    resp.raise_for_status()
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup.find_all([
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "img",
+        "video",
+        "figure",
+        "iframe",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "form",
+    ]):
+        tag.decompose()
+    main = _pick_main_detail(soup)
+    text = main.get_text("\n", strip=True)
+    return _clean_detail_text(text)
+
+
 if __name__ == "__main__":
     html = fetch_homepage()
     articles = collect_articles(html)

@@ -95,15 +95,18 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             publish TEXT NOT NULL,
             title TEXT NOT NULL,
             link TEXT NOT NULL,
-            category TEXT
+            category TEXT,
+            detail TEXT
         )
         """
     )
-    # Backfill: add category column if missing in existing DB
+    # Backfill: add category/detail column if missing in existing DB
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(info)")}
         if "category" not in cols:
             conn.execute("ALTER TABLE info ADD COLUMN category TEXT")
+        if "detail" not in cols:
+            conn.execute("ALTER TABLE info ADD COLUMN detail TEXT")
     except Exception:
         pass
     # New dedup rule for new DBs: unique by link only (no migration performed)
@@ -116,31 +119,36 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> int:
+def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> list[Entry]:
     cur = conn.cursor()
-    inserted = 0
+    newly_added: list[Entry] = []
     for e in entries:
         try:
             cur.execute(
                 """
-                INSERT INTO info (source, publish, title, link, category)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO info (source, publish, title, link, category, detail)
+                VALUES (?, ?, ?, ?, ?, NULL)
                 ON CONFLICT(link) DO NOTHING
                 """,
                 (e.source, e.publish, e.title, e.link, e.category),
             )
             if cur.rowcount:
-                inserted += 1
+                newly_added.append(e)
         except sqlite3.OperationalError:
             # For older SQLite lacking DO NOTHING, emulate via IGNORE
             cur.execute(
-                "INSERT OR IGNORE INTO info (source, publish, title, link, category) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO info (source, publish, title, link, category, detail) VALUES (?, ?, ?, ?, ?, NULL)",
                 (e.source, e.publish, e.title, e.link, e.category),
             )
             if cur.rowcount:
-                inserted += 1
+                newly_added.append(e)
     conn.commit()
-    return inserted
+    return newly_added
+
+
+def _update_detail(conn: sqlite3.Connection, link: str, detail: str) -> None:
+    conn.execute("UPDATE info SET detail = ? WHERE link = ?", (detail, link))
+    conn.commit()
 
 
 def main() -> None:
@@ -176,9 +184,27 @@ def main() -> None:
                         if not e.category and hasattr(mod, "CATEGORY"):
                             e.category = str(getattr(mod, "CATEGORY"))
                         entries.append(e)
-                added = _insert_entries(conn, entries)
-                total_new += added
-                print(f"{path.name}: 解析 {len(items)} 条，新增 {added} 条")
+                newly_added = _insert_entries(conn, entries)
+                total_new += len(newly_added)
+                print(f"{path.name}: 解析 {len(items)} 条，新增 {len(newly_added)} 条")
+
+                # For newly added links only, try to fetch and store details
+                if newly_added:
+                    fetcher = getattr(mod, "fetch_article_detail", None)
+                    if callable(fetcher):
+                        for e in newly_added:
+                            try:
+                                detail = fetcher(e.link)
+                                # Normalize and keep it as plain text
+                                detail = (detail or "").strip()
+                                if detail:
+                                    _update_detail(conn, e.link, detail)
+                            except Exception as ex:
+                                # Non-fatal: continue with others
+                                print(f"  明细抓取失败: {e.link} - {ex}")
+                    else:
+                        # No site-specific fetcher provided; skip silently
+                        pass
             except Exception as exc:
                 print(f"{path.name}: 处理失败 - {exc}")
 

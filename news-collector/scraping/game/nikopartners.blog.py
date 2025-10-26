@@ -88,5 +88,88 @@ def main():
         print(entry["published"], "-", entry["title"], "-", entry["url"])
 
 
+# -----------------------
+# Article detail fetching
+# -----------------------
+import re
+import requests
+from bs4 import BeautifulSoup
+
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def _clean_text(text: str) -> str:
+    s = re.sub(r"\r\n?", "\n", text)
+    s = re.sub(r"\u00a0", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = "\n".join(line.rstrip() for line in s.splitlines())
+    return s.strip()
+
+
+def _pick_main(soup: BeautifulSoup):
+    selectors = [
+        "div.entry-content",
+        "article .entry-content",
+        "article",
+        "main .content",
+        ".content",
+    ]
+    for sel in selectors:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            return node
+    return soup.body or soup
+
+
+def fetch_article_detail(url: str) -> str:
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://nikopartners.com/",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    html: str
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        # Fallback via readability proxy to bypass 403/WAF
+        jurl = f"https://r.jina.ai/{url}"
+        jresp = requests.get(jurl, headers={"User-Agent": UA}, timeout=30)
+        jresp.raise_for_status()
+        md = jresp.text
+        md = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", md)
+        md = re.sub(r"(^|\s)[#*_`]+|[#*_`]+($|\s)", " ", md)
+        md = re.sub(r"\r\n?", "\n", md)
+        md = re.sub(r"\n{3,}", "\n\n", md)
+        return md.strip()
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all([
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "img",
+        "video",
+        "figure",
+        "iframe",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "form",
+    ]):
+        tag.decompose()
+    main = _pick_main(soup)
+    text = main.get_text("\n", strip=True)
+    return _clean_text(text)
+
+
 if __name__ == "__main__":
     main()

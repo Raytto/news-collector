@@ -1,9 +1,11 @@
 import json
+import re
 from datetime import datetime, timezone
 from html import unescape
 
 import requests
 from bs4 import BeautifulSoup
+from typing import Optional
 
 API_URL = "https://r.jina.ai/https://naavik.co/wp-json/wp/v2/posts"
 DIGEST_CATEGORY_ID = 3
@@ -96,3 +98,93 @@ if __name__ == "__main__":
     entries = collect_latest_digest()
     for entry in entries[:MAX_ITEMS]:
         print(entry["published"], "-", entry["title"], "-", entry["url"])
+
+
+# -----------------------
+# Article detail fetching
+# -----------------------
+
+UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
+
+
+def _clean_text(text: str) -> str:
+    s = re.sub(r"\r\n?", "\n", text)
+    s = re.sub(r"\u00a0", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    s = "\n".join(line.rstrip() for line in s.splitlines())
+    return s.strip()
+
+
+def _pick_main(soup: BeautifulSoup):
+    selectors = [
+        "article .entry-content",
+        "div.entry-content",
+        "article .post-content",
+        "div.post-content",
+        ".prose",
+        ".rich-text",
+        "article",
+        "main .content",
+        ".content",
+    ]
+    for sel in selectors:
+        node = soup.select_one(sel)
+        if node and node.get_text(strip=True):
+            return node
+    return soup.body or soup
+
+
+def fetch_article_detail(url: str) -> str:
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://naavik.co/",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        # Fallback: use r.jina.ai readability proxy to bypass WAF and return markdown
+        try:
+            jurl = f"https://r.jina.ai/{url}"
+            jresp = requests.get(jurl, headers={"User-Agent": UA}, timeout=25)
+            jresp.raise_for_status()
+            # The proxy returns readable Markdown. Strip simple markdown marks to get text.
+            md = jresp.text
+            # strip links [text](url)
+            md = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", md)
+            # remove emphasis and headers markers
+            md = re.sub(r"(^|\s)[#*_`]+|[#*_`]+($|\s)", " ", md)
+            # normalize newlines
+            md = re.sub(r"\r\n?", "\n", md)
+            md = re.sub(r"\n{3,}", "\n\n", md)
+            return md.strip()
+        except Exception:
+            raise
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all([
+        "script",
+        "style",
+        "noscript",
+        "svg",
+        "img",
+        "video",
+        "figure",
+        "iframe",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "form",
+    ]):
+        tag.decompose()
+    main = _pick_main(soup)
+    text = main.get_text("\n", strip=True)
+    return _clean_text(text)
