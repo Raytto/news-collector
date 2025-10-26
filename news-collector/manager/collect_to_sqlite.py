@@ -106,10 +106,11 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE info ADD COLUMN category TEXT")
     except Exception:
         pass
+    # New dedup rule for new DBs: unique by link only (no migration performed)
     conn.execute(
         """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_info_unique
-        ON info (source, publish, title)
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_info_link_unique
+        ON info (link)
         """
     )
     conn.commit()
@@ -124,7 +125,7 @@ def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> int:
                 """
                 INSERT INTO info (source, publish, title, link, category)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(source, publish, title) DO NOTHING
+                ON CONFLICT(link) DO NOTHING
                 """,
                 (e.source, e.publish, e.title, e.link, e.category),
             )

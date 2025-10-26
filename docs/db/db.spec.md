@@ -7,7 +7,7 @@ This document describes the SQLite schema used by the manager script to persist 
 - Engine: SQLite 3
 - File path: `data/info.db` (relative to repo root)
 - Writer: `news-collector/manager/collect_to_sqlite.py`
-- De-duplication: unique on `(source, publish, title)`
+- De-duplication: unique on `link` (for new databases created by the manager). Existing databases may still use the older `(source, publish, title)` index unless migrated manually.
 
 ## Schema
 
@@ -23,9 +23,9 @@ CREATE TABLE IF NOT EXISTS info (
   category TEXT
 );
 
--- De-duplication constraint
-CREATE UNIQUE INDEX IF NOT EXISTS idx_info_unique
-  ON info (source, publish, title);
+-- De-duplication constraint (new DBs)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_info_link_unique
+  ON info (link);
 ```
 
 ### Columns
@@ -46,12 +46,12 @@ The manager inserts rows and skips duplicates using SQLite upsert semantics:
 ```sql
 INSERT INTO info (source, publish, title, link, category)
 VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(source, publish, title) DO NOTHING;
+ON CONFLICT(link) DO NOTHING;
 ```
 
 If `DO NOTHING` is unsupported, it falls back to `INSERT OR IGNORE`.
 
-De-duplication key: exact match on the tuple `(source, publish, title)`.
+De-duplication key: exact match on `link`.
 
 ## Typical Queries
 
@@ -88,7 +88,10 @@ ORDER BY publish DESC;
 
 ## Migration Note
 
-- October 2025: Added `category` column. Existing databases are migrated in-place by the manager script on startup. No change to the unique index.
+- October 2025 (A): Added `category` column. Existing databases are migrated in-place by the manager script on startup.
+- October 2025 (B): New installs use `UNIQUE(link)` for de-duplication. Existing databases keep their previous unique index unless you explicitly migrate:
+  - `DROP INDEX IF EXISTS idx_info_unique;`
+  - `CREATE UNIQUE INDEX IF NOT EXISTS idx_info_link_unique ON info(link);`
 
 ## Maintenance
 
