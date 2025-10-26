@@ -63,21 +63,21 @@ def try_parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
-def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Tuple[str, str, str, str]]:
-    # Load all rows; filter by parseable publish >= cutoff in Python to handle mixed formats.
+def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Tuple[str, str, str, str, str]]:
+    """Return recent entries as (category, source, publish, title, link)."""
     cur = conn.cursor()
-    cur.execute("SELECT source, publish, title, link FROM info")
+    cur.execute("SELECT category, source, publish, title, link FROM info")
     rows = cur.fetchall()
-    results: List[Tuple[str, str, str, str]] = []
-    for source, publish, title, link in rows:
+    results: List[Tuple[str, str, str, str, str]] = []
+    for category, source, publish, title, link in rows:
         dt = try_parse_dt(publish or "")
         if not dt:
             continue
         if dt >= cutoff:
-            results.append((source or "", publish or "", title or "", link or ""))
+            results.append((str(category or ""), str(source or ""), str(publish or ""), str(title or ""), str(link or "")))
 
     # Sort by publish desc (parseable ones only are included)
-    results.sort(key=lambda r: try_parse_dt(r[1]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    results.sort(key=lambda r: try_parse_dt(r[2]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return results
 
 
@@ -88,11 +88,12 @@ def human_time(publish: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def render_html(entries: Iterable[Tuple[str, str, str, str]], hours: int) -> str:
-    by_source: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
+def render_html(entries: Iterable[Tuple[str, str, str, str, str]], hours: int) -> str:
+    # entries are (category, source, publish, title, link)
+    by_cat: Dict[str, Dict[str, List[Tuple[str, str, str]]]] = defaultdict(lambda: defaultdict(list))
     count = 0
-    for source, publish, title, link in entries:
-        by_source[source].append((publish, title, link))
+    for category, source, publish, title, link in entries:
+        by_cat[category][source].append((publish, title, link))
         count += 1
 
     now_utc = datetime.now(timezone.utc)
@@ -106,11 +107,12 @@ def render_html(entries: Iterable[Tuple[str, str, str, str]], hours: int) -> str
     body {{ font: 16px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 24px; color: #222; }}
     h1 {{ font-size: 22px; margin: 0 0 4px; }}
     .meta {{ color: #666; margin: 0 0 16px; }}
-    h2 {{ font-size: 18px; margin: 20px 0 8px; padding-top: 8px; border-top: 1px solid #eee; }}
+    h2 {{ font-size: 19px; margin: 24px 0 10px; padding-top: 8px; border-top: 2px solid #eee; }}
+    h3 {{ font-size: 17px; margin: 14px 0 6px; }}
     ul {{ list-style: disc; margin: 8px 0 16px 20px; padding: 0; }}
     li {{ margin: 6px 0; }}
     time {{ color: #555; }}
-    a {{ color: #0a5; text-decoration: none; }}
+    a {{ color: #0b5ed7; text-decoration: none; font-weight: 600; }}
     a:hover {{ text-decoration: underline; }}
   </style>
   </head>
@@ -122,21 +124,35 @@ def render_html(entries: Iterable[Tuple[str, str, str, str]], hours: int) -> str
 <p class=\"meta\">生成时间：{now_utc.strftime('%Y-%m-%d %H:%M UTC')} · 合计：{count} 条</p>
 """
 
+    # Order categories: 'game' first, then others (non-empty) alphabetically, then empty category last
+    categories = list(by_cat.keys())
+    def cat_key(c: str):
+        if c == "game":
+            return (0, "")
+        if c:
+            return (1, c.lower())
+        return (2, "")
+    categories.sort(key=cat_key)
+
     sections: List[str] = []
-    for source in sorted(by_source.keys()):
-        sections.append(f"<h2>{escape(source)}</h2>")
-        sections.append("<ul>")
-        for publish, title, link in by_source[source]:
-            dt = try_parse_dt(publish)
-            iso = dt.isoformat() if dt else escape(publish)
-            shown = human_time(publish) if dt else escape(publish)
-            t = escape(title)
-            href = escape(link)
-            sections.append(
-                f"<li><time datetime=\"{iso}\">{shown}</time> — "
-                f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{t}</a></li>"
-            )
-        sections.append("</ul>")
+    for cat in categories:
+        cat_label = cat or "(uncategorized)"
+        sections.append(f"<h2>{escape(cat_label)}</h2>")
+        # Order sources alphabetically
+        for source in sorted(by_cat[cat].keys()):
+            sections.append(f"<h3>{escape(source)}</h3>")
+            sections.append("<ul>")
+            for publish, title, link in by_cat[cat][source]:
+                dt = try_parse_dt(publish)
+                iso = dt.isoformat() if dt else escape(publish)
+                shown = human_time(publish) if dt else escape(publish)
+                t = escape(title)
+                href = escape(link)
+                sections.append(
+                    f"<li><time datetime=\"{iso}\">{shown}</time> — "
+                    f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{t}</a></li>"
+                )
+            sections.append("</ul>")
 
     tail = "\n</body>\n</html>\n"
     return head + header + "\n".join(sections) + tail

@@ -1,4 +1,7 @@
 import json
+import re
+import calendar
+from datetime import datetime, timezone
 from typing import Dict, List
 
 import requests
@@ -14,6 +17,63 @@ DEFAULT_LOCALE = "en-US"
 MAX_ITEMS = 10
 SOURCE = "sensortower"
 CATEGORY = "game"
+
+# Map English month names/abbreviations to numbers for month-level dates like "October 2025".
+_MONTHS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def _parse_month_year(text: str):
+    if not text:
+        return None
+    s = text.strip()
+    # Pattern: MonthName YYYY (e.g., "October 2025" or "Oct 2025")
+    m = re.match(r"^([A-Za-z]+)[\s,]+(\d{4})$", s)
+    if m:
+        month_name = m.group(1).lower()
+        year = int(m.group(2))
+        month = _MONTHS.get(month_name)
+        if month:
+            return year, month
+    # Pattern: YYYY-MM / YYYY/M / YYYY.MM
+    m = re.match(r"^(\d{4})[\-/.](\d{1,2})$", s)
+    if m:
+        year = int(m.group(1))
+        month = int(m.group(2))
+        if 1 <= month <= 12:
+            return year, month
+    return None
+
+
+def _normalize_published(text: str) -> str:
+    """Normalize Sensor Tower month-level dates to ISO.
+
+    - If text is "<Month> <Year>" (month-level) or "YYYY-MM", and it's current month, return now (UTC).
+    - If it's a past month, return last day of that month at 00:00 UTC.
+    - Otherwise, return original text.
+    """
+    ym = _parse_month_year(text)
+    if not ym:
+        return text
+    year, month = ym
+    now = datetime.now(timezone.utc)
+    if year == now.year and month == now.month:
+        return now.isoformat()
+    last_day = calendar.monthrange(year, month)[1]
+    dt = datetime(year, month, last_day, 0, 0, 0, tzinfo=timezone.utc)
+    return dt.isoformat()
 
 LISTING_QUERY = """
 query BlogListing($id: String!, $limit: Int!, $locale: String!) {
@@ -170,7 +230,8 @@ def collect_latest_posts(limit: int = MAX_ITEMS):
         detail = meta.get(cid, {})
         title = (detail.get("title") or extract_heading(card) or "").strip()
         url = normalize_url((card.get("link") or {}).get("href", ""))
-        published = (detail.get("pubDate") or card.get("subtitle") or "").strip()
+        published_raw = (detail.get("pubDate") or card.get("subtitle") or "").strip()
+        published = _normalize_published(published_raw)
         if not (title and url):
             continue
         entries.append(
