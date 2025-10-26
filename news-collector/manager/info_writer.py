@@ -25,6 +25,12 @@ def parse_args() -> argparse.Namespace:
         default=24,
         help="Look back this many hours from now (UTC). Default: 24.",
     )
+    p.add_argument(
+        "--output",
+        type=str,
+        default="",
+        help="Optional output HTML path. If omitted, a timestamped name is used in data/output.",
+    )
     return p.parse_args()
 
 
@@ -167,8 +173,12 @@ def main() -> None:
         raise SystemExit(f"未找到数据库: {DB_PATH}")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_path = OUTPUT_DIR / f"{ts}-info.html"
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out_path = OUTPUT_DIR / f"{ts}-info.html"
 
     with sqlite3.connect(str(DB_PATH)) as conn:
         entries = fetch_recent(conn, cutoff)
