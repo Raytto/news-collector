@@ -105,11 +105,11 @@ def _clean_text(text: str) -> str:
 
 
 def _pick_main(soup: BeautifulSoup):
-    # Try site-specific containers first
+    # Prefer the canonical article body to avoid headers/banners/sponsored blocks
     selectors = [
+        "article .article__body",
         "div.article__body",
         "div.article-body",
-        "article .article__body",
         "article .content",
         "article",
         "main .content",
@@ -120,7 +120,6 @@ def _pick_main(soup: BeautifulSoup):
         node = soup.select_one(sel)
         if node and node.get_text(strip=True):
             return node
-    # Fallback to body
     return soup.body or soup
 
 
@@ -144,6 +143,15 @@ def fetch_article_detail(url: str) -> str:
         "form",
     ]):
         tag.decompose()
+    # Remove in-content noisy/sponsored blocks
+    for t in soup.find_all(True, class_=lambda c: bool(c) and any(
+        s in c.lower() for s in [
+            "sponsor", "sponsored", "promo", "newsletter", "social", "share",
+            "related", "byline", "author", "tags", "breadcrumb", "advert", "ad-"
+        ]
+    )):
+        t.decompose()
+
     main = _pick_main(soup)
     text = main.get_text("\n", strip=True)
     return _clean_text(text)
