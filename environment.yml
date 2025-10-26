@@ -1,0 +1,6 @@
+name: news-collector
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+prefix: /home/pp/miniconda3/envs/news-collector

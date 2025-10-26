@@ -12,6 +12,7 @@ GRAPHQL_ENDPOINT = (
 )
 DEFAULT_LOCALE = "en-US"
 MAX_ITEMS = 10
+SOURCE = "sensortower"
 
 LISTING_QUERY = """
 query BlogListing($id: String!, $limit: Int!, $locale: String!) {
@@ -142,7 +143,7 @@ def normalize_url(href: str) -> str:
     return BASE_URL + href
 
 
-def main():
+def collect_latest_posts(limit: int = MAX_ITEMS):
     data = fetch_next_data()
     collection_id, fallback_items = extract_collection_info(data)
     locale = data.get("locale", DEFAULT_LOCALE)
@@ -154,7 +155,7 @@ def main():
     except Exception:
         cards = fallback_items
 
-    cards = cards[:MAX_ITEMS]
+    cards = cards[:limit]
     ids = [card.get("id") for card in cards if card.get("id")]
     meta = {}
     try:
@@ -162,6 +163,7 @@ def main():
     except Exception:
         pass
 
+    entries = []
     for card in cards:
         cid = card.get("id")
         detail = meta.get(cid, {})
@@ -170,7 +172,21 @@ def main():
         published = (detail.get("pubDate") or card.get("subtitle") or "").strip()
         if not (title and url):
             continue
-        print(published, "-", title, "-", url)
+        entries.append(
+            {
+                "title": title,
+                "url": url,
+                "published": published,
+                "source": SOURCE,
+            }
+        )
+    return entries
+
+
+def main():
+    entries = collect_latest_posts()
+    for entry in entries:
+        print(entry["published"], "-", entry["title"], "-", entry["url"])
 
 
 if __name__ == "__main__":

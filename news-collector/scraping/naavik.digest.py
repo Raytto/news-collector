@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 API_URL = "https://r.jina.ai/https://naavik.co/wp-json/wp/v2/posts"
 DIGEST_CATEGORY_ID = 3
 MAX_ITEMS = 10
+SOURCE = "naavik"
 
 
 def extract_json_from_jina(text: str):
@@ -71,10 +72,25 @@ def clean_title(raw_title: str):
     return unescape(text).strip()
 
 
-if __name__ == "__main__":
-    posts = fetch_latest_digest()
-    for post in posts[:MAX_ITEMS]:
+def collect_latest_digest(limit: int = MAX_ITEMS):
+    posts = fetch_latest_digest(limit)
+    entries = []
+    for post in posts[:limit]:
         title = clean_title(post.get("title", {}).get("rendered", ""))
         url = post.get("link", "")
         published = normalize_dt(post)
-        print(published, "-", title, "-", url)
+        entries.append(
+            {
+                "title": title,
+                "url": url,
+                "published": published,
+                "source": SOURCE,
+            }
+        )
+    return entries
+
+
+if __name__ == "__main__":
+    entries = collect_latest_digest()
+    for entry in entries[:MAX_ITEMS]:
+        print(entry["published"], "-", entry["title"], "-", entry["url"])

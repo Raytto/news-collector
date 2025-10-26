@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional
@@ -10,6 +11,7 @@ from bs4 import BeautifulSoup, Tag
 BASE_URL = "https://www.youxituoluo.com"
 HOMEPAGE_URL = f"{BASE_URL}/"
 MAX_ITEMS = 10
+SOURCE = "youxituoluo"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -143,7 +145,7 @@ def normalize_article(data: Dict[str, Any]) -> Optional[Dict[str, str]]:
         if published:
             break
 
-    return {"title": title, "url": url, "published": published}
+    return {"title": title, "url": url, "published": published, "source": SOURCE}
 
 
 def extract_from_nuxt_payload(payload: str) -> List[Dict[str, str]]:
@@ -208,23 +210,39 @@ def extract_articles_from_html(html: str) -> List[Dict[str, str]]:
             elif time_tag:
                 time_text = clean_text(time_tag.get_text())
             if not time_text:
-                candidate = element.find(class_=lambda x: x and "time" in x)
+                # Many cards render an <i class="icon-time"> inside a parent span
+                # like: <span><i class="iconfont icon-time"></i> 2025-10-24 14:27</span>
+                candidate = element.find(class_=lambda x: x and ("time" in x or "date" in x))
                 if candidate:
-                    time_text = clean_text(candidate.get_text())
+                    # Prefer the parent's text when the candidate is an icon element
+                    parent = candidate.parent if hasattr(candidate, "parent") else None
+                    text_src = parent.get_text() if parent is not None else candidate.get_text()
+                    time_text = clean_text(text_src)
+            if not time_text:
+                # Fallback: search for a YYYY-MM-DD[ HH:MM[:SS]] pattern within the element
+                full_text = clean_text(element.get_text())
+                m = re.search(r"(\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?)", full_text)
+                if m:
+                    time_text = m.group(1)
 
             articles.append(
                 {
                     "title": title,
                     "url": url,
                     "published": parse_timestamp(time_text) if time_text else "",
+                    "source": SOURCE,
                 }
             )
 
+    # 1) Semantic article tags
     collect_from_elements(soup.find_all("article"))
     if articles:
         return articles
 
-    candidates = soup.select("div[class*='article'], li[class*='article']")
+    # 2) Common list blocks on the site (e.g. the homepage uses ul.article_list > li)
+    candidates = soup.select("ul.article_list > li, .article_list li, div.item, li.item")
+    if not candidates:
+        candidates = soup.select("div[class*='article'], li[class*='article']")
     if not candidates:
         candidates = soup.select("div[class*='news'], li[class*='news']")
     collect_from_elements(candidates)
@@ -273,4 +291,4 @@ if __name__ == "__main__":
         print("没有找到任何文章，请检查页面结构是否发生变化")
     else:
         for article in sort_articles(articles)[:MAX_ITEMS]:
-            print(article.get("published", ""), "-", article.get("title", ""), "-", article.get("url", ""))
+            print(article.get("source", ""), "-",article.get("published", ""), "-", article.get("title", ""), "-", article.get("url", ""))

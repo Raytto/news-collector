@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 RSS_URL = "https://www.gamedeveloper.com/rss.xml"
+SOURCE = "gamedeveloper"
 
 def fetch_feed(url: str):
     d = feedparser.parse(url)
@@ -59,6 +60,7 @@ def process_entries(feed):
             "title": title,
             "url": link,
             "published": published,
+            "source": SOURCE,
         })
     # 可选：按时间倒序
     def sort_key(x):

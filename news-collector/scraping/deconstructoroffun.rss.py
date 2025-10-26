@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 RSS_URL = "https://www.deconstructoroffun.com/blog?format=rss"
+SOURCE = "deconstructoroffun"
 
 
 def fetch_feed(url: str):
@@ -51,6 +52,7 @@ def process_entries(feed):
                 "title": title,
                 "url": link,
                 "published": published,
+                "source": SOURCE,
             }
         )
 

@@ -10,6 +10,7 @@ import feedparser
 # 所以追加一个无害的 query 参数来强制返回正文，避免脚本无法拿到 RSS。
 RSS_URL = "https://nikopartners.com/feed/?nocache=1"
 MAX_ITEMS = 10
+SOURCE = "nikopartners"
 _MIN_SORT_KEY = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -68,13 +69,14 @@ def collect_entries(feed: Any, limit: int = MAX_ITEMS) -> List[Dict[str, str]]:
                 "title": title,
                 "url": url,
                 "published": published,
+                "source": SOURCE,
                 "_sort_key": dt or _MIN_SORT_KEY,
             }
         )
 
     entries.sort(key=lambda item: item["_sort_key"], reverse=True)
     return [
-        {"title": e["title"], "url": e["url"], "published": e["published"]}
+        {"title": e["title"], "url": e["url"], "published": e["published"], "source": e["source"]}
         for e in entries[:limit]
     ]
 

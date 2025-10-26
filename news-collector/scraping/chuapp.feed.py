@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import feedparser
 
 RSS_URL = "https://www.chuapp.com/feed"
+SOURCE = "chuapp"
 
 
 def fetch_feed(url: str = RSS_URL):
@@ -53,7 +54,7 @@ def collect_entries(feed: Any, limit: int = 10) -> List[Dict[str, str]]:
         link = entry.get("link", "").strip()
         dt = _to_datetime(entry)
         published = dt.isoformat() if dt else entry.get("published", entry.get("updated", ""))
-        data = {"title": title, "url": link, "published": published}
+        data = {"title": title, "url": link, "published": published, "source": SOURCE}
         sort_key = dt or datetime.min.replace(tzinfo=timezone.utc)
         sortable.append((sort_key, data))
 
