@@ -13,6 +13,7 @@ GRAPHQL_ENDPOINT = (
 DEFAULT_LOCALE = "en-US"
 MAX_ITEMS = 10
 SOURCE = "sensortower"
+CATEGORY = "game"
 
 LISTING_QUERY = """
 query BlogListing($id: String!, $limit: Int!, $locale: String!) {
@@ -178,6 +179,7 @@ def collect_latest_posts(limit: int = MAX_ITEMS):
                 "url": url,
                 "published": published,
                 "source": SOURCE,
+                "category": CATEGORY,
             }
         )
     return entries

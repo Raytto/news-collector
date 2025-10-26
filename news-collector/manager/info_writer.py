@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from collections import defaultdict
+from html import escape
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -87,7 +88,7 @@ def human_time(publish: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def render_markdown(entries: Iterable[Tuple[str, str, str, str]], hours: int) -> str:
+def render_html(entries: Iterable[Tuple[str, str, str, str]], hours: int) -> str:
     by_source: Dict[str, List[Tuple[str, str, str]]] = defaultdict(list)
     count = 0
     for source, publish, title, link in entries:
@@ -95,24 +96,50 @@ def render_markdown(entries: Iterable[Tuple[str, str, str, str]], hours: int) ->
         count += 1
 
     now_utc = datetime.now(timezone.utc)
-    header = [
-        f"# 最近 {hours} 小时资讯汇总",
-        "",
-        f"生成时间：{now_utc.strftime('%Y-%m-%d %H:%M UTC')}",
-        f"合计：{count} 条",
-        "",
-    ]
+    head = f"""<!doctype html>
+<html lang=\"zh-CN\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>最近 {hours} 小时资讯汇总</title>
+  <style>
+    body {{ font: 16px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 24px; color: #222; }}
+    h1 {{ font-size: 22px; margin: 0 0 4px; }}
+    .meta {{ color: #666; margin: 0 0 16px; }}
+    h2 {{ font-size: 18px; margin: 20px 0 8px; padding-top: 8px; border-top: 1px solid #eee; }}
+    ul {{ list-style: disc; margin: 8px 0 16px 20px; padding: 0; }}
+    li {{ margin: 6px 0; }}
+    time {{ color: #555; }}
+    a {{ color: #0a5; text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+  </style>
+  </head>
+<body>
+"""
 
-    body: List[str] = []
-    # Stable order by source name
+    header = f"""
+<h1>最近 {hours} 小时资讯汇总</h1>
+<p class=\"meta\">生成时间：{now_utc.strftime('%Y-%m-%d %H:%M UTC')} · 合计：{count} 条</p>
+"""
+
+    sections: List[str] = []
     for source in sorted(by_source.keys()):
-        body.append(f"## {source}")
-        body.append("")
+        sections.append(f"<h2>{escape(source)}</h2>")
+        sections.append("<ul>")
         for publish, title, link in by_source[source]:
-            body.append(f"- {human_time(publish)} — [{title}]({link})")
-        body.append("")
+            dt = try_parse_dt(publish)
+            iso = dt.isoformat() if dt else escape(publish)
+            shown = human_time(publish) if dt else escape(publish)
+            t = escape(title)
+            href = escape(link)
+            sections.append(
+                f"<li><time datetime=\"{iso}\">{shown}</time> — "
+                f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{t}</a></li>"
+            )
+        sections.append("</ul>")
 
-    return "\n".join(header + body).rstrip() + "\n"
+    tail = "\n</body>\n</html>\n"
+    return head + header + "\n".join(sections) + tail
 
 
 def main() -> None:
@@ -125,11 +152,11 @@ def main() -> None:
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_path = OUTPUT_DIR / f"{ts}-info.md"
+    out_path = OUTPUT_DIR / f"{ts}-info.html"
 
     with sqlite3.connect(str(DB_PATH)) as conn:
         entries = fetch_recent(conn, cutoff)
-        doc = render_markdown(entries, hours)
+        doc = render_html(entries, hours)
         out_path.write_text(doc, encoding="utf-8")
 
     print(f"已生成: {out_path} ({len(entries)} 条)")

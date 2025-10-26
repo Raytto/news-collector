@@ -12,6 +12,7 @@ BASE_URL = "https://www.youxituoluo.com"
 HOMEPAGE_URL = f"{BASE_URL}/"
 MAX_ITEMS = 10
 SOURCE = "youxituoluo"
+CATEGORY = "game"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -145,7 +146,7 @@ def normalize_article(data: Dict[str, Any]) -> Optional[Dict[str, str]]:
         if published:
             break
 
-    return {"title": title, "url": url, "published": published, "source": SOURCE}
+    return {"title": title, "url": url, "published": published, "source": SOURCE, "category": CATEGORY}
 
 
 def extract_from_nuxt_payload(payload: str) -> List[Dict[str, str]]:
@@ -231,6 +232,7 @@ def extract_articles_from_html(html: str) -> List[Dict[str, str]]:
                     "url": url,
                     "published": parse_timestamp(time_text) if time_text else "",
                     "source": SOURCE,
+                    "category": CATEGORY,
                 }
             )
 

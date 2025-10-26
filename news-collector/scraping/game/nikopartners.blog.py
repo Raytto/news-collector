@@ -11,6 +11,7 @@ import feedparser
 RSS_URL = "https://nikopartners.com/feed/?nocache=1"
 MAX_ITEMS = 10
 SOURCE = "nikopartners"
+CATEGORY = "game"
 _MIN_SORT_KEY = datetime.min.replace(tzinfo=timezone.utc)
 
 
@@ -76,7 +77,7 @@ def collect_entries(feed: Any, limit: int = MAX_ITEMS) -> List[Dict[str, str]]:
 
     entries.sort(key=lambda item: item["_sort_key"], reverse=True)
     return [
-        {"title": e["title"], "url": e["url"], "published": e["published"], "source": e["source"]}
+        {"title": e["title"], "url": e["url"], "published": e["published"], "source": e["source"], "category": CATEGORY}
         for e in entries[:limit]
     ]
 

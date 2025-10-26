@@ -2,6 +2,7 @@ import feedparser
 
 RSS_URL = "https://www.gamesindustry.biz/rss/gamesindustry_news_feed.rss"
 SOURCE = "gamesindustry.biz"
+CATEGORY = "game"
 
 def fetch_feed(url):
     d = feedparser.parse(url)
@@ -22,6 +23,7 @@ def process_entries(feed):
             "url": link,
             "published": published,
             "source": SOURCE,
+            "category": CATEGORY,
         })
     return results
 

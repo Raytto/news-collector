@@ -22,6 +22,7 @@ class Entry:
     publish: str
     title: str
     link: str
+    category: str = ""
 
 
 def _load_module(path: Path):
@@ -65,6 +66,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     link = str(item.get("url") or item.get("link") or "").strip()
     publish = str(item.get("published") or item.get("publish") or "").strip()
     source = str(item.get("source") or "").strip()
+    category = str(item.get("category") or "").strip()
     if not (title and link):
         return None
     # Try to normalize publish to seconds if it looks like a YYYY-MM-DD HH:MM
@@ -81,7 +83,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     except Exception:
         # Keep original string
         pass
-    return Entry(source=source, publish=publish, title=title, link=link)
+    return Entry(source=source, publish=publish, title=title, link=link, category=category)
 
 
 def _ensure_db(conn: sqlite3.Connection) -> None:
@@ -92,10 +94,18 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             source TEXT NOT NULL,
             publish TEXT NOT NULL,
             title TEXT NOT NULL,
-            link TEXT NOT NULL
+            link TEXT NOT NULL,
+            category TEXT
         )
         """
     )
+    # Backfill: add category column if missing in existing DB
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(info)")}
+        if "category" not in cols:
+            conn.execute("ALTER TABLE info ADD COLUMN category TEXT")
+    except Exception:
+        pass
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_info_unique
@@ -112,19 +122,19 @@ def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> int:
         try:
             cur.execute(
                 """
-                INSERT INTO info (source, publish, title, link)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO info (source, publish, title, link, category)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(source, publish, title) DO NOTHING
                 """,
-                (e.source, e.publish, e.title, e.link),
+                (e.source, e.publish, e.title, e.link, e.category),
             )
             if cur.rowcount:
                 inserted += 1
         except sqlite3.OperationalError:
             # For older SQLite lacking DO NOTHING, emulate via IGNORE
             cur.execute(
-                "INSERT OR IGNORE INTO info (source, publish, title, link) VALUES (?, ?, ?, ?)",
-                (e.source, e.publish, e.title, e.link),
+                "INSERT OR IGNORE INTO info (source, publish, title, link, category) VALUES (?, ?, ?, ?, ?)",
+                (e.source, e.publish, e.title, e.link, e.category),
             )
             if cur.rowcount:
                 inserted += 1
@@ -139,7 +149,8 @@ def main() -> None:
         sys.exit(1)
 
     modules = []
-    for path in sorted(SCRAPING_DIR.glob("*.py")):
+    # Recursively discover scraper scripts (e.g., scraping/game/*.py)
+    for path in sorted(SCRAPING_DIR.rglob("*.py")):
         if path.name.startswith("__"):
             continue
         modules.append(path)
@@ -158,9 +169,11 @@ def main() -> None:
                 for item in items:
                     e = _coerce_entry(item)
                     if e:
-                        # Backfill source if module-level SOURCE is present
+                        # Backfill source/category from module-level constants when missing
                         if not e.source and hasattr(mod, "SOURCE"):
                             e.source = str(getattr(mod, "SOURCE"))
+                        if not e.category and hasattr(mod, "CATEGORY"):
+                            e.category = str(getattr(mod, "CATEGORY"))
                         entries.append(e)
                 added = _insert_entries(conn, entries)
                 total_new += added
@@ -175,4 +188,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

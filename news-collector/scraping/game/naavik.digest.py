@@ -9,6 +9,7 @@ API_URL = "https://r.jina.ai/https://naavik.co/wp-json/wp/v2/posts"
 DIGEST_CATEGORY_ID = 3
 MAX_ITEMS = 10
 SOURCE = "naavik"
+CATEGORY = "game"
 
 
 def extract_json_from_jina(text: str):
@@ -85,6 +86,7 @@ def collect_latest_digest(limit: int = MAX_ITEMS):
                 "url": url,
                 "published": published,
                 "source": SOURCE,
+                "category": CATEGORY,
             }
         )
     return entries

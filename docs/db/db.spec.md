@@ -15,11 +15,12 @@ Single table named `info`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS info (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,
-  source  TEXT NOT NULL,
-  publish TEXT NOT NULL,
-  title   TEXT NOT NULL,
-  link    TEXT NOT NULL
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  source   TEXT NOT NULL,
+  publish  TEXT NOT NULL,
+  title    TEXT NOT NULL,
+  link     TEXT NOT NULL,
+  category TEXT
 );
 
 -- De-duplication constraint
@@ -36,14 +37,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_info_unique
   - When a source only exposes coarse strings (e.g., `October 2025`), values are stored verbatim.
 - `title` (TEXT): Article title (HTML-decoded, trimmed).
 - `link` (TEXT): Absolute URL to the article.
+- `category` (TEXT, nullable): High-level category label for the source. All scrapers currently emit `"game"`.
 
 ## Insertion & De-duplication
 
 The manager inserts rows and skips duplicates using SQLite upsert semantics:
 
 ```sql
-INSERT INTO info (source, publish, title, link)
-VALUES (?, ?, ?, ?)
+INSERT INTO info (source, publish, title, link, category)
+VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(source, publish, title) DO NOTHING;
 ```
 
@@ -82,6 +84,11 @@ ORDER BY publish DESC;
 
 - `publish` is stored as TEXT to allow ISO timestamps and coarse strings from sources that lack precise times. For ISO-8601 values, lexicographic order matches chronological order.
 - Scripts attempt to normalize times to ISO-8601 UTC when possible; otherwise keep the original string.
+- `category` is optional and may be empty for historical rows; the manager will add the column automatically if missing (via `ALTER TABLE`) and insert values for new rows when provided by scrapers.
+
+## Migration Note
+
+- October 2025: Added `category` column. Existing databases are migrated in-place by the manager script on startup. No change to the unique index.
 
 ## Maintenance
 

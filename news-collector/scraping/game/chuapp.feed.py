@@ -8,6 +8,7 @@ import feedparser
 
 RSS_URL = "https://www.chuapp.com/feed"
 SOURCE = "chuapp"
+CATEGORY = "game"
 
 
 def fetch_feed(url: str = RSS_URL):
@@ -56,7 +57,7 @@ def collect_entries(feed: Any, limit: int = 10) -> List[Dict[str, str]]:
             continue
         dt = _to_datetime(entry)
         published = dt.isoformat() if dt else entry.get("published", entry.get("updated", ""))
-        data = {"title": title, "url": link, "published": published, "source": SOURCE}
+        data = {"title": title, "url": link, "published": published, "source": SOURCE, "category": CATEGORY}
         sort_key = dt or datetime.min.replace(tzinfo=timezone.utc)
         sortable.append((sort_key, data))
 
