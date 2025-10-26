@@ -52,6 +52,8 @@ def collect_entries(feed: Any, limit: int = 10) -> List[Dict[str, str]]:
     for entry in getattr(feed, "entries", []):
         title = entry.get("title", "").strip()
         link = entry.get("link", "").strip()
+        if not title or not link:
+            continue
         dt = _to_datetime(entry)
         published = dt.isoformat() if dt else entry.get("published", entry.get("updated", ""))
         data = {"title": title, "url": link, "published": published, "source": SOURCE}
@@ -67,7 +69,7 @@ def collect_entries(feed: Any, limit: int = 10) -> List[Dict[str, str]]:
 def main(limit: int = 10) -> None:
     feed = fetch_feed(RSS_URL)
     for item in collect_entries(feed, limit=limit):
-        print(f"{item['published']} - {item['title']} - {item['url']}")
+        print(f"{item['source']} - {item['published']} - {item['title']} - {item['url']}")
 
 
 if __name__ == "__main__":
