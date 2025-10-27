@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from collections import defaultdict
 from html import escape
@@ -34,6 +35,13 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "insight": 0.28,
 }
 
+# Optional manual bonus per source, e.g. {"openai.research": 2}
+DEFAULT_SOURCE_BONUS: Dict[str, float] = {
+    "openai.research": 2.0,
+    "deepmind": 2.0,
+    "qbitai-zhiku": 2.0,
+}
+
 
 def compute_weighted_score(eva: Dict[str, Any], weights: Dict[str, float] = DEFAULT_WEIGHTS) -> float:
     total = 0.0
@@ -65,6 +73,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Optional output HTML path. If omitted, a timestamped name is used in data/output.",
+    )
+    p.add_argument(
+        "--source-bonus",
+        type=str,
+        default="",
+        help="JSON mapping of source->bonus score to add before clipping (e.g. '{\"openai.research\": 2}')",
     )
     return p.parse_args()
 
@@ -126,7 +140,11 @@ def try_parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
-def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, Any]]:
+def fetch_recent(
+    conn: sqlite3.Connection,
+    cutoff: datetime,
+    source_bonus: Dict[str, float],
+) -> List[Dict[str, Any]]:
     """Return recent entries enriched with AI 评分数据。"""
     has_review = bool(
         conn.execute(
@@ -174,6 +192,12 @@ def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, A
             }
             # 动态计算当前展示所需的加权总分（忽略数据库中的旧 final_score）
             evaluation["final_score"] = compute_weighted_score(evaluation)
+            bonus = float(source_bonus.get(str(row[2] or ""), 0.0))
+            if bonus:
+                evaluation["final_score"] = round(
+                    max(1.0, min(5.0, evaluation["final_score"] + bonus)), 2
+                )
+                evaluation["bonus"] = bonus
         entries.append(
             {
                 "id": int(row[0]),
@@ -300,11 +324,16 @@ def _render_article_card(entry: Dict[str, Any]) -> str:
         dims = " · ".join(
             f"{DIMENSION_LABELS[key]}：{evaluation.get(key, '-')}" for key in DIMENSION_ORDER
         )
+        bonus_note = ""
+        bonus_val = evaluation.get("bonus")
+        if bonus_val:
+            sign = "+" if bonus_val > 0 else ""
+            bonus_note = f"（手动加成 {sign}{bonus_val:g}）"
         rating_html = (
             "<div class=\"ai-summary\">"
             f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
             f"<span class=\"score-number\">{final_score:.2f}/5</span></div>"
-            f"<div class=\"ai-dimensions\">{escape(dims)}</div>"
+            f"<div class=\"ai-dimensions\">{escape(dims)}{escape(bonus_note)}</div>"
             f"<div class=\"ai-comment\">评价：{escape(evaluation.get('comment', ''))}</div>"
             f"<div class=\"ai-summary-text\">概要：{escape(evaluation.get('summary', ''))}</div>"
             "</div>"
@@ -343,8 +372,19 @@ def main() -> None:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = OUTPUT_DIR / f"{ts}-info.html"
 
+    source_bonus = DEFAULT_SOURCE_BONUS.copy()
+    if args.source_bonus.strip():
+        try:
+            bonus_mapping = json.loads(args.source_bonus)
+            if isinstance(bonus_mapping, dict):
+                for key, value in bonus_mapping.items():
+                    if isinstance(value, (int, float)):
+                        source_bonus[str(key)] = float(value)
+        except json.JSONDecodeError:
+            pass
+
     with sqlite3.connect(str(DB_PATH)) as conn:
-        entries = fetch_recent(conn, cutoff)
+        entries = fetch_recent(conn, cutoff, source_bonus)
         doc = render_html(entries, hours)
         out_path.write_text(doc, encoding="utf-8")
 

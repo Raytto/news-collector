@@ -33,6 +33,12 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "insight": 0.30,
 }
 
+DEFAULT_SOURCE_BONUS: Dict[str, float] = {
+    "openai.research": 2.0,
+    "deepmind": 2.0,
+    "qbitai-zhiku": 2.0,
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate Feishu-friendly markdown summary from SQLite")
@@ -45,6 +51,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
     p.add_argument("--output", default="", help="输出文件路径，默认 data/feishu-msg/YYYYMMDD-feishu-msg.md")
     p.add_argument("--dry-run", action="store_true", help="只打印，不写文件")
+    p.add_argument(
+        "--source-bonus",
+        default="",
+        help="JSON mapping for manual bonus per source before clipping (例如 '{\"openai.research\": 2}')",
+    )
     return p.parse_args()
 
 
@@ -119,6 +130,11 @@ def format_section(title: str, items: List[Dict[str, Any]]) -> str:
     idx = 1
     for it in items:
         score = it.get("score", 0.0)
+        bonus = float(it.get("bonus") or 0.0)
+        score_label = f"{score:.2f}"
+        if bonus:
+            sign = "+" if bonus > 0 else ""
+            score_label = f"{score_label}({sign}{bonus:g})"
         source = it.get("source", "")
         title_txt = it.get("title", "")
         link = it.get("link", "")
@@ -126,7 +142,7 @@ def format_section(title: str, items: List[Dict[str, Any]]) -> str:
         if len(title_txt) > 100:
             title_txt = title_txt[:100] + "…"
         # lark_md 链接格式 [text](url)
-        line = f"{idx}. (AI推荐:{score:.2f})({source}) [{title_txt}]({link})"
+        line = f"{idx}. (AI推荐:{score_label})({source}) [{title_txt}]({link})"
         lines.append(line)
         idx += 1
     lines.append("")
@@ -153,6 +169,16 @@ def main() -> None:
     limit_per_cat = max(1, int(args.limit_per_cat))
     per_source_cap = int(args.per_source_cap)
     min_score = float(args.min_score)
+    source_bonus = DEFAULT_SOURCE_BONUS.copy()
+    if args.source_bonus.strip():
+        try:
+            overrides = json.loads(args.source_bonus)
+            if isinstance(overrides, dict):
+                for k, v in overrides.items():
+                    if isinstance(v, (int, float)):
+                        source_bonus[str(k)] = float(v)
+        except json.JSONDecodeError:
+            pass
 
     out_path = Path(args.output) if args.output else (OUT_DIR / f"{datetime.now():%Y%m%d}-feishu-msg.md")
 
@@ -188,6 +214,9 @@ def main() -> None:
             "insight": int(ins) if ins is not None else 0,
         }
         score = compute_weighted_score(eva, weights)
+        bonus = float(source_bonus.get(item["source"], 0.0))
+        if bonus:
+            score = max(1.0, min(5.0, score + bonus))
         if score < min_score:
             continue
         item = {
@@ -198,6 +227,7 @@ def main() -> None:
             "title": title,
             "link": link,
             "score": score,
+            "bonus": bonus,
         }
         if item["category"] in by_cat:
             by_cat[item["category"]].append(item)
