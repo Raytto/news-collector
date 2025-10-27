@@ -11,8 +11,8 @@ variables:
   AI_REQUEST_INTERVAL: "0"
   AI_SCORE_WEIGHTS: ""
   # Feishu bot credentials (set your real values in local env)
-  FEISHU_APP_ID: ""
-  FEISHU_APP_SECRET: ""
+  FEISHU_APP_ID: "cli_a875d3094efed00d"
+  FEISHU_APP_SECRET: "LR7tbUTyaW7FC2DMVUzLCctPTzUNJWd5"
   # Optional: default chat to send messages to (bot must be in the group)
   FEISHU_DEFAULT_CHAT_ID: ""
   # Optional: Feishu Open API base
