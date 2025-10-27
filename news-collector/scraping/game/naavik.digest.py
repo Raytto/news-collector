@@ -7,6 +7,15 @@ import requests
 from bs4 import BeautifulSoup
 from typing import Optional
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 API_URL = "https://r.jina.ai/https://naavik.co/wp-json/wp/v2/posts"
 DIGEST_CATEGORY_ID = 3
 MAX_ITEMS = 10
@@ -59,12 +68,14 @@ def normalize_dt(post):
         if not raw:
             continue
         try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         except ValueError:
-            continue
-        if dt.tzinfo is None:
+            dt = None
+        if dt and dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat()
+        normalized = normalize_published_datetime(dt, str(raw))
+        if normalized:
+            return normalized
     return ""
 
 

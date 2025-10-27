@@ -9,6 +9,15 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 API_URL = (
     "https://export.arxiv.org/api/query?search_query=cat:cs.AI&"
     "sortBy=submittedDate&sortOrder=descending&max_results=50"
@@ -51,12 +60,7 @@ def fetch_feed(url: str = API_URL) -> feedparser.FeedParserDict:
 
 
 def _normalize_iso(dt_str: str) -> str:
-    if not dt_str:
-        return ""
-    cleaned = dt_str.strip()
-    if cleaned.endswith("Z"):
-        cleaned = cleaned[:-1] + "+00:00"
-    return cleaned
+    return normalize_published_datetime(None, dt_str)
 
 
 def parse_datetime(entry: feedparser.FeedParserDict) -> datetime | None:
@@ -98,9 +102,8 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[Dict[str, str]]:
             "",
         )
         dt = parse_datetime(entry)
-        published = dt.isoformat() if dt else _normalize_iso(
-            entry.get("published") or entry.get("updated") or ""
-        )
+        raw_time = entry.get("published") or entry.get("updated") or ""
+        published = normalize_published_datetime(dt, raw_time)
         results.append(
             {
                 "title": title,
@@ -116,8 +119,7 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[Dict[str, str]]:
         if not raw:
             return datetime.min.replace(tzinfo=timezone.utc)
         try:
-            normalized = _normalize_iso(raw)
-            dt = datetime.fromisoformat(normalized)
+            dt = datetime.fromisoformat((raw or "").replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt

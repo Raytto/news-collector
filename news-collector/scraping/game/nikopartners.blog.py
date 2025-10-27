@@ -6,6 +6,15 @@ from typing import Any, Dict, List, Tuple
 
 import feedparser
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 # WP Rocket 会对 /feed/ 做激进缓存（即便未提供条件请求头也直接返回 304），
 # 所以追加一个无害的 query 参数来强制返回正文，避免脚本无法拿到 RSS。
 RSS_URL = "https://nikopartners.com/feed/?nocache=1"
@@ -32,29 +41,51 @@ def _from_struct_time(struct_time) -> datetime | None:
         return None
 
 
+def _extract_raw_datetime(entry: Dict[str, Any]) -> str:
+    for key in ("published", "updated"):
+        raw = entry.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return ""
+
+
 def _parse_datetime(entry: Dict[str, Any]) -> Tuple[str, datetime | None]:
+    raw = _extract_raw_datetime(entry)
+
     for key in ("published_parsed", "updated_parsed"):
         dt = _from_struct_time(entry.get(key))
         if dt:
-            return dt.astimezone(timezone.utc).isoformat(), dt
-
-    for key in ("published", "updated"):
-        raw = entry.get(key)
-        if not raw:
-            continue
-        raw = raw.strip()
-        for parser in (parsedate_to_datetime, datetime.fromisoformat):
+            dt = dt.astimezone(timezone.utc)
+            normalized = normalize_published_datetime(dt, raw)
             try:
-                parsed = parser(raw)
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                parsed = parsed.astimezone(timezone.utc)
-                return parsed.isoformat(), parsed
+                parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
             except Exception:
-                continue
-        return raw, None
+                parsed = dt
+            return normalized, parsed
 
-    return "", None
+    for parser in (parsedate_to_datetime, datetime.fromisoformat):
+        if not raw:
+            break
+        try:
+            parsed = parser(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.astimezone(timezone.utc)
+            normalized = normalize_published_datetime(parsed, raw)
+            try:
+                parsed_dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            except Exception:
+                parsed_dt = parsed
+            return normalized, parsed_dt
+        except Exception:
+            continue
+
+    normalized = normalize_published_datetime(None, raw)
+    try:
+        parsed_dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except Exception:
+        parsed_dt = None
+    return normalized, parsed_dt
 
 
 def collect_entries(feed: Any, limit: int = MAX_ITEMS) -> List[Dict[str, str]]:

@@ -7,6 +7,15 @@ from typing import Any, List, Dict, Iterable
 import requests
 from bs4 import BeautifulSoup, Tag
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 SOURCE = "jiqizhixin"
 CATEGORY = "tech"
 
@@ -87,35 +96,57 @@ def _to_iso8601(value: Any) -> str:
         return ""
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
         except Exception:
             return ""
+        return normalize_published_datetime(dt, str(value))
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return normalize_published_datetime(dt, dt.isoformat())
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
             return ""
         try:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc).isoformat()
         except Exception:
-            pass
-        for fmt in ("%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M", "%Y.%m.%d %H:%M", "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+            dt = None
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt:
+            normalized = normalize_published_datetime(dt, raw)
+            if normalized:
+                return normalized
+        for fmt in (
+            "%Y-%m-%d %H:%M",
+            "%Y/%m/%d %H:%M",
+            "%Y.%m.%d %H:%M",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%Y.%m.%d",
+        ):
             try:
                 dt = datetime.strptime(raw, fmt)
-                dt = dt.replace(tzinfo=timezone.utc)
-                return dt.isoformat()
             except Exception:
                 continue
+            dt = dt.replace(tzinfo=timezone.utc)
+            normalized = normalize_published_datetime(dt, raw)
+            if normalized:
+                return normalized
         m = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", raw)
         if m:
             try:
                 dt = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                return dt.isoformat()
             except Exception:
-                pass
-    return ""
+                dt = None
+            if dt:
+                normalized = normalize_published_datetime(dt, m.group(1))
+                if normalized:
+                    return normalized
+        return normalize_published_datetime(None, raw)
+    return normalize_published_datetime(None, str(value))
 
 
 def _normalize_url(href: str) -> str:

@@ -9,6 +9,15 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 SOURCE = "deepmind"
 CATEGORY = "tech"
 
@@ -46,28 +55,39 @@ def _to_iso8601(value: Any) -> str:
         return ""
     if isinstance(value, (int, float)):
         try:
-            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
+            dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
         except Exception:
             return ""
+        return normalize_published_datetime(dt, str(value))
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return normalize_published_datetime(dt, dt.isoformat())
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
             return ""
-        # Common forms: 2024-10-10, 2024-10-10T12:34:56Z
         try:
             dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc).isoformat()
         except Exception:
-            pass
+            dt = None
+        if dt and dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if dt:
+            normalized = normalize_published_datetime(dt, raw)
+            if normalized:
+                return normalized
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d %b %Y", "%d %B %Y"):
             try:
                 dt = datetime.strptime(raw[:10], fmt).replace(tzinfo=timezone.utc)
-                return dt.isoformat()
             except Exception:
                 continue
-    return ""
+            normalized = normalize_published_datetime(dt, raw)
+            if normalized:
+                return normalized
+        return normalize_published_datetime(None, raw)
+    return normalize_published_datetime(None, str(value))
 
 
 def _iter_dicts(node: Any) -> Iterable[Dict[str, Any]]:

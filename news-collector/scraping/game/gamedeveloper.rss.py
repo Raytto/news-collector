@@ -6,6 +6,15 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 RSS_URL = "https://www.gamedeveloper.com/rss.xml"
 SOURCE = "gamedeveloper"
 CATEGORY = "game"
@@ -59,8 +68,8 @@ def process_entries(feed):
         title = e.get("title", "")
         link  = e.get("link", "")
         dt    = parse_dt(e)
-        # 若无时间，使用空字符串，或这里你也可以选择跳过
-        published = dt.isoformat() if dt else e.get("published", e.get("updated", ""))
+        raw_published = e.get("published") or e.get("updated") or ""
+        published = normalize_published_datetime(dt, raw_published)
         results.append({
             "title": title,
             "url": link,

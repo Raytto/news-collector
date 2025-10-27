@@ -5,6 +5,15 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 RSS_URL = "https://www.deconstructoroffun.com/blog?format=rss"
 SOURCE = "deconstructoroffun"
 CATEGORY = "game"
@@ -50,7 +59,8 @@ def process_entries(feed):
         title = e.get("title", "")
         link = e.get("link", "")
         dt = parse_dt(e)
-        published = dt.isoformat() if dt else e.get("published", e.get("updated", ""))
+        raw_published = e.get("published") or e.get("updated") or ""
+        published = normalize_published_datetime(dt, raw_published)
         results.append(
             {
                 "title": title,

@@ -10,6 +10,15 @@ from typing import Dict, List
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 BASE_URL = "https://sensortower.com"
 BLOG_URL = f"{BASE_URL}/blog"
 GRAPHQL_ENDPOINT = (
@@ -61,22 +70,22 @@ def _parse_month_year(text: str):
 
 
 def _normalize_published(text: str) -> str:
-    """Normalize Sensor Tower month-level dates to ISO.
-
-    - If text is "<Month> <Year>" (month-level) or "YYYY-MM", and it's current month, return now (UTC).
-    - If it's a past month, return last day of that month at 00:00 UTC.
-    - Otherwise, return original text.
-    """
-    ym = _parse_month_year(text)
-    if not ym:
-        return text
-    year, month = ym
-    now = datetime.now(timezone.utc)
-    if year == now.year and month == now.month:
-        return now.isoformat()
-    last_day = calendar.monthrange(year, month)[1]
-    dt = datetime(year, month, last_day, 0, 0, 0, tzinfo=timezone.utc)
-    return dt.isoformat()
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    ym = _parse_month_year(raw)
+    if ym:
+        year, month = ym
+        dt = datetime(year, month, 1, tzinfo=timezone.utc)
+        synthetic_raw = f"{year}-{month:02d}"
+        return normalize_published_datetime(dt, synthetic_raw)
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        dt = None
+    if dt and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return normalize_published_datetime(dt, raw)
 
 LISTING_QUERY = """
 query BlogListing($id: String!, $limit: Int!, $locale: String!) {
