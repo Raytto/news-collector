@@ -26,11 +26,11 @@ DIMENSION_LABELS: Dict[str, str] = {
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 DEFAULT_WEIGHTS: Dict[str, float] = {
     "timeliness": 0.10,
-    "game_relevance": 0.24,
-    "ai_relevance": 0.18,
-    "tech_relevance": 0.04,
-    "quality": 0.16,
-    "insight": 0.28,
+    "game_relevance": 0.25,
+    "ai_relevance": 0.10,
+    "tech_relevance": 0.05,
+    "quality": 0.20,
+    "insight": 0.30,
 }
 
 
@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--db", default=str(DB_PATH), help="SQLite 数据库路径 (默认: data/info.db)")
     p.add_argument("--hours", type=int, default=24, help="时间窗口（小时，默认 24）")
     p.add_argument("--limit-per-cat", type=int, default=10, help="每个分类的最大条目数（默认 10）")
+    p.add_argument("--per-source-cap", type=int, default=3, help="每个来源在同一分类内的最大条目数（默认 3；<=0 表示不限制）")
     p.add_argument("--categories", default="game,tech", help="要输出的分类，逗号分隔（默认 game,tech）")
     p.add_argument("--min-score", type=float, default=0.0, help="最小推荐分阈值，低于此值将被过滤（默认 0）")
     p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
@@ -150,6 +151,7 @@ def main() -> None:
 
     categories = [c.strip() for c in args.categories.split(",") if c.strip()]
     limit_per_cat = max(1, int(args.limit_per_cat))
+    per_source_cap = int(args.per_source_cap)
     min_score = float(args.min_score)
 
     out_path = Path(args.output) if args.output else (OUT_DIR / f"{datetime.now():%Y%m%d}-feishu-msg.md")
@@ -210,13 +212,13 @@ def main() -> None:
             ),
             reverse=True,
         )
-        # Enforce per-source cap: at most 3 per source within a category
+        # Enforce per-source cap within a category (<=0 to disable)
         capped: List[Dict[str, Any]] = []
         per_source: Dict[str, int] = {}
         for it in items:
             src = it.get("source", "")
             cnt = per_source.get(src, 0)
-            if cnt >= 3:
+            if per_source_cap > 0 and cnt >= per_source_cap:
                 continue
             capped.append(it)
             per_source[src] = cnt + 1
