@@ -10,4 +10,11 @@ variables:
   AI_API_TIMEOUT: "30"
   AI_REQUEST_INTERVAL: "0"
   AI_SCORE_WEIGHTS: ""
+  # Feishu bot credentials (set your real values in local env)
+  FEISHU_APP_ID: ""
+  FEISHU_APP_SECRET: ""
+  # Optional: default chat to send messages to (bot must be in the group)
+  FEISHU_DEFAULT_CHAT_ID: ""
+  # Optional: Feishu Open API base
+  FEISHU_API_BASE: "https://open.feishu.cn"
 prefix: /home/pp/miniconda3/envs/news-collector
