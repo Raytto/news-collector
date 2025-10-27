@@ -3,25 +3,58 @@ import re
 from typing import Optional
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 RSS_URL = "https://www.gamesindustry.biz/rss/gamesindustry_news_feed.rss"
 SOURCE = "gamesindustry.biz"
 CATEGORY = "game"
 
-def fetch_feed(url):
+def fetch_feed(url: str):
     d = feedparser.parse(url)
     if d.bozo:
         print("解析 RSS 时出错:", d.bozo_exception)
     return d
 
+def _parse_dt(entry) -> Optional[datetime]:
+    # Prefer feedparser's parsed struct_time
+    for key in ("published_parsed", "updated_parsed"):
+        val = getattr(entry, key, None)
+        if val:
+            try:
+                return datetime(*val[:6], tzinfo=timezone.utc)
+            except Exception:
+                pass
+    for key in ("published", "updated"):
+        raw = entry.get(key)
+        if not raw:
+            continue
+        # Try RFC 2822/1123 first
+        try:
+            dt = parsedate_to_datetime(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except Exception:
+            # Then try ISO 8601
+            try:
+                dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+    return None
+
 def process_entries(feed):
-    entries = feed.entries
     results = []
-    for e in entries:
-        title = e.get("title", "")
-        link  = e.get("link", "")
-        published = e.get("published", e.get("updated", ""))
-        # 你可解析 published 为 datetime
+    for e in getattr(feed, "entries", []):
+        title = e.get("title", "").strip()
+        link  = e.get("link", "").strip()
+        if not title or not link:
+            continue
+        dt = _parse_dt(e)
+        published = dt.isoformat() if dt else (e.get("published") or e.get("updated") or "")
         results.append({
             "title": title,
             "url": link,
@@ -29,6 +62,13 @@ def process_entries(feed):
             "source": SOURCE,
             "category": CATEGORY,
         })
+    # sort by time desc to keep consistent behavior
+    def sort_key(x):
+        try:
+            return datetime.fromisoformat((x.get("published") or "").replace("Z", "+00:00"))
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+    results.sort(key=sort_key, reverse=True)
     return results
 
 if __name__ == "__main__":

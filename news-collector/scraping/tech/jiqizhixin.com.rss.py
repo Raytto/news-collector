@@ -26,9 +26,25 @@ HEADERS = {
 
 
 def fetch_list_page(url: str = LIST_URL) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-    resp.raise_for_status()
-    return resp.text
+    """Fetch homepage HTML; fallback to readability proxy on failure.
+
+    Some regions or anti-bot mechanisms may serve minimal/blocked pages. As a
+    resilience fallback, we try r.jina.ai which returns Markdown content.
+    """
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+        if resp.status_code < 400 and len(resp.text or "") > 1024:
+            return resp.text
+    except Exception:
+        pass
+    # Fallback to readability proxy (Markdown)
+    try:
+        r = requests.get(f"https://r.jina.ai/{url}", headers={"User-Agent": UA}, timeout=TIMEOUT)
+        if r.status_code < 400 and r.text:
+            return r.text
+    except Exception:
+        pass
+    raise RuntimeError("无法获取 机器之心 列表页")
 
 
 def _to_iso8601(value: Any) -> str:
@@ -82,47 +98,72 @@ def _normalize_url(href: str) -> str:
 
 
 def parse_list(html: str) -> List[Dict[str, str]]:
-    soup = BeautifulSoup(html, "html.parser")
     items: List[Dict[str, str]] = []
 
-    # Common homepage/article blocks
-    candidates = soup.select(
-        "article, .article, .post, li, .news-item, .list-item, .card"
-    )
-    if not candidates:
-        candidates = soup.find_all("a", href=True)
+    # If the content looks like Markdown from r.jina.ai, extract links first
+    if "\n# " in html or "[" in html and "](http" in html:
+        try:
+            import re as _re
+            for m in _re.finditer(r"\[([^\]]+)\]\((https?://www\.jiqizhixin\.com/[^)]+)\)", html):
+                title = m.group(1).strip()
+                url = m.group(2).strip()
+                if title and url:
+                    items.append({
+                        "title": title,
+                        "url": url,
+                        "published": "",
+                        "source": SOURCE,
+                        "category": CATEGORY,
+                    })
+        except Exception:
+            pass
 
-    for node in candidates:
-        a = node.find("a", href=True) if hasattr(node, "find") else node
-        if not a:
-            continue
-        href = a.get("href") or ""
-        if not href:
-            continue
-        url = _normalize_url(href)
-        # Heuristic: focus on site-local content paths
-        if BASE_URL not in url:
-            continue
-        title = a.get_text(strip=True) or (node.get_text(strip=True) if hasattr(node, "get_text") else "")
-        if not title:
-            continue
+    # HTML parsing path
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        soup = None
 
-        pub = ""
-        t = node.find("time") if hasattr(node, "find") else None
-        if t and (t.get("datetime") or t.get_text(strip=True)):
-            pub = _to_iso8601(t.get("datetime") or t.get_text(strip=True))
-        if not pub and hasattr(node, "find"):
-            meta = node.find("meta", attrs={"property": "article:published_time"})
-            if meta and meta.get("content"):
-                pub = _to_iso8601(meta["content"])  
-
-        items.append({
-            "title": title,
-            "url": url,
-            "published": pub,
-            "source": SOURCE,
-            "category": CATEGORY,
-        })
+    if soup is not None:
+        # Prefer right-side daily/news area when available
+        candidates: Iterable[Any] = (
+            soup.select(".home__right .post__item, .home__right a[href], .home__right li a[href]")
+            or soup.select("article, .article, .post, li, .news-item, .list-item, .card")
+            or soup.find_all("a", href=True)
+        )
+        for node in candidates:
+            a = node.find("a", href=True) if hasattr(node, "find") else node
+            if not a:
+                continue
+            href = a.get("href") or ""
+            if not href:
+                continue
+            url = _normalize_url(href)
+            if BASE_URL not in url:
+                continue
+            title = a.get_text(strip=True) or (node.get_text(strip=True) if hasattr(node, "get_text") else "")
+            if not title:
+                continue
+            pub = ""
+            t = node.find("time") if hasattr(node, "find") else None
+            if t and (t.get("datetime") or t.get_text(strip=True)):
+                pub = _to_iso8601(t.get("datetime") or t.get_text(strip=True))
+            if not pub and hasattr(node, "find"):
+                meta = node.find("meta", attrs={"property": "article:published_time"})
+                if meta and meta.get("content"):
+                    pub = _to_iso8601(meta["content"])  
+            if not pub and hasattr(node, "get_text"):
+                txt = node.get_text(" ", strip=True)
+                m = re.search(r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2})", txt)
+                if m:
+                    pub = _to_iso8601(m.group(1))
+            items.append({
+                "title": title,
+                "url": url,
+                "published": pub,
+                "source": SOURCE,
+                "category": CATEGORY,
+            })
 
     # Deduplicate and sort
     seen = set()
@@ -141,6 +182,21 @@ def parse_list(html: str) -> List[Dict[str, str]]:
 
     unique.sort(key=sort_key, reverse=True)
     return unique
+
+
+def collect_latest(limit: int = 20) -> List[dict]:
+    """Collect latest posts with an additional readability fallback when HTML yields none."""
+    html = fetch_list_page(LIST_URL)
+    items = parse_list(html)
+    if not items:
+        # Force readability fallback and parse Markdown
+        try:
+            r = requests.get(f"https://r.jina.ai/{LIST_URL}", headers={"User-Agent": UA}, timeout=TIMEOUT)
+            if r.status_code < 400 and r.text:
+                items = parse_list(r.text)
+        except Exception:
+            pass
+    return items[:limit]
 
 
 def collect_latest(limit: int = 20) -> List[dict]:

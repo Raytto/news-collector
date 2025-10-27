@@ -13,6 +13,7 @@ ARTICLE_BASE_URL = "https://openai.com/research/"
 PRIMARY_LIST_URL = "https://openai.com/zh-Hans-CN/research/index/"
 # Fallbacks in case localized path is blocked or removed
 FALLBACK_LIST_URLS = (
+    "https://openai.com/zh-Hans-CN/research/index/",
     "https://openai.com/zh-cn/research/",
     "https://openai.com/research/",
     "https://openai.com/research/index/",
@@ -75,15 +76,18 @@ def fetch_list_page(url: str | None = None) -> str:
         except Exception as exc:
             last_exc = exc
             continue
-    # If all attempts failed, raise last error for visibility
-    # Final fallback: use readability proxy (returns Markdown)
-    try:
-        jurl = "https://r.jina.ai/https://openai.com/research/"
-        resp = session.get(jurl, timeout=REQUEST_TIMEOUT)
-        if resp.status_code < 400 and resp.text:
-            return resp.text
-    except Exception:
-        pass
+    # Final fallbacks: readability proxy (Markdown) for localized + en paths
+    for j in (
+        "https://r.jina.ai/https://openai.com/zh-Hans-CN/research/index/",
+        "https://r.jina.ai/https://openai.com/zh-cn/research/",
+        "https://r.jina.ai/https://openai.com/research/",
+    ):
+        try:
+            resp = session.get(j, timeout=REQUEST_TIMEOUT)
+            if resp.status_code < 400 and resp.text:
+                return resp.text
+        except Exception:
+            continue
     if last_exc:
         raise last_exc
     raise RuntimeError("无法获取 OpenAI Research 列表页")
@@ -222,11 +226,12 @@ def parse_list(html: str) -> List[Dict[str, str]]:
     # Fallback: parse from visible anchors if Next data missing
     if not articles:
         soup = BeautifulSoup(html, "html.parser")
-        for a in soup.select("a[href^='/research/']"):
+        for a in soup.select("a[href^='/research/'], a[href*='/research/']"):
             href = a.get("href") or ""
             title = a.get_text(strip=True)
             if not href or not title:
                 continue
+            # Normalize localized paths as well
             url = urljoin("https://openai.com", href)
             if url in seen_urls:
                 continue
@@ -244,9 +249,10 @@ def parse_list(html: str) -> List[Dict[str, str]]:
             })
             seen_urls.add(url)
 
-    # Final fallback: try to parse Markdown links (from r.jina.ai)
+    # Final fallback: try to parse Markdown links (first on provided html; if none, fetch from r.jina.ai)
     if not articles:
-        for m in re.finditer(r"\[([^\]]+)\]\((https?://openai\.com/research/[^\s)]+)\)", html):
+        found = False
+        for m in re.finditer(r"\[([^\]]+)\]\((https?://openai\.com/(?:zh-[^/]+/)?research/[^\s)]+)\)", html):
             title = m.group(1).strip()
             url = m.group(2).strip()
             if url in seen_urls or not title:
@@ -259,6 +265,35 @@ def parse_list(html: str) -> List[Dict[str, str]]:
                 "category": CATEGORY,
             })
             seen_urls.add(url)
+            found = True
+        if not found:
+            for j in (
+                "https://r.jina.ai/https://openai.com/zh-Hans-CN/research/index/",
+                "https://r.jina.ai/https://openai.com/zh-cn/research/",
+                "https://r.jina.ai/https://openai.com/research/",
+            ):
+                try:
+                    r = requests.get(j, headers={"User-Agent": UA}, timeout=REQUEST_TIMEOUT)
+                    if r.status_code >= 400 or not r.text:
+                        continue
+                    md = r.text
+                    for m in re.finditer(r"\[([^\]]+)\]\((https?://openai\.com/(?:zh-[^/]+/)?research/[^\s)]+)\)", md):
+                        title = m.group(1).strip()
+                        url = m.group(2).strip()
+                        if url in seen_urls or not title:
+                            continue
+                        articles.append({
+                            "title": title,
+                            "url": url,
+                            "published": "",
+                            "source": SOURCE,
+                            "category": CATEGORY,
+                        })
+                        seen_urls.add(url)
+                    if articles:
+                        break
+                except Exception:
+                    continue
 
     def sort_key(item: Dict[str, str]) -> datetime:
         try:
