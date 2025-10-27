@@ -9,6 +9,15 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 SOURCE = "qbitai-zhiku"
 CATEGORY = "tech"
 
@@ -78,7 +87,8 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[dict]:
         title = entry.get("title", "").strip()
         link = _normalize_url(entry.get("link", ""))
         dt = _parse_datetime(entry)
-        published = dt.isoformat() if dt else entry.get("published", "")
+        raw_time = entry.get("published") or entry.get("updated") or entry.get("created") or ""
+        published = normalize_published_datetime(dt, raw_time)
 
         if not title or not link:
             continue

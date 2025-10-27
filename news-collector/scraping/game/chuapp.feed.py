@@ -8,6 +8,15 @@ import feedparser
 import requests
 import re
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 RSS_URL = "https://www.chuapp.com/feed"
 SOURCE = "chuapp"
 CATEGORY = "game"
@@ -97,7 +106,8 @@ def collect_entries(feed: Any, limit: int = 10) -> List[Dict[str, str]]:
         if not title or not link:
             continue
         dt = _to_datetime(entry)
-        published = dt.isoformat() if dt else entry.get("published", entry.get("updated", ""))
+        raw = entry.get("published") or entry.get("updated") or ""
+        published = normalize_published_datetime(dt, raw)
         data = {"title": title, "url": link, "published": published, "source": SOURCE, "category": CATEGORY}
         sort_key = dt or datetime.min.replace(tzinfo=timezone.utc)
         sortable.append((sort_key, data))

@@ -1,15 +1,23 @@
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional
-from datetime import timedelta
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup, Tag
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
 
 BASE_URL = "https://www.youxituoluo.com"
 HOMEPAGE_URL = f"{BASE_URL}/"
@@ -63,47 +71,45 @@ def parse_timestamp(value: Any) -> str:
 
     if isinstance(value, (int, float)):
         timestamp = float(value)
-        # Guess millisecond timestamps.
         if timestamp > 1_000_000_000_000:
             timestamp /= 1000.0
         try:
             dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
         except (OSError, OverflowError):
             return ""
-        return dt.isoformat()
+        return normalize_published_datetime(dt, str(value))
 
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
             return ""
 
-        # Chinese relative time: X小时前 / X分钟前 / X天前 / 昨天 / 前天 / 刚刚 / 今天
-        low = raw.lower()
         try:
             import re as _re
+
             m = _re.match(r"^(\d+)\s*小时前$", raw)
             if m:
                 h = int(m.group(1))
                 dt = datetime.now(timezone.utc) - timedelta(hours=h)
-                return dt.isoformat()
+                return normalize_published_datetime(dt, raw)
             m = _re.match(r"^(\d+)\s*分钟前$", raw)
             if m:
                 mins = int(m.group(1))
                 dt = datetime.now(timezone.utc) - timedelta(minutes=mins)
-                return dt.isoformat()
+                return normalize_published_datetime(dt, raw)
             m = _re.match(r"^(\d+)\s*天前$", raw)
             if m:
                 d = int(m.group(1))
                 dt = datetime.now(timezone.utc) - timedelta(days=d)
-                return dt.isoformat()
+                return normalize_published_datetime(dt, raw)
             if raw in ("昨天", "昨日"):
                 dt = datetime.now(timezone.utc) - timedelta(days=1)
-                return dt.isoformat()
+                return normalize_published_datetime(dt, raw)
             if raw in ("前天",):
                 dt = datetime.now(timezone.utc) - timedelta(days=2)
-                return dt.isoformat()
+                return normalize_published_datetime(dt, raw)
             if raw in ("刚刚", "今天", "今日"):
-                return datetime.now(timezone.utc).isoformat()
+                return normalize_published_datetime(datetime.now(timezone.utc), raw)
         except Exception:
             pass
 
@@ -127,9 +133,9 @@ def parse_timestamp(value: Any) -> str:
                 dt = dt.replace(tzinfo=timezone.utc)
             else:
                 dt = dt.astimezone(timezone.utc)
-            return dt.isoformat()
+            return normalize_published_datetime(dt, raw)
 
-        return raw
+        return normalize_published_datetime(None, raw)
 
     return ""
 

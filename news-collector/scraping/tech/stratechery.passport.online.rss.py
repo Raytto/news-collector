@@ -9,6 +9,15 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 RSS_URL = "https://stratechery.passport.online/feed/rss/CUXZnvi6sHPnV39z2Hje1"
 SOURCE = "stratechery"
 CATEGORY = "tech"
@@ -59,32 +68,54 @@ def _parse_struct_time(value: Any) -> datetime | None:
     return None
 
 
-def _parse_datetime(entry: Any) -> datetime | None:
+def _parse_datetime(entry: Any) -> tuple[str, datetime | None]:
+    raw_candidates = []
+    for key in ("published", "updated", "created"):
+        value = _entry_get(entry, key)
+        if isinstance(value, str) and value.strip():
+            raw_candidates.append(value.strip())
+    raw = raw_candidates[0] if raw_candidates else ""
+
     for key in ("published_parsed", "updated_parsed", "created_parsed"):
         parsed = _entry_get(entry, key)
         dt = _parse_struct_time(parsed)
         if dt:
-            return dt
+            dt = dt.astimezone(timezone.utc)
+            normalized = normalize_published_datetime(dt, raw)
+            try:
+                parsed_dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            except Exception:
+                parsed_dt = dt
+            return normalized, parsed_dt
 
     for key in ("published", "updated", "created"):
-        raw = _entry_get(entry, key)
-        if not raw or not isinstance(raw, str):
+        raw_value = _entry_get(entry, key)
+        if not isinstance(raw_value, str):
             continue
-        text = raw.strip()
+        text = raw_value.strip()
         if not text:
             continue
-        try:
-            dt = parsedate_to_datetime(text)
-        except Exception:
+        for parser in (parsedate_to_datetime, datetime.fromisoformat):
             try:
-                dt = datetime.fromisoformat(text)
+                dt = parser(text)
             except Exception:
                 continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(timezone.utc)
+            normalized = normalize_published_datetime(dt, text)
+            try:
+                parsed_dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+            except Exception:
+                parsed_dt = dt
+            return normalized, parsed_dt
 
-    return None
+    normalized = normalize_published_datetime(None, raw)
+    try:
+        parsed_dt = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except Exception:
+        parsed_dt = None
+    return normalized, parsed_dt
 
 
 def _normalize_url(link: str) -> str:
@@ -198,8 +229,7 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[dict]:
         if not title or not link:
             continue
 
-        published_dt = _parse_datetime(entry)
-        published = published_dt.isoformat() if published_dt else ""
+        published, sort_dt = _parse_datetime(entry)
         detail = _extract_entry_detail(entry)
 
         results.append(
@@ -210,16 +240,22 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[dict]:
                 "source": SOURCE,
                 "category": CATEGORY,
                 "detail": detail,
+                "_sort_key": sort_dt,
             }
         )
 
     def sort_key(item: dict) -> datetime:
         try:
-            return datetime.fromisoformat(item["published"])
+            key = item.get("_sort_key")
+            if isinstance(key, datetime):
+                return key
+            return datetime.fromisoformat((item.get("published") or "").replace("Z", "+00:00"))
         except Exception:
             return datetime.min.replace(tzinfo=timezone.utc)
 
     results.sort(key=sort_key, reverse=True)
+    for item in results:
+        item.pop("_sort_key", None)
     return results
 
 

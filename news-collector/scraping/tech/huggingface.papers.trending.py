@@ -6,6 +6,15 @@ from typing import Any, Iterable, List, Dict
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 SOURCE = "huggingface-papers"
 CATEGORY = "tech"
 
@@ -46,18 +55,23 @@ def _to_iso8601(text: str) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat()
     except Exception:
-        pass
+        dt = None
+    if dt and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if dt:
+        normalized = normalize_published_datetime(dt, raw)
+        if normalized:
+            return normalized
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d %b %Y", "%d %B %Y"):
         try:
             dt = datetime.strptime(raw[:10], fmt).replace(tzinfo=timezone.utc)
-            return dt.isoformat()
         except Exception:
             continue
-    return ""
+        normalized = normalize_published_datetime(dt, raw)
+        if normalized:
+            return normalized
+    return normalize_published_datetime(None, raw)
 
 
 def parse_list(html: str) -> List[Dict[str, str]]:

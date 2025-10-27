@@ -9,6 +9,15 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 
+try:  # pragma: no cover - allow running as a script
+    from .._datetime import normalize_published_datetime
+except ImportError:  # pragma: no cover - fallback for direct execution
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from _datetime import normalize_published_datetime
+
 SOURCE = "openai.research"
 CATEGORY = "tech"
 RSS_URL = "https://openai.com/blog/rss.xml"
@@ -33,20 +42,19 @@ def _to_iso8601(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
         return ""
-    try:
-        dt = parsedate_to_datetime(raw)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat()
-    except Exception:
-        pass
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).isoformat()
-    except Exception:
-        return raw
+    for parser in (parsedate_to_datetime, lambda x: datetime.fromisoformat(x.replace("Z", "+00:00"))):
+        try:
+            dt = parser(raw)
+        except Exception:
+            continue
+        if isinstance(dt, datetime):
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(timezone.utc)
+            normalized = normalize_published_datetime(dt, raw)
+            if normalized:
+                return normalized
+    return normalize_published_datetime(None, raw)
 
 
 def _clean_html(html: str) -> str:
