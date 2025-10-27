@@ -6,13 +6,21 @@ from collections import defaultdict
 from html import escape
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT.parent / "data"
 DB_PATH = DATA_DIR / "info.db"
 OUTPUT_DIR = DATA_DIR / "output"
+
+DIMENSION_LABELS: Dict[str, str] = {
+    "timeliness": "时效性",
+    "relevance": "相关性",
+    "insightfulness": "洞察力",
+    "actionability": "可行动性",
+}
+DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 
 
 def parse_args() -> argparse.Namespace:
@@ -69,22 +77,66 @@ def try_parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
-def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Tuple[str, str, str, str, str]]:
-    """Return recent entries as (category, source, publish, title, link)."""
-    cur = conn.cursor()
-    cur.execute("SELECT category, source, publish, title, link FROM info")
-    rows = cur.fetchall()
-    results: List[Tuple[str, str, str, str, str]] = []
-    for category, source, publish, title, link in rows:
-        dt = try_parse_dt(publish or "")
-        if not dt:
+def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, Any]]:
+    """Return recent entries enriched with AI 评分数据。"""
+    has_review = bool(
+        conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'"
+        ).fetchone()
+    )
+    if has_review:
+        sql = """
+            SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
+                   r.final_score, r.timeliness_score, r.relevance_score,
+                   r.insightfulness_score, r.actionability_score,
+                   r.ai_comment, r.ai_summary
+            FROM info AS i
+            LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+        """
+    else:
+        sql = """
+            SELECT i.id, i.category, i.source, i.publish, i.title, i.link
+            FROM info AS i
+        """
+    rows = conn.execute(sql).fetchall()
+    entries: List[Dict[str, Any]] = []
+    for row in rows:
+        publish = str(row[3] or "")
+        dt = try_parse_dt(publish)
+        if not dt or dt < cutoff:
             continue
-        if dt >= cutoff:
-            results.append((str(category or ""), str(source or ""), str(publish or ""), str(title or ""), str(link or "")))
+        evaluation: Optional[Dict[str, Any]] = None
+        if has_review:
+            final_score = row[6]
+        else:
+            final_score = None
+        if final_score is not None:
+            evaluation = {
+                "final_score": float(final_score),
+                "timeliness": int(row[7]),
+                "relevance": int(row[8]),
+                "insightfulness": int(row[9]),
+                "actionability": int(row[10]),
+                "comment": str(row[11] or ""),
+                "summary": str(row[12] or ""),
+            }
+        entries.append(
+            {
+                "id": int(row[0]),
+                "category": str(row[1] or ""),
+                "source": str(row[2] or ""),
+                "publish": publish,
+                "title": str(row[4] or ""),
+                "link": str(row[5] or ""),
+                "evaluation": evaluation,
+            }
+        )
 
-    # Sort by publish desc (parseable ones only are included)
-    results.sort(key=lambda r: try_parse_dt(r[2]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-    return results
+    entries.sort(
+        key=lambda item: try_parse_dt(item["publish"]) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return entries
 
 
 def human_time(publish: str) -> str:
@@ -94,12 +146,11 @@ def human_time(publish: str) -> str:
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
-def render_html(entries: Iterable[Tuple[str, str, str, str, str]], hours: int) -> str:
-    # entries are (category, source, publish, title, link)
-    by_cat: Dict[str, Dict[str, List[Tuple[str, str, str]]]] = defaultdict(lambda: defaultdict(list))
+def render_html(entries: Iterable[Dict[str, Any]], hours: int) -> str:
+    by_cat: Dict[str, Dict[str, List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     count = 0
-    for category, source, publish, title, link in entries:
-        by_cat[category][source].append((publish, title, link))
+    for entry in entries:
+        by_cat[entry["category"]][entry["source"]].append(entry)
         count += 1
 
     now_utc = datetime.now(timezone.utc)
@@ -114,12 +165,21 @@ def render_html(entries: Iterable[Tuple[str, str, str, str, str]], hours: int) -
     h1 {{ font-size: 22px; margin: 0 0 4px; }}
     .meta {{ color: #666; margin: 0 0 16px; }}
     h2 {{ font-size: 19px; margin: 24px 0 10px; padding-top: 8px; border-top: 2px solid #eee; }}
-    h3 {{ font-size: 17px; margin: 14px 0 6px; }}
-    ul {{ list-style: disc; margin: 8px 0 16px 20px; padding: 0; }}
-    li {{ margin: 6px 0; }}
+    h3 {{ font-size: 17px; margin: 18px 0 12px; }}
+    .source-group {{ margin: 0 0 20px; }}
+    .article-card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; background: #fff; box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05); }}
+    .article-title {{ font-size: 17px; font-weight: 600; color: #0b5ed7; text-decoration: none; display: inline-block; margin-bottom: 6px; }}
+    .article-title:hover {{ text-decoration: underline; }}
+    .article-meta {{ color: #5f6368; font-size: 13px; margin-bottom: 10px; }}
+    .ai-summary {{ background: #f8fafc; border-radius: 8px; padding: 12px 14px; line-height: 1.6; color: #1f2937; }}
+    .ai-summary + .ai-summary {{ margin-top: 8px; }}
+    .ai-missing {{ background: #fff4e6; border: 1px dashed #f59e0b; color: #b45309; }}
+    .ai-rating {{ display: flex; align-items: baseline; gap: 8px; font-size: 16px; font-weight: 600; margin-bottom: 6px; color: #b45309; }}
+    .stars {{ font-size: 18px; letter-spacing: 2px; color: #f97316; }}
+    .score-number {{ color: #b45309; font-size: 15px; }}
+    .ai-dimensions {{ font-size: 14px; color: #334155; margin-bottom: 6px; }}
+    .ai-comment, .ai-summary-text {{ font-size: 14px; color: #1f2937; }}
     time {{ color: #555; }}
-    a {{ color: #0b5ed7; text-decoration: none; font-weight: 600; }}
-    a:hover {{ text-decoration: underline; }}
   </style>
   </head>
 <body>
@@ -142,26 +202,65 @@ def render_html(entries: Iterable[Tuple[str, str, str, str, str]], hours: int) -
 
     sections: List[str] = []
     for cat in categories:
-        cat_label = cat or "(uncategorized)"
+        cat_label = cat or "(未分类)"
         sections.append(f"<h2>{escape(cat_label)}</h2>")
-        # Order sources alphabetically
+
         for source in sorted(by_cat[cat].keys()):
-            sections.append(f"<h3>{escape(source)}</h3>")
-            sections.append("<ul>")
-            for publish, title, link in by_cat[cat][source]:
-                dt = try_parse_dt(publish)
-                iso = dt.isoformat() if dt else escape(publish)
-                shown = human_time(publish) if dt else escape(publish)
-                t = escape(title)
-                href = escape(link)
-                sections.append(
-                    f"<li><time datetime=\"{iso}\">{shown}</time> — "
-                    f"<a href=\"{href}\" target=\"_blank\" rel=\"noopener noreferrer\">{t}</a></li>"
-                )
-            sections.append("</ul>")
+            sections.append("<div class=\"source-group\">")
+            sections.append(f"<h3>{escape(source or '未注明来源')}</h3>")
+            for entry in by_cat[cat][source]:
+                sections.append(_render_article_card(entry))
+            sections.append("</div>")
 
     tail = "\n</body>\n</html>\n"
     return head + header + "\n".join(sections) + tail
+
+
+def _render_article_card(entry: Dict[str, Any]) -> str:
+    publish = entry.get("publish", "")
+    dt = try_parse_dt(publish)
+    if dt:
+        iso = dt.isoformat()
+        shown = human_time(publish)
+    else:
+        iso = escape(publish)
+        shown = escape(publish)
+
+    link = escape(entry.get("link", ""))
+    title = escape(entry.get("title", ""))
+    evaluation = entry.get("evaluation")
+
+    if evaluation:
+        final_score = float(evaluation["final_score"])
+        stars = _render_stars(final_score)
+        dims = " · ".join(
+            f"{DIMENSION_LABELS[key]}：{evaluation.get(key, '-')}" for key in DIMENSION_ORDER
+        )
+        rating_html = (
+            "<div class=\"ai-summary\">"
+            f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
+            f"<span class=\"score-number\">{final_score:.2f}/5</span></div>"
+            f"<div class=\"ai-dimensions\">{escape(dims)}</div>"
+            f"<div class=\"ai-comment\">评价：{escape(evaluation.get('comment', ''))}</div>"
+            f"<div class=\"ai-summary-text\">概要：{escape(evaluation.get('summary', ''))}</div>"
+            "</div>"
+        )
+    else:
+        rating_html = "<div class=\"ai-summary ai-missing\">AI 评估：暂无数据</div>"
+
+    return (
+        "<article class=\"article-card\">"
+        f"<a class=\"article-title\" href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\">{title}</a>"
+        f"<div class=\"article-meta\"><time datetime=\"{iso}\">{shown}</time></div>"
+        f"{rating_html}"
+        "</article>"
+    )
+
+
+def _render_stars(score: float) -> str:
+    rounded = int(score + 0.5)
+    rounded = max(1, min(5, rounded))
+    return "★" * rounded + "☆" * (5 - rounded)
 
 
 def main() -> None:

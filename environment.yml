@@ -3,4 +3,11 @@ channels:
   - defaults
 dependencies:
   - python=3.11
+variables:
+  AI_API_BASE_URL: https://api.openai.com
+  AI_API_MODEL: gpt-4o-mini
+  AI_API_KEY: ""
+  AI_API_TIMEOUT: "30"
+  AI_REQUEST_INTERVAL: "0"
+  AI_SCORE_WEIGHTS: ""
 prefix: /home/pp/miniconda3/envs/news-collector
