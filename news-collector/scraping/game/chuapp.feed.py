@@ -5,16 +5,57 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List
 
 import feedparser
+import requests
+import re
 
 RSS_URL = "https://www.chuapp.com/feed"
 SOURCE = "chuapp"
 CATEGORY = "game"
 
 
+def _sanitize_html_entities(xml_text: str) -> str:
+    # Replace common HTML entities that are undefined in XML with safe equivalents
+    replacements = {
+        "&nbsp;": " ",
+        "&ensp;": " ",
+        "&emsp;": " ",
+        "&ndash;": "-",
+        "&mdash;": "-",
+        "&lsquo;": "'",
+        "&rsquo;": "'",
+        "&ldquo;": '"',
+        "&rdquo;": '"',
+        "&hellip;": "...",
+    }
+    # Fast path for direct replacements
+    for k, v in replacements.items():
+        if k in xml_text:
+            xml_text = xml_text.replace(k, v)
+    # Collapse stray unescaped ampersands in text nodes like 'AT&T' -> 'AT&amp;T'
+    # Heuristic: replace '&' not followed by a known entity pattern
+    xml_text = re.sub(r"&(?![a-zA-Z#][a-zA-Z0-9]+;)", "&amp;", xml_text)
+    return xml_text
+
+
 def fetch_feed(url: str = RSS_URL):
-    feed = feedparser.parse(url)
+    try:
+        resp = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+        }, timeout=20)
+        resp.raise_for_status()
+        text = resp.text
+        text = _sanitize_html_entities(text)
+        feed = feedparser.parse(text)
+    except Exception:
+        # Fallback to feedparser's internal fetch if requests fails
+        feed = feedparser.parse(url)
+
     if getattr(feed, "bozo", False):
-        print("解析 RSS 时可能有问题:", getattr(feed, "bozo_exception", None))
+        # Only log truly unexpected parse errors; ignore undefined entity noise we already sanitized
+        exc = getattr(feed, "bozo_exception", None)
+        if exc and "undefined entity" not in str(exc).lower():
+            print("解析 RSS 时可能有问题:", exc)
     return feed
 
 
@@ -76,8 +117,6 @@ def main(limit: int = 10) -> None:
 # -----------------------
 # Article detail fetching
 # -----------------------
-import re
-import requests
 from bs4 import BeautifulSoup
 
 UA = (

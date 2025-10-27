@@ -16,11 +16,36 @@ OUTPUT_DIR = DATA_DIR / "output"
 
 DIMENSION_LABELS: Dict[str, str] = {
     "timeliness": "时效性",
-    "relevance": "相关性",
-    "insightfulness": "洞察力",
-    "actionability": "可行动性",
+    "game_relevance": "游戏相关性",
+    "ai_relevance": "AI相关性",
+    "tech_relevance": "科技相关性",
+    "quality": "文章质量",
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
+
+# 默认权重（与 docs/prompt/ai-evaluation-spec.md 保持一致），可在此按用户群体调整
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    "timeliness": 0.20,
+    "game_relevance": 0.25,
+    "ai_relevance": 0.20,
+    "tech_relevance": 0.15,
+    "quality": 0.20,
+}
+
+
+def compute_weighted_score(eva: Dict[str, Any], weights: Dict[str, float] = DEFAULT_WEIGHTS) -> float:
+    total = 0.0
+    wsum = 0.0
+    for dim in DIMENSION_ORDER:
+        w = float(weights.get(dim, 0.0))
+        if w <= 0:
+            continue
+        v = float(eva.get(dim, 0) or 0)
+        total += v * w
+        wsum += w
+    if wsum <= 0:
+        return 0.0
+    return round(max(1.0, min(5.0, total / wsum)), 2)
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,8 +112,8 @@ def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, A
     if has_review:
         sql = """
             SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
-                   r.final_score, r.timeliness_score, r.relevance_score,
-                   r.insightfulness_score, r.actionability_score,
+                   r.final_score,
+                   r.timeliness_score, r.game_relevance_score, r.ai_relevance_score, r.tech_relevance_score, r.quality_score,
                    r.ai_comment, r.ai_summary
             FROM info AS i
             LEFT JOIN info_ai_review AS r ON r.info_id = i.id
@@ -113,13 +138,16 @@ def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, A
         if final_score is not None:
             evaluation = {
                 "final_score": float(final_score),
-                "timeliness": int(row[7]),
-                "relevance": int(row[8]),
-                "insightfulness": int(row[9]),
-                "actionability": int(row[10]),
-                "comment": str(row[11] or ""),
-                "summary": str(row[12] or ""),
+                "timeliness": int(row[7]) if row[7] is not None else 0,
+                "game_relevance": int(row[8]) if row[8] is not None else 0,
+                "ai_relevance": int(row[9]) if row[9] is not None else 0,
+                "tech_relevance": int(row[10]) if row[10] is not None else 0,
+                "quality": int(row[11]) if row[11] is not None else 0,
+                "comment": str(row[12] or ""),
+                "summary": str(row[13] or ""),
             }
+            # 动态计算当前展示所需的加权总分（忽略数据库中的旧 final_score）
+            evaluation["final_score"] = compute_weighted_score(evaluation)
         entries.append(
             {
                 "id": int(row[0]),
@@ -143,17 +171,18 @@ def human_time(publish: str) -> str:
     dt = try_parse_dt(publish)
     if not dt:
         return publish
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
+    return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 北京时间")
 
 
 def render_html(entries: Iterable[Dict[str, Any]], hours: int) -> str:
-    by_cat: Dict[str, Dict[str, List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    # Group only by category; within each category, sort by final score desc
+    by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     count = 0
     for entry in entries:
-        by_cat[entry["category"]][entry["source"]].append(entry)
+        by_cat[entry["category"]].append(entry)
         count += 1
 
-    now_utc = datetime.now(timezone.utc)
+    now_bj = datetime.now(timezone(timedelta(hours=8)))
     head = f"""<!doctype html>
 <html lang=\"zh-CN\">
 <head>
@@ -187,7 +216,7 @@ def render_html(entries: Iterable[Dict[str, Any]], hours: int) -> str:
 
     header = f"""
 <h1>最近 {hours} 小时资讯汇总</h1>
-<p class=\"meta\">生成时间：{now_utc.strftime('%Y-%m-%d %H:%M UTC')} · 合计：{count} 条</p>
+<p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计：{count} 条</p>
 """
 
     # Order categories: 'game' first, then others (non-empty) alphabetically, then empty category last
@@ -200,17 +229,22 @@ def render_html(entries: Iterable[Dict[str, Any]], hours: int) -> str:
         return (2, "")
     categories.sort(key=cat_key)
 
+    def score_key(e: Dict[str, Any]) -> tuple:
+        eva = e.get("evaluation") or {}
+        score = float(eva.get("final_score") or 0.0)
+        # publish desc as tiebreaker
+        dt = try_parse_dt(e.get("publish", "") or "") or datetime.min.replace(tzinfo=timezone.utc)
+        return (score, dt)
+
     sections: List[str] = []
     for cat in categories:
         cat_label = cat or "(未分类)"
         sections.append(f"<h2>{escape(cat_label)}</h2>")
 
-        for source in sorted(by_cat[cat].keys()):
-            sections.append("<div class=\"source-group\">")
-            sections.append(f"<h3>{escape(source or '未注明来源')}</h3>")
-            for entry in by_cat[cat][source]:
-                sections.append(_render_article_card(entry))
-            sections.append("</div>")
+        # Sort entries of this category by final_score desc; missing scores go last
+        cat_entries = sorted(by_cat[cat], key=score_key, reverse=True)
+        for entry in cat_entries:
+            sections.append(_render_article_card(entry))
 
     tail = "\n</body>\n</html>\n"
     return head + header + "\n".join(sections) + tail
@@ -220,14 +254,18 @@ def _render_article_card(entry: Dict[str, Any]) -> str:
     publish = entry.get("publish", "")
     dt = try_parse_dt(publish)
     if dt:
-        iso = dt.isoformat()
+        dt_bj = dt.astimezone(timezone(timedelta(hours=8)))
+        iso = dt_bj.isoformat()
         shown = human_time(publish)
     else:
         iso = escape(publish)
         shown = escape(publish)
 
     link = escape(entry.get("link", ""))
-    title = escape(entry.get("title", ""))
+    # Combine source and title: "{source}:{title}"
+    source = entry.get("source", "") or ""
+    raw_title = entry.get("title", "") or ""
+    title = escape(f"{source}:{raw_title}")
     evaluation = entry.get("evaluation")
 
     if evaluation:

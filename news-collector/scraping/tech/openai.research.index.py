@@ -9,34 +9,84 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-LIST_URL = "https://openai.com/zh-Hans-CN/research/index/"
-ARTICLE_BASE_URL = "https://openai.com/zh-Hans-CN/research/"
+ARTICLE_BASE_URL = "https://openai.com/research/"
+PRIMARY_LIST_URL = "https://openai.com/zh-Hans-CN/research/index/"
+# Fallbacks in case localized path is blocked or removed
+FALLBACK_LIST_URLS = (
+    "https://openai.com/zh-cn/research/",
+    "https://openai.com/research/",
+    "https://openai.com/research/index/",
+)
 SOURCE = "openai.research"
 CATEGORY = "tech"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+REQUEST_TIMEOUT = 30
+
 DEFAULT_HEADERS = {
     "User-Agent": UA,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
-    "Referer": "https://openai.com/zh-Hans-CN/research/",
+    "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+    "Referer": "https://openai.com/research/",
+    "Cache-Control": "no-cache",
 }
-REQUEST_TIMEOUT = 30
+
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
-def fetch_list_page(url: str = LIST_URL) -> str:
-    resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    return resp.text
+def _build_session() -> requests.Session:
+    s = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    s.headers.update(DEFAULT_HEADERS)
+    return s
+
+
+def fetch_list_page(url: str | None = None) -> str:
+    session = _build_session()
+    candidates = [url or PRIMARY_LIST_URL, *FALLBACK_LIST_URLS]
+    last_exc: Exception | None = None
+    for u in candidates:
+        try:
+            resp = session.get(u, timeout=REQUEST_TIMEOUT)
+            # Some geo/locale variants return 403; try next on 4xx except 404 redirects
+            if resp.status_code >= 400:
+                last_exc = Exception(f"HTTP {resp.status_code}")
+                continue
+            text = resp.text
+            if text and "__NEXT_DATA__" in text:
+                return text
+            # Accept non-Next pages too; we'll fallback parse
+            if text and len(text) > 2000:
+                return text
+        except Exception as exc:
+            last_exc = exc
+            continue
+    # If all attempts failed, raise last error for visibility
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("无法获取 OpenAI Research 列表页")
 
 
 def _load_next_data(html: str) -> Any:
     soup = BeautifulSoup(html, "html.parser")
     script = soup.select_one("script#__NEXT_DATA__")
     if not script or not script.string:
-        raise ValueError("未找到 __NEXT_DATA__ 脚本，页面结构可能已变化")
+        # Allow caller to fallback to HTML parsing
+        return None
     return json.loads(script.string)
 
 
@@ -134,30 +184,58 @@ def _extract_published(node: Dict[str, Any]) -> str:
 
 
 def parse_list(html: str) -> List[Dict[str, str]]:
-    data = _load_next_data(html)
     articles: List[Dict[str, str]] = []
     seen_urls: set[str] = set()
-    for node in _iter_dicts(data):
-        if not {"slug", "title"}.intersection(node.keys()):
-            continue
-        title = _extract_text(node.get("title")) or _extract_text(node.get("headline"))
-        if not title:
-            continue
-        slug = _extract_slug(node)
-        if not slug:
-            continue
-        url = urljoin(ARTICLE_BASE_URL, slug)
-        if url in seen_urls:
-            continue
-        published = _extract_published(node)
-        articles.append({
-            "title": title,
-            "url": url,
-            "published": published,
-            "source": SOURCE,
-            "category": CATEGORY,
-        })
-        seen_urls.add(url)
+
+    data = _load_next_data(html)
+    if data is not None:
+        for node in _iter_dicts(data):
+            if not {"slug", "title"}.intersection(node.keys()):
+                continue
+            title = _extract_text(node.get("title")) or _extract_text(node.get("headline"))
+            if not title:
+                continue
+            slug = _extract_slug(node)
+            if not slug:
+                continue
+            url = urljoin(ARTICLE_BASE_URL, slug)
+            if url in seen_urls:
+                continue
+            published = _extract_published(node)
+            articles.append({
+                "title": title,
+                "url": url,
+                "published": published,
+                "source": SOURCE,
+                "category": CATEGORY,
+            })
+            seen_urls.add(url)
+
+    # Fallback: parse from visible anchors if Next data missing
+    if not articles:
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.select("a[href^='/research/']"):
+            href = a.get("href") or ""
+            title = a.get_text(strip=True)
+            if not href or not title:
+                continue
+            url = urljoin("https://openai.com", href)
+            if url in seen_urls:
+                continue
+            # Try to find a nearby time element
+            published = ""
+            time_tag = a.find_next("time")
+            if time_tag:
+                published = _extract_text(time_tag.get("datetime") or time_tag.get_text())
+            articles.append({
+                "title": title,
+                "url": url,
+                "published": _extract_published({"date": published}) if published else "",
+                "source": SOURCE,
+                "category": CATEGORY,
+            })
+            seen_urls.add(url)
+
     def sort_key(item: Dict[str, str]) -> datetime:
         try:
             return datetime.fromisoformat(item["published"])

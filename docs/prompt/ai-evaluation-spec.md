@@ -1,123 +1,84 @@
-# AI Article Evaluation Integration Spec
+# AI 文章评估集成规范（中文）
 
-## 1. Background & Goals
-- **Objective**: Introduce an automated AI-powered evaluation pipeline that produces multi-dimensional recommendation scores, summaries, and review snippets for each article record stored in the `info` table.
-- **Scope**: Design configuration, data schema, prompting strategy, and orchestration scripts. No implementation yet—this document provides the blueprint.
+## 1. 背景与目标
+- 目标：为 `info` 表中的文章记录自动生成多维度评分、中文概要与评价，形成“是否值得推荐”的量化参考。
+- 范围：本规范约定配置、数据结构、提示词与调度脚本的设计，作为实现蓝图。
 
-## 2. High-Level Architecture
-1. **Data Source**: Existing `info` table rows that have associated `detail` content.
-2. **AI Evaluation Service**: An LLM provider accessed through a configurable HTTP API client. All endpoint URLs, model names, and API keys are read from the root-level `environment.yml` via Conda environment variables.
-3. **Prompt Layer**: Prompts live in dedicated files (one per task) under `prompts/ai/`. The evaluation script loads prompts at runtime, interpolates article metadata/content, and submits them to the AI service.
-4. **Result Storage**: A new database table (`info_ai_review`) stores scores, weighted recommendations, and AI feedback linked to the originating `info.id`.
-5. **Orchestration Script**: A manager command iterates over all `info` rows missing AI evaluations, requests scores, and writes results back.
+## 2. 总体架构
+1. 数据来源：`info` 表中的文章记录（可有 `detail` 正文）。
+2. 评估服务：通过可配置的 HTTP API 调用大语言模型（LLM），端点/模型/key 从 Conda 环境变量读取。
+3. 提示词层：`prompts/ai/` 下维护模板，脚本在运行时注入文章元数据与正文后发送至 LLM。
+4. 结果存储：新表 `info_ai_review` 按 `info.id` 进行 1:1 关联，保存维度分数与加权总分、AI 概要与评价。
+5. 调度脚本：遍历缺失评估的 `info` 行，批量请求并入库结果。
 
-## 3. Configuration & Secrets
-- Add environment variables to the Conda `environment.yml` (example names below; final values supplied externally):
-  - `AI_API_BASE_URL`
-  - `AI_API_MODEL`
-  - `AI_API_KEY`
-  - Optional tuning knobs (rate limits, temperature) may also be defined here via variables such as `AI_REQUEST_INTERVAL`, `AI_API_TIMEOUT`, or custom weight overrides.
-- The runtime code must read these variables using the existing configuration helper (if present) or `os.getenv`.
-- Never commit real keys. Document required variables in `docs/prompt/ai/README.md` (future task).
+## 3. 配置与密钥
+- 在 `environment.yml` 中声明：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`；可选：`AI_REQUEST_INTERVAL`、`AI_API_TIMEOUT`、`AI_SCORE_WEIGHTS`。
+- 程序通过 `os.getenv` 读取；严禁提交真实密钥。后续在 `docs/prompt/ai/README.md` 汇总环境变量说明。
 
-## 4. Prompt File Structure
-- Create `prompts/ai/` directory to store prompt templates (kept close to executable scripts rather than documentation).
-- Store the evaluation template in `prompts/ai/article_evaluation_zh.prompt`.
-- The template should instruct the model to:
-  1. Review the provided `detail` text.
-  2. Produce 1–5 scores for each recommendation angle (see §5).
-  3. Summarize the article in a single sentence.
-  4. Provide a one-sentence qualitative evaluation.
-  5. Return JSON with explicit fields for each score and message.
-- Include placeholder tokens (e.g., `{{title}}`, `{{detail}}`) to be substituted by the script.
-- All prompt instructions, the resulting summary, and the qualitative evaluation must be written in Simplified Chinese to align with downstream presentation.
+## 4. 提示词文件
+- 目录：`prompts/ai/`；评估模板：`prompts/ai/article_evaluation_zh.prompt`。
+- 模板要求模型：
+  1) 阅读 `detail` 正文；2) 对各维度给出 1–5 分；3) 生成一句话中文概要；4) 给出一句话中文评价；5) 仅返回约定 JSON。
+- 需包含占位符（如 `{{title}}`、`{{detail}}`），由脚本渲染；全部中文输出。
 
-## 5. Evaluation Dimensions & Weighting
-- Define a canonical set of recommendation angles (customizable later):
-  - `timeliness`
-  - `relevance`
-  - `insightfulness`
-  - `actionability`
-- Each score ranges from 1 (poor) to 5 (excellent).
-- Compute the final recommendation score as a weighted average. Initial weights:
-  - `timeliness`: 0.25
-  - `relevance`: 0.35
-  - `insightfulness`: 0.25
-  - `actionability`: 0.15
-- Store raw scores and final value in the database with precision that supports decimals (e.g., `NUMERIC(3,2)`).
-- Keep weights configurable via environment variables defined in `environment.yml` or a config module to allow future tuning.
+## 5. 评估维度与权重（更新版）
+- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）。
+- 分值范围：1（差）— 5（优）。
+- 初始权重（可用 `AI_SCORE_WEIGHTS` 覆盖）：
+  - `timeliness`: 0.10
+  - `game_relevance`: 0.30
+  - `ai_relevance`: 0.20
+  - `tech_relevance`: 0.10
+  - `quality`: 0.30
 
-## 6. Database Changes
-- Add migration to create `info_ai_review` table with the following columns:
-  | Column | Type | Constraints | Notes |
+### 维度定义与打分参考
+- 时效性 timeliness：内容与当前时间的相关程度；5=当天/最新事件；4=一周内热点；3=一月内一般新闻；2=旧闻但仍具参考；1=过时或无时间关联。
+- 游戏相关性 game_relevance：与游戏产业/产品/市场/发行/买量/数据等贴合程度；5=深度聚焦核心议题/数据/案例，1=无关。
+- AI 相关性 ai_relevance：与 AI 技术/模型/工具链/评测/应用相关程度；5=直指模型/算法/评测或标杆案例，1=无关。
+- 科技相关性 tech_relevance：与芯片/云/硬件/互联网基础设施等关联性；5=面向科技产业核心构件或生态，1=无关。
+- 文章质量 quality：结构清晰、论证完整、数据/引用可靠、信息密度高、废话少、可读性好；5=结构严谨数据充分，1=水文或缺乏依据。
+
+## 6. 数据库（建议）
+- 新建 `info_ai_review` 含以下列（与 `info(id)` 1:1）：
+  | 列名 | 类型 | 约束 | 说明 |
   | --- | --- | --- | --- |
-  | `id` | INTEGER | PRIMARY KEY, references `info.id` | Shares IDs with `info`; ensures 1:1 relation. |
-  | `final_score` | NUMERIC(3,2) | NOT NULL | Weighted average of angle scores. |
-  | `timeliness_score` | SMALLINT | NOT NULL | 1–5 inclusive. |
-  | `relevance_score` | SMALLINT | NOT NULL | 1–5 inclusive. |
-  | `insightfulness_score` | SMALLINT | NOT NULL | 1–5 inclusive. |
-  | `actionability_score` | SMALLINT | NOT NULL | 1–5 inclusive. |
-  | `ai_summary` | TEXT | NOT NULL | One-sentence summary. |
-  | `ai_comment` | TEXT | NOT NULL | One-sentence qualitative evaluation. |
-  | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | Audit trail. |
-  | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP | For future updates (trigger can auto-update). |
-- Ensure a unique constraint on `id` to prevent duplicates.
-- Consider indexes on `final_score` for faster ranking queries.
+  | `info_id` | INTEGER | PRIMARY KEY, REFERENCES `info(id)` | 唯一关联 |
+  | `final_score` | NUMERIC(3,2) | NOT NULL | 加权总分 |
+  | `timeliness_score` | SMALLINT | NOT NULL | 1–5 |
+  | `game_relevance_score` | SMALLINT | NOT NULL | 1–5 |
+  | `ai_relevance_score` | SMALLINT | NOT NULL | 1–5 |
+  | `tech_relevance_score` | SMALLINT | NOT NULL | 1–5 |
+  | `quality_score` | SMALLINT | NOT NULL | 1–5 |
+  | `ai_summary` | TEXT | NOT NULL | 一句话概要 |
+  | `ai_comment` | TEXT | NOT NULL | 一句话评价 |
+  | `raw_response` | TEXT |  | 原始响应 |
+  | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |  |
+  | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |  |
+- 为 `final_score` 与时间列增加索引，便于排序与筛选。
 
-## 7. Manager Script Responsibilities
-- Location: `manager/ai_evaluate.py` (new file).
-- Key steps:
-  1. Initialize database session/connection using existing helpers.
-  2. Fetch `info` rows where no matching `info_ai_review` row exists.
-  3. For each row:
-     - Load the evaluation prompt template.
-     - Substitute placeholders with article metadata (`title`, `source`, `detail`, etc.).
-     - Call the AI API with proper retry logic and rate-limiting compliance.
-     - Parse JSON response and validate score ranges.
-     - Compute weighted final score.
-     - Insert row into `info_ai_review`.
-  4. Log successes/failures; skip or quarantine problematic articles without halting the batch.
-- Include CLI arguments for batch size and dry-run mode (optional enhancement).
-- Ensure the script can optionally sleep between requests based on an `AI_REQUEST_INTERVAL` variable to respect rate limits.
+## 7. 管理脚本职责
+- 位置：`news-collector/manager/ai_evaluate.py`。
+- 核心流程：选择缺评估的 `info` 行 → 渲染提示词 → 调用 API（重试/限速）→ 校验字段 → 写入 `info_ai_review`。
+- 注意：评估阶段不必计算“加权总分”，只需存储各维度评分、`comment` 与 `summary`。总分由展示层在渲染时按当前权重规则动态计算。
+- CLI：支持 `--limit`、`--dry-run`、`--hours`（时间窗筛选）。
 
-## 8. Writer Output Enhancements
-- Update `manager/info_writer.py` so every article entry displays:
-  - A prominently styled overall recommendation expressed as Chinese star ratings (`★` for each point) alongside the numeric weighted score.
-  - A per-dimension breakdown showing 1–5 scores for the defined angles.
-  - The one-sentence AI comment and AI summary, both rendered in Chinese beneath the headline for quick scanning.
-- Ensure the HTML layout groups these elements in a readable card-like block, gracefully handling articles that still lack AI evaluations (show a clear placeholder message).
+## 8. 展示层输出
+- `manager/info_writer.py` 展示：总分（星级+数值）+ 各维度分 + 中文评价/概要；缺评估显示占位提示。
 
-## 9. AI Client Implementation Notes
-- Build a reusable `services/ai_client.py` (future task) that:
-  - Reads configuration from environment variables.
-  - Accepts prompt text and returns parsed JSON.
-  - Handles HTTP errors, timeouts, retries, and JSON validation.
-- Keep response schema validation strict—verify numeric ranges and required fields before writing to DB.
+## 9. AI 客户端实现要点
+- 从环境变量加载配置；处理网络错误/超时/重试；严格校验 JSON 字段与分值区间。
 
-## 10. Error Handling & Monitoring
-- Retry transient API failures with exponential backoff (configurable attempt count).
-- On repeated failure, log the `info.id` and continue with the next row.
-- Implement validation to ensure each score is an integer between 1 and 5; reject invalid payloads.
-- Potentially log AI outputs to a debug table or file for auditing (optional future enhancement).
+## 10. 错误处理与监控
+- 指数退避重试；失败个例记录 `info_id` 并继续；可选审计/调试日志。
 
 ## 11. Security & Compliance
 - Store secrets via environment variables managed by Conda (`environment.yml`); never log API keys.
 - Redact article content in logs when unnecessary.
 - Respect API usage policies and document request volumes.
 
-## 12. Testing & Verification Plan
-- Unit tests for:
-  - Prompt rendering (ensure placeholders filled correctly).
-  - AI client response parsing and validation.
-  - Weighted average computation.
-- Integration test stub simulating API responses via fixtures.
-- Manual test procedure:
-  1. Populate the Conda environment variables with test credentials or point the base URL to a mock server.
-  2. Run `python manager/ai_evaluate.py --dry-run` to validate flow.
-  3. Inspect database for new `info_ai_review` entries.
+## 12. 测试与验收
+- 单元：提示词渲染、响应解析与校验、加权逻辑；集成：模拟 API 响应。
+- 手动：配置测试 Key → 运行 `python manager/ai_evaluate.py --dry-run` → 检查 `info_ai_review`。
 
-## 13. Rollout Considerations
-- Backfill existing records via the manager script.
-- Schedule periodic re-runs if article content changes or weights are updated.
-- Communicate the new table schema to downstream consumers (dashboards, analytics).
-
+## 13. 发布与回填
+- 回填历史记录；权重更新时可定期重跑；同步表结构与输出格式给下游。

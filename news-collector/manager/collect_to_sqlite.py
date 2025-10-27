@@ -36,10 +36,10 @@ def _load_module(path: Path):
 
 def _to_entry_dicts(mod) -> List[Dict[str, Any]]:
     # Priority 1: explicit collectors that already return list[dict]
-    if hasattr(mod, "collect_latest_posts"):
-        return list(getattr(mod, "collect_latest_posts")())
-    if hasattr(mod, "collect_latest_digest"):
-        return list(getattr(mod, "collect_latest_digest")())
+    for name in ("collect_latest", "collect_latest_posts", "collect_latest_digest"):
+        fn = getattr(mod, name, None)
+        if callable(fn):
+            return list(fn())
 
     # Priority 2: homepage + collector pattern (e.g., youxituoluo)
     if hasattr(mod, "fetch_homepage") and hasattr(mod, "collect_articles"):
@@ -50,9 +50,28 @@ def _to_entry_dicts(mod) -> List[Dict[str, Any]]:
             items = list(getattr(mod, "sort_articles")(items))
         return items
 
-    # Priority 3: RSS style with (fetch_feed, collect_entries|process_entries)
+    # Priority 3: “trending API” style (e.g., huggingface.papers.trending)
+    if hasattr(mod, "fetch_trending") and hasattr(mod, "process_papers"):
+        raw = getattr(mod, "fetch_trending")()
+        return list(getattr(mod, "process_papers")(raw))
+
+    # Priority 4: list page + parser (e.g., openai.research.index)
+    if hasattr(mod, "fetch_list_page") and hasattr(mod, "parse_list"):
+        html = getattr(mod, "fetch_list_page")()
+        return list(getattr(mod, "parse_list")(html))
+
+    # Priority 5: RSS style with (fetch_feed, collect_entries|process_entries)
     if hasattr(mod, "fetch_feed"):
-        feed = getattr(mod, "fetch_feed")(getattr(mod, "RSS_URL", None))
+        fetch = getattr(mod, "fetch_feed")
+        try:
+            feed = fetch()  # Prefer module defaults
+        except TypeError:
+            url = (
+                getattr(mod, "RSS_URL", None)
+                or getattr(mod, "FEED_URL", None)
+                or getattr(mod, "URL", None)
+            )
+            feed = fetch(url)
         if hasattr(mod, "collect_entries"):
             return list(getattr(mod, "collect_entries")(feed))
         if hasattr(mod, "process_entries"):
@@ -151,6 +170,48 @@ def _update_detail(conn: sqlite3.Connection, link: str, detail: str) -> None:
     conn.commit()
 
 
+def _backfill_missing_details(
+    conn: sqlite3.Connection,
+    mod,
+    source_hint: Optional[str] = None,
+    limit: int = 10,
+) -> None:
+    """Fetch and store details for recent rows that are missing it.
+
+    - Restricts by source using the module's SOURCE constant when available.
+    - Only runs when the module provides fetch_article_detail.
+    - Limits the number of backfilled rows per module per run to avoid overload.
+    """
+    fetcher = getattr(mod, "fetch_article_detail", None)
+    if not callable(fetcher):
+        return
+    src = source_hint or (getattr(mod, "SOURCE", "") or "").strip()
+    if not src:
+        return
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT link FROM info
+        WHERE source = ? AND (detail IS NULL OR TRIM(detail) = '')
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (src, int(limit)),
+    )
+    rows = cur.fetchall()
+    for (link,) in rows:
+        try:
+            detail = (fetcher(link) or "").strip()
+            if detail:
+                _update_detail(conn, link, detail)
+                try:
+                    print(f"  明细回填成功: {link} - {len(detail)} 字符")
+                except Exception:
+                    print(f"  明细回填成功: {link}")
+        except Exception as ex:
+            print(f"  明细回填失败: {link} - {ex}")
+
+
 def main() -> None:
     print(f"收集目录: {SCRAPING_DIR}")
     if not SCRAPING_DIR.exists():
@@ -161,6 +222,9 @@ def main() -> None:
     # Recursively discover scraper scripts (e.g., scraping/game/*.py)
     for path in sorted(SCRAPING_DIR.rglob("*.py")):
         if path.name.startswith("__"):
+            continue
+        # Skip test modules if present under scraping/tests
+        if path.name.startswith("test_") or "tests" in path.parts:
             continue
         modules.append(path)
 
@@ -199,12 +263,30 @@ def main() -> None:
                                 detail = (detail or "").strip()
                                 if detail:
                                     _update_detail(conn, e.link, detail)
+                                    # Log success for visibility when detail is stored
+                                    try:
+                                        print(f"  明细抓取成功: {e.link} - {len(detail)} 字符")
+                                    except Exception:
+                                        # Length calculation/logging should not break flow
+                                        print(f"  明细抓取成功: {e.link}")
                             except Exception as ex:
                                 # Non-fatal: continue with others
                                 print(f"  明细抓取失败: {e.link} - {ex}")
                     else:
                         # No site-specific fetcher provided; skip silently
                         pass
+
+                # Backfill: for this source, attempt to fill missing details on recent rows
+                try:
+                    _backfill_missing_details(
+                        conn,
+                        mod,
+                        source_hint=str(getattr(mod, "SOURCE", "")),
+                        limit=5,
+                    )
+                except Exception:
+                    # Non-fatal
+                    pass
             except Exception as exc:
                 print(f"{path.name}: 处理失败 - {exc}")
 

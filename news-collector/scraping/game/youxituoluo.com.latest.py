@@ -7,6 +7,8 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 BASE_URL = "https://www.youxituoluo.com"
 HOMEPAGE_URL = f"{BASE_URL}/"
@@ -20,11 +22,36 @@ USER_AGENT = (
 )
 
 
+def _build_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=3,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update(
+        {
+            "User-Agent": USER_AGENT,
+            "Referer": BASE_URL,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
+        }
+    )
+    return session
+
+
 def fetch_homepage() -> str:
     """Fetch the homepage HTML of 游戏陀螺."""
 
-    headers = {"User-Agent": USER_AGENT, "Referer": BASE_URL}
-    response = requests.get(HOMEPAGE_URL, headers=headers, timeout=20)
+    session = _build_session()
+    response = session.get(HOMEPAGE_URL, timeout=15)
     response.raise_for_status()
     return response.text
 
@@ -318,8 +345,8 @@ def _pick_main_detail(soup: BeautifulSoup):
 
 
 def fetch_article_detail(url: str) -> str:
-    headers = {"User-Agent": USER_AGENT, "Referer": BASE_URL}
-    resp = requests.get(url, headers=headers, timeout=20)
+    session = _build_session()
+    resp = session.get(url, timeout=20)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup.find_all([

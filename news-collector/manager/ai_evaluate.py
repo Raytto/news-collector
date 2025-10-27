@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -14,13 +15,22 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT.parent / "data"
 DB_PATH = DATA_DIR / "info.db"
-PROMPT_PATH = ROOT / "prompts" / "ai" / "article_evaluation_zh.prompt"
+# Resolve prompt path from multiple common locations
+_PROMPT_FILE = "article_evaluation_zh.prompt"
+_PROMPT_ENV = os.getenv("AI_PROMPT_PATH")
+_PROMPT_CANDIDATES = [
+    Path(_PROMPT_ENV) if _PROMPT_ENV else None,
+    ROOT / "prompts" / "ai" / _PROMPT_FILE,
+    ROOT.parent / "prompts" / "ai" / _PROMPT_FILE,
+]
+PROMPT_PATH = next((p for p in _PROMPT_CANDIDATES if p and p.exists()), _PROMPT_CANDIDATES[1])
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.25,
-    "relevance": 0.35,
-    "insightfulness": 0.25,
-    "actionability": 0.15,
+    "timeliness": 0.20,
+    "game_relevance": 0.25,
+    "ai_relevance": 0.20,
+    "tech_relevance": 0.15,
+    "quality": 0.20,
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DEFAULT_WEIGHTS.keys())
 
@@ -43,9 +53,10 @@ class EvaluationResult:
     info_id: int
     final_score: float
     timeliness: int
-    relevance: int
-    insightfulness: int
-    actionability: int
+    game_relevance: int
+    ai_relevance: int
+    tech_relevance: int
+    quality: int
     comment: str
     summary: str
     raw_response: str
@@ -54,6 +65,7 @@ class EvaluationResult:
 @dataclass
 class AIConfig:
     base_url: str
+    api_path: str
     model: str
     api_key: str
     timeout: float
@@ -68,7 +80,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=50, help="本次最多处理的资讯条数 (默认: 50)")
     parser.add_argument("--overwrite", action="store_true", help="已存在评价时重新生成并覆盖")
     parser.add_argument("--dry-run", action="store_true", help="仅打印结果，不写入数据库")
+    parser.add_argument("--prompt", default=str(PROMPT_PATH), help="提示词文件路径 (默认: 自动探测)")
+    parser.add_argument("--hours", type=int, default=24, help="仅处理最近 N 小时内的资讯 (默认: 24)")
+    parser.add_argument("--category", action="append", default=[], help="仅评估指定分类，可重复传入 (例如: --category game)")
+    parser.add_argument("--source", action="append", default=[], help="仅评估指定来源标识，可重复传入 (例如: --source chuapp)")
     return parser.parse_args()
+
+
+def _try_parse_dt(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        pass
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
+        try:
+            dt = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            continue
+    return None
 
 
 def load_prompt(path: Path) -> Tuple[str, str]:
@@ -101,6 +146,14 @@ def load_config() -> AIConfig:
     if not base_url or not model or not api_key:
         raise SystemExit("AI_API_BASE_URL、AI_API_MODEL、AI_API_KEY 必须通过环境变量提供")
 
+    # Optional custom path (OpenAI compatible default)
+    api_path = os.getenv("AI_API_PATH", "/v1/chat/completions").strip() or "/v1/chat/completions"
+
+    # Normalize base_url: strip trailing slash and trailing "/v1" segment to avoid double /v1
+    base = base_url.rstrip("/")
+    if base.lower().endswith("/v1"):
+        base = base.rsplit("/", 1)[0]
+
     timeout = float(os.getenv("AI_API_TIMEOUT", "30") or 30)
     interval = float(os.getenv("AI_REQUEST_INTERVAL", "0") or 0)
     max_retries = int(os.getenv("AI_MAX_RETRIES", "3") or 3)
@@ -118,7 +171,8 @@ def load_config() -> AIConfig:
             raise SystemExit("AI_SCORE_WEIGHTS 必须是 JSON 对象，例如 {\"timeliness\":0.3,...}")
 
     return AIConfig(
-        base_url=base_url.rstrip("/"),
+        base_url=base,
+        api_path=api_path,
         model=model,
         api_key=api_key,
         timeout=timeout,
@@ -135,9 +189,10 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             info_id INTEGER PRIMARY KEY,
             final_score REAL NOT NULL,
             timeliness_score INTEGER NOT NULL,
-            relevance_score INTEGER NOT NULL,
-            insightfulness_score INTEGER NOT NULL,
-            actionability_score INTEGER NOT NULL,
+            game_relevance_score INTEGER,
+            ai_relevance_score INTEGER,
+            tech_relevance_score INTEGER,
+            quality_score INTEGER,
             ai_comment TEXT NOT NULL,
             ai_summary TEXT NOT NULL,
             raw_response TEXT,
@@ -147,24 +202,57 @@ def ensure_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Backfill/migrate: add new columns if missing
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(info_ai_review)")}
+        for col in ("game_relevance_score", "ai_relevance_score", "tech_relevance_score", "quality_score"):
+            if col not in cols:
+                conn.execute(f"ALTER TABLE info_ai_review ADD COLUMN {col} INTEGER")
+        conn.commit()
+    except Exception:
+        pass
 
 
-def fetch_candidates(conn: sqlite3.Connection, limit: int, overwrite: bool) -> List[Article]:
-    sql = (
-        "SELECT i.id, i.title, i.source, i.publish, i.detail "
-        "FROM info AS i "
-        "LEFT JOIN info_ai_review AS r ON r.info_id = i.id "
-        "WHERE i.detail IS NOT NULL AND TRIM(i.detail) <> '' "
-    )
-    if overwrite:
-        sql += "ORDER BY i.id DESC LIMIT ?"
-    else:
-        sql += "AND r.info_id IS NULL ORDER BY i.id DESC LIMIT ?"
-    cur = conn.execute(sql, (limit,))
-    rows = cur.fetchall()
+def fetch_candidates(
+    conn: sqlite3.Connection,
+    limit: int,
+    overwrite: bool,
+    hours: int,
+    categories: List[str] | None = None,
+    sources: List[str] | None = None,
+) -> List[Article]:
+    """Return info rows to evaluate.
+
+    Logic: evaluate any `info` rows whose `id` is not present in `info_ai_review`
+    (unless --overwrite is set, which ignores existing reviews). No requirement
+    on `detail` being present; prompt will receive an empty detail string when
+    unavailable.
+    """
+    rows = conn.execute(
+        """
+        SELECT i.id, i.title, i.source, i.publish, i.detail, i.category,
+               r.info_id IS NOT NULL AS has_review
+        FROM info AS i
+        LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+        ORDER BY i.id DESC
+        """
+    ).fetchall()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
     articles: List[Article] = []
+    cat_whitelist = set((categories or []))
+    src_whitelist = set((sources or []))
+
     for row in rows:
-        info_id, title, source, publish, detail = row
+        info_id, title, source, publish, detail, category, has_review = row
+        if cat_whitelist and str(category or "") not in cat_whitelist:
+            continue
+        if src_whitelist and str(source or "") not in src_whitelist:
+            continue
+        if not overwrite and has_review:
+            continue
+        dt = _try_parse_dt(str(publish or ""))
+        if not dt or dt < cutoff:
+            continue
         articles.append(
             Article(
                 info_id=int(info_id),
@@ -174,11 +262,13 @@ def fetch_candidates(conn: sqlite3.Connection, limit: int, overwrite: bool) -> L
                 detail=str(detail or ""),
             )
         )
+        if len(articles) >= int(limit):
+            break
     return articles
 
 
 def request_ai(config: AIConfig, system_prompt: str, user_prompt: str) -> str:
-    url = f"{config.base_url}/v1/chat/completions"
+    url = f"{config.base_url.rstrip('/')}/{config.api_path.lstrip('/')}"
     headers = {
         "Authorization": f"Bearer {config.api_key}",
         "Content-Type": "application/json",
@@ -259,9 +349,10 @@ def validate_scores(data: Dict[str, object]) -> EvaluationResult:
         info_id=0,
         final_score=0.0,  # placeholder, 将在外部计算
         timeliness=scores["timeliness"],
-        relevance=scores["relevance"],
-        insightfulness=scores["insightfulness"],
-        actionability=scores["actionability"],
+        game_relevance=scores["game_relevance"],
+        ai_relevance=scores["ai_relevance"],
+        tech_relevance=scores["tech_relevance"],
+        quality=scores["quality"],
         comment=comment.strip().replace("\n", " "),
         summary=summary.strip().replace("\n", " "),
         raw_response="",
@@ -292,20 +383,22 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             info_id,
             final_score,
             timeliness_score,
-            relevance_score,
-            insightfulness_score,
-            actionability_score,
+            game_relevance_score,
+            ai_relevance_score,
+            tech_relevance_score,
+            quality_score,
             ai_comment,
             ai_summary,
             raw_response,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(info_id) DO UPDATE SET
             final_score=excluded.final_score,
             timeliness_score=excluded.timeliness_score,
-            relevance_score=excluded.relevance_score,
-            insightfulness_score=excluded.insightfulness_score,
-            actionability_score=excluded.actionability_score,
+            game_relevance_score=excluded.game_relevance_score,
+            ai_relevance_score=excluded.ai_relevance_score,
+            tech_relevance_score=excluded.tech_relevance_score,
+            quality_score=excluded.quality_score,
             ai_comment=excluded.ai_comment,
             ai_summary=excluded.ai_summary,
             raw_response=excluded.raw_response,
@@ -315,9 +408,10 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             evaluation.info_id,
             evaluation.final_score,
             evaluation.timeliness,
-            evaluation.relevance,
-            evaluation.insightfulness,
-            evaluation.actionability,
+            evaluation.game_relevance,
+            evaluation.ai_relevance,
+            evaluation.tech_relevance,
+            evaluation.quality,
             evaluation.comment,
             evaluation.summary,
             evaluation.raw_response,
@@ -351,7 +445,8 @@ def evaluate_articles(
 
         result.info_id = article.info_id
         result.raw_response = raw_text
-        result.final_score = compute_final_score(result, config.weights)
+        # 不在评估阶段计算加权总分，交由 Writer 按当前规则动态计算。
+        result.final_score = 0.0
 
         if dry_run:
             print(
@@ -376,7 +471,8 @@ def evaluate_articles(
 def main() -> None:
     args = parse_args()
     config = load_config()
-    system_prompt, user_template = load_prompt(PROMPT_PATH)
+    prompt_path = Path(args.prompt) if args.prompt else PROMPT_PATH
+    system_prompt, user_template = load_prompt(prompt_path)
     limit = max(1, int(args.limit))
 
     db_path = Path(args.db)
@@ -385,7 +481,14 @@ def main() -> None:
 
     with sqlite3.connect(str(db_path)) as conn:
         ensure_table(conn)
-        articles = fetch_candidates(conn, limit, args.overwrite)
+        articles = fetch_candidates(
+            conn,
+            limit,
+            args.overwrite,
+            args.hours,
+            categories=args.category,
+            sources=args.source,
+        )
         if not articles:
             print("没有待处理的资讯")
             return

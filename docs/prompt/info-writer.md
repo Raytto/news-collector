@@ -10,16 +10,18 @@ HTML 输出规范：
 - 文档结构：
   - <!doctype html>
   - <html lang="zh-CN">，<meta charset="utf-8">，<title>最近 X 小时资讯汇总</title>
-- 头部信息：页面顶部展示“生成时间（UTC）”与“合计条数”。
-- 分组展示：按来源 source 分组，每组使用 <h2>source</h2> 作为小节标题。
-- 条目格式：按发布时间倒序列出为无序列表 <ul>；单条为：
-  - <li><time datetime="ISO8601">YYYY-MM-DD HH:MM UTC</time> — <a href="URL" target="_blank" rel="noopener noreferrer">标题</a></li>
-  - time 元素的 datetime 使用 ISO-8601（如 2025-10-24T14:27:00+00:00）
+- 头部信息：页面顶部展示“生成时间（北京时间）”与“合计条数”。
+- 分组展示：按“品类 category”分组，组内不再按来源拆分；每条标题显示为“{source}:{title}”。
+- 条目格式：使用卡片样式；time 显示为北京时间，`datetime` 为 ISO-8601（+08:00）。
 - 字符集：UTF-8；可在 <head> 中内联一小段 CSS 以提升可读性（如字号、行距、颜色）。
 
 排序与筛选：
 - 仅包含能够解析为时间的 publish 值；其余记录忽略。
-- 各来源分组内按发布时间（降序）排序；分组按来源名（字母序）排序。
+- 组内按“加权总分”降序，再以发布时间降序打破并列。
+- 默认权重遵循 docs/prompt/ai-evaluation-spec.md：
+  - timeliness 0.20，game_relevance 0.25，ai_relevance 0.20，tech_relevance 0.15，quality 0.20。
+  - Writer 在渲染阶段根据各维度分数动态计算总分，不依赖数据库中的 final_score。
+  - 如需为不同用户群体定制，可按需求调整 info_writer.py 中的权重映射。
 
 可选增强（非强制）：
 - 在页面顶部加入来源统计（每个来源的条目数）。

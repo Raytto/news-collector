@@ -28,6 +28,9 @@ run_once() {
   echo "[INFO] Collecting latest into SQLite..." >&2
   $PYTHON "$ROOT_DIR/news-collector/manager/collect_to_sqlite.py"
 
+  echo "[INFO] Running AI evaluation for recent 24h..." >&2
+  $PYTHON "$ROOT_DIR/news-collector/manager/ai_evaluate.py" --hours 24 --limit 400 || true
+
   ts="$(date +%y%m%d-%H%M%S)"
   out_file="$OUT_DIR/${ts}-24h-info.html"
 
@@ -60,4 +63,3 @@ while true; do
   run_once || true
   sleep_until_1030_tomorrow
 done
-

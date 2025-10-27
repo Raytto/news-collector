@@ -19,13 +19,35 @@ UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+DEFAULT_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/atom+xml, application/xml;q=0.9, */*;q=0.8",
+}
 
 
 def fetch_feed(url: str = API_URL) -> feedparser.FeedParserDict:
-    """Fetch the Atom feed for the latest cs.AI submissions."""
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=30)
+    """Fetch the Atom feed for the latest cs.AI submissions.
+
+    Uses bytes content to avoid encoding pitfalls and retries http scheme as
+    a fallback if https endpoint returns non-XML (e.g., a soft block page).
+    """
+    resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=30)
     resp.raise_for_status()
-    return feedparser.parse(resp.text)
+    feed = feedparser.parse(resp.content)
+    # If the response wasn't valid XML and yielded no entries, retry with http
+    if getattr(feed, "bozo", False) and not getattr(feed, "entries", None):
+        if url.startswith("https://export.arxiv.org"):
+            fallback = url.replace("https://", "http://", 1)
+            try:
+                r2 = requests.get(fallback, headers=DEFAULT_HEADERS, timeout=30)
+                r2.raise_for_status()
+                feed2 = feedparser.parse(r2.content)
+                # Only replace if we actually parsed items
+                if getattr(feed2, "entries", None):
+                    feed = feed2
+            except Exception:
+                pass
+    return feed
 
 
 def _normalize_iso(dt_str: str) -> str:
@@ -69,7 +91,7 @@ def parse_datetime(entry: feedparser.FeedParserDict) -> datetime | None:
 
 def process_entries(feed: feedparser.FeedParserDict) -> List[Dict[str, str]]:
     results: List[Dict[str, str]] = []
-    for entry in feed.entries:
+    for entry in getattr(feed, "entries", []):
         title = entry.get("title", "").strip()
         link = entry.get("link", "").strip() or next(
             (l.get("href") for l in entry.get("links", []) if l.get("rel") == "alternate"),
@@ -104,6 +126,12 @@ def process_entries(feed: feedparser.FeedParserDict) -> List[Dict[str, str]]:
 
     results.sort(key=sort_key, reverse=True)
     return results
+
+
+def collect_latest(limit: int = 20) -> List[Dict[str, str]]:
+    feed = fetch_feed(API_URL)
+    items = process_entries(feed)
+    return items[:limit]
 
 
 def _clean_text(text: str) -> str:

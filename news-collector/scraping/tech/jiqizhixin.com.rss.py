@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
-from typing import Any, List
+from typing import Any, List, Dict, Iterable
 
-import feedparser
 import requests
 from bs4 import BeautifulSoup
 
@@ -13,86 +11,65 @@ SOURCE = "jiqizhixin"
 CATEGORY = "tech"
 
 BASE_URL = "https://www.jiqizhixin.com"
-FEED_URL = f"{BASE_URL}/rss"
+LIST_URL = f"{BASE_URL}/"
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
 TIMEOUT = 30
+HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.6",
+    "Referer": BASE_URL,
+}
 
 
-def _entry_get(entry: Any, key: str) -> Any:
-    if isinstance(entry, dict):
-        return entry.get(key)
-    return getattr(entry, key, None)
+def fetch_list_page(url: str = LIST_URL) -> str:
+    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+    resp.raise_for_status()
+    return resp.text
 
 
-def fetch_feed(url: str = FEED_URL) -> feedparser.FeedParserDict:
-    """Fetch the RSS feed for 机器之心."""
-
-    response = requests.get(url, headers={"User-Agent": UA}, timeout=TIMEOUT)
-    response.raise_for_status()
-    return feedparser.parse(response.content)
-
-
-def _parse_struct_time(value: Any) -> datetime | None:
+def _to_iso8601(value: Any) -> str:
     if value is None:
-        return None
-    if hasattr(value, "tm_year"):
+        return ""
+    if isinstance(value, (int, float)):
         try:
-            return datetime(
-                value.tm_year,
-                value.tm_mon,
-                value.tm_mday,
-                value.tm_hour,
-                value.tm_min,
-                value.tm_sec,
-                tzinfo=timezone.utc,
-            )
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
         except Exception:
-            return None
-    if isinstance(value, (tuple, list)) and len(value) >= 6:
+            return ""
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return ""
         try:
-            return datetime(*value[:6], tzinfo=timezone.utc)
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc).isoformat()
         except Exception:
-            return None
-    return None
-
-
-def _parse_datetime(entry: Any) -> datetime | None:
-    """Parse the published datetime from a feed entry."""
-
-    for key in ("published_parsed", "updated_parsed", "created_parsed"):
-        candidate = _entry_get(entry, key)
-        dt = _parse_struct_time(candidate)
-        if dt:
-            return dt
-
-    for key in ("published", "updated", "created"):
-        raw = _entry_get(entry, key)
-        if not raw or not isinstance(raw, str):
-            continue
-        text = raw.strip()
-        if not text:
-            continue
-        try:
-            dt = parsedate_to_datetime(text)
-        except Exception:
+            pass
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
             try:
-                dt = datetime.fromisoformat(text)
+                dt = datetime.strptime(raw[:10], fmt).replace(tzinfo=timezone.utc)
+                return dt.isoformat()
             except Exception:
                 continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+        m = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", raw)
+        if m:
+            try:
+                dt = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                return dt.isoformat()
+            except Exception:
+                pass
+    return ""
 
-    return None
 
-
-def _normalize_url(link: str) -> str:
-    if not link:
+def _normalize_url(href: str) -> str:
+    if not href:
         return ""
-    text = link.strip()
+    text = href.strip()
     if not text:
         return ""
     if text.startswith("//"):
@@ -104,82 +81,71 @@ def _normalize_url(link: str) -> str:
     return f"{BASE_URL}{text}"
 
 
-def _extract_entry_html(entry: Any) -> str:
-    content = _entry_get(entry, "content")
-    if isinstance(content, (list, tuple)):
-        for item in content:
-            if isinstance(item, dict):
-                html = item.get("value")
-            else:
-                html = getattr(item, "value", None)
-            if html:
-                return str(html)
-
-    summary_detail = _entry_get(entry, "summary_detail")
-    if summary_detail:
-        html = _entry_get(summary_detail, "value")
-        if html:
-            return str(html)
-
-    summary = _entry_get(entry, "summary")
-    if isinstance(summary, str) and summary.strip():
-        return summary
-
-    return ""
-
-
-def _extract_entry_detail(entry: Any) -> str:
-    html = _extract_entry_html(entry)
-    if not html:
-        return ""
-
+def parse_list(html: str) -> List[Dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
-    _strip_noise(soup)
-    main = _pick_main(soup)
-    text = main.get_text("\n", strip=True)
-    return _clean_text(text)
+    items: List[Dict[str, str]] = []
 
+    # Common homepage/article blocks
+    candidates = soup.select(
+        "article, .article, .post, li, .news-item, .list-item, .card"
+    )
+    if not candidates:
+        candidates = soup.find_all("a", href=True)
 
-def process_entries(feed: feedparser.FeedParserDict) -> List[dict]:
-    results: List[dict] = []
-
-    for entry in getattr(feed, "entries", []):
-        title = _entry_get(entry, "title") or ""
-        link = _entry_get(entry, "link") or ""
-        published_dt = _parse_datetime(entry)
-        published = published_dt.isoformat() if published_dt else ""
-        detail = _extract_entry_detail(entry)
-
-        title = title.strip()
-        link = _normalize_url(link)
-
-        if not title or not link:
+    for node in candidates:
+        a = node.find("a", href=True) if hasattr(node, "find") else node
+        if not a:
+            continue
+        href = a.get("href") or ""
+        if not href:
+            continue
+        url = _normalize_url(href)
+        # Heuristic: focus on site-local content paths
+        if BASE_URL not in url:
+            continue
+        title = a.get_text(strip=True) or (node.get_text(strip=True) if hasattr(node, "get_text") else "")
+        if not title:
             continue
 
-        results.append(
-            {
-                "title": title,
-                "url": link,
-                "published": published,
-                "source": SOURCE,
-                "category": CATEGORY,
-                "detail": detail,
-            }
-        )
+        pub = ""
+        t = node.find("time") if hasattr(node, "find") else None
+        if t and (t.get("datetime") or t.get_text(strip=True)):
+            pub = _to_iso8601(t.get("datetime") or t.get_text(strip=True))
+        if not pub and hasattr(node, "find"):
+            meta = node.find("meta", attrs={"property": "article:published_time"})
+            if meta and meta.get("content"):
+                pub = _to_iso8601(meta["content"])  
 
-    def sort_key(item: dict) -> datetime:
+        items.append({
+            "title": title,
+            "url": url,
+            "published": pub,
+            "source": SOURCE,
+            "category": CATEGORY,
+        })
+
+    # Deduplicate and sort
+    seen = set()
+    unique: List[Dict[str, str]] = []
+    for it in items:
+        u = it.get("url")
+        if u and u not in seen:
+            seen.add(u)
+            unique.append(it)
+
+    def sort_key(it: Dict[str, str]):
         try:
-            return datetime.fromisoformat(item["published"])
+            return datetime.fromisoformat((it.get("published") or "").replace("Z", "+00:00"))
         except Exception:
             return datetime.min.replace(tzinfo=timezone.utc)
 
-    results.sort(key=sort_key, reverse=True)
-    return results
+    unique.sort(key=sort_key, reverse=True)
+    return unique
 
 
 def collect_latest(limit: int = 20) -> List[dict]:
-    feed = fetch_feed()
-    entries = process_entries(feed)
+    html = fetch_list_page(LIST_URL)
+    entries = parse_list(html)
     return entries[:limit]
 
 
