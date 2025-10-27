@@ -205,6 +205,7 @@ def main() -> None:
         if link in seen_links:
             continue
         seen_links.add(link)
+        source_str = str(source or "").strip()
         eva = {
             "timeliness": int(t) if t is not None else 0,
             "game_relevance": int(g) if g is not None else 0,
@@ -214,7 +215,7 @@ def main() -> None:
             "insight": int(ins) if ins is not None else 0,
         }
         score = compute_weighted_score(eva, weights)
-        bonus = float(source_bonus.get(item["source"], 0.0))
+        bonus = float(source_bonus.get(source_str, 0.0))
         if bonus:
             score = max(1.0, min(5.0, score + bonus))
         if score < min_score:
@@ -222,7 +223,7 @@ def main() -> None:
         item = {
             "id": int(_id),
             "category": str(cat or ""),
-            "source": str(source or ""),
+            "source": source_str,
             "publish": str(publish or ""),
             "title": title,
             "link": link,
