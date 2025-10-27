@@ -22,14 +22,15 @@
 - 需包含占位符（如 `{{title}}`、`{{detail}}`），由脚本渲染；全部中文输出。
 
 ## 5. 评估维度与权重（更新版）
-- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）。
+- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）。
 - 分值范围：1（差）— 5（优）。
-- 初始权重（可用 `AI_SCORE_WEIGHTS` 覆盖）：
-  - `timeliness`: 0.10
-  - `game_relevance`: 0.30
-  - `ai_relevance`: 0.20
-  - `tech_relevance`: 0.10
-  - `quality`: 0.30
+- 初始权重（Writer 端动态计算，可用 `AI_SCORE_WEIGHTS` 覆盖）：
+  - `timeliness`: 0.18
+  - `game_relevance`: 0.24
+  - `ai_relevance`: 0.18
+  - `tech_relevance`: 0.14
+  - `quality`: 0.16
+  - `insight`: 0.10
 
 ### 维度定义与打分参考
 - 时效性 timeliness：内容与当前时间的相关程度；5=当天/最新事件；4=一周内热点；3=一月内一般新闻；2=旧闻但仍具参考；1=过时或无时间关联。
@@ -37,6 +38,7 @@
 - AI 相关性 ai_relevance：与 AI 技术/模型/工具链/评测/应用相关程度；5=直指模型/算法/评测或标杆案例，1=无关。
 - 科技相关性 tech_relevance：与芯片/云/硬件/互联网基础设施等关联性；5=面向科技产业核心构件或生态，1=无关。
 - 文章质量 quality：结构清晰、论证完整、数据/引用可靠、信息密度高、废话少、可读性好；5=结构严谨数据充分，1=水文或缺乏依据。
+ - 洞察力 insight：观点是否罕见/深刻、能否提出新的联系或因果解释；5=罕见且深刻的洞见，3=常见分析与观点，1=显而易见或无实质洞见。
 
 ## 6. 数据库（建议）
 - 新建 `info_ai_review` 含以下列（与 `info(id)` 1:1）：

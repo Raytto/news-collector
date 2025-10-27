@@ -37,6 +37,24 @@ run_once() {
   echo "[INFO] Writing 24h digest: $out_file" >&2
   $PYTHON "$ROOT_DIR/news-collector/manager/info_writer.py" --hours 24 --output "$out_file"
 
+  # Generate Feishu message (24h top articles) and broadcast as card
+  msg_dir="$ROOT_DIR/data/feishu-msg"
+  mkdir -p "$msg_dir"
+  feishu_msg_file="$msg_dir/$(date +%Y%m%d)-feishu-msg.md"
+  echo "[INFO] Building Feishu message: $feishu_msg_file" >&2
+  $PYTHON "$ROOT_DIR/news-collector/manager/feishu_writer.py" --hours 24 --output "$feishu_msg_file" || true
+
+  if [ -f "$feishu_msg_file" ]; then
+    echo "[INFO] Broadcasting Feishu message to all groups" >&2
+    $PYTHON "$ROOT_DIR/news-collector/manager/feishu_bot_today.py" \
+      --to-all \
+      --file "$feishu_msg_file" \
+      --as-card \
+      --title "24小时新文章" || true
+  else
+    echo "[WARN] Feishu message file not found, skip broadcast: $feishu_msg_file" >&2
+  fi
+
   subject="$(date +%Y年%m月%d日)整合"
   echo "[INFO] Mailing digest to 306483372@qq.com (subject: $subject)" >&2
   $PYTHON "$ROOT_DIR/news-collector/manager/mail_today.py" \

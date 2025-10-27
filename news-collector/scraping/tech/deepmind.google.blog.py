@@ -4,7 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -128,7 +128,23 @@ def _parse_cards(soup: BeautifulSoup) -> List[Dict[str, str]]:
         if not title:
             continue
         href = a["href"].strip()
-        url = urljoin(BASE_URL, href)
+        # Build absolute URL and filter out non-article links (pagination/home etc.)
+        abs_url = href
+        if abs_url.startswith("//"):
+            abs_url = "https:" + abs_url
+        if abs_url.startswith("/"):
+            abs_url = urljoin(BASE_URL, abs_url)
+        parsed = urlparse(abs_url)
+        if not parsed.netloc or parsed.netloc not in urlparse(BASE_URL).netloc:
+            continue
+        # Skip pagination and listing pages
+        if parsed.query and "page=" in parsed.query:
+            continue
+        if parsed.path in ("/", "/discover/blog", "/discover/blog/"):
+            continue
+        if not parsed.path.startswith("/discover/blog/"):
+            continue
+        url = abs_url
 
         pub = ""
         # time tag

@@ -26,11 +26,12 @@ _PROMPT_CANDIDATES = [
 PROMPT_PATH = next((p for p in _PROMPT_CANDIDATES if p and p.exists()), _PROMPT_CANDIDATES[1])
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.20,
-    "game_relevance": 0.25,
-    "ai_relevance": 0.20,
-    "tech_relevance": 0.15,
-    "quality": 0.20,
+    "timeliness": 0.18,
+    "game_relevance": 0.24,
+    "ai_relevance": 0.18,
+    "tech_relevance": 0.14,
+    "quality": 0.16,
+    "insight": 0.10,
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DEFAULT_WEIGHTS.keys())
 
@@ -57,6 +58,7 @@ class EvaluationResult:
     ai_relevance: int
     tech_relevance: int
     quality: int
+    insight: int
     comment: str
     summary: str
     raw_response: str
@@ -193,6 +195,7 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             ai_relevance_score INTEGER,
             tech_relevance_score INTEGER,
             quality_score INTEGER,
+            insight_score INTEGER,
             ai_comment TEXT NOT NULL,
             ai_summary TEXT NOT NULL,
             raw_response TEXT,
@@ -205,7 +208,7 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     # Backfill/migrate: add new columns if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(info_ai_review)")}
-        for col in ("game_relevance_score", "ai_relevance_score", "tech_relevance_score", "quality_score"):
+        for col in ("game_relevance_score", "ai_relevance_score", "tech_relevance_score", "quality_score", "insight_score"):
             if col not in cols:
                 conn.execute(f"ALTER TABLE info_ai_review ADD COLUMN {col} INTEGER")
         conn.commit()
@@ -353,6 +356,7 @@ def validate_scores(data: Dict[str, object]) -> EvaluationResult:
         ai_relevance=scores["ai_relevance"],
         tech_relevance=scores["tech_relevance"],
         quality=scores["quality"],
+        insight=scores["insight"],
         comment=comment.strip().replace("\n", " "),
         summary=summary.strip().replace("\n", " "),
         raw_response="",
@@ -387,11 +391,12 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             ai_relevance_score,
             tech_relevance_score,
             quality_score,
+            insight_score,
             ai_comment,
             ai_summary,
             raw_response,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(info_id) DO UPDATE SET
             final_score=excluded.final_score,
             timeliness_score=excluded.timeliness_score,
@@ -399,6 +404,7 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             ai_relevance_score=excluded.ai_relevance_score,
             tech_relevance_score=excluded.tech_relevance_score,
             quality_score=excluded.quality_score,
+            insight_score=excluded.insight_score,
             ai_comment=excluded.ai_comment,
             ai_summary=excluded.ai_summary,
             raw_response=excluded.raw_response,
@@ -412,6 +418,7 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             evaluation.ai_relevance,
             evaluation.tech_relevance,
             evaluation.quality,
+            evaluation.insight,
             evaluation.comment,
             evaluation.summary,
             evaluation.raw_response,
@@ -461,8 +468,11 @@ def evaluate_articles(
         else:
             store_evaluation(conn, result)
             conn.commit()
+            # 打印各维度分值，便于观察评分构成
             print(
-                f"[完成] {article.info_id} - {article.title} -> {result.final_score} 分"
+                f"[完成] {article.info_id} - {article.title} -> "
+                f"时效:{result.timeliness} / 游戏:{result.game_relevance} / "
+                f"AI:{result.ai_relevance} / 科技:{result.tech_relevance} / 质量:{result.quality} / 洞察:{result.insight}"
             )
         if config.interval > 0:
             time.sleep(config.interval)

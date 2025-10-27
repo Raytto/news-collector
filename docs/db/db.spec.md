@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS info_ai_review (
   ai_relevance_score     INTEGER,
   tech_relevance_score   INTEGER,
   quality_score          INTEGER,
+  insight_score          INTEGER,
   ai_comment             TEXT    NOT NULL,
   ai_summary             TEXT    NOT NULL,
   raw_response           TEXT,
@@ -67,7 +68,7 @@ CREATE TABLE IF NOT EXISTS info_ai_review (
 );
 ```
 
-Scores are 1–5 integers per dimension; `final_score` is a weighted 1–5 float. The manager adds missing columns via `ALTER TABLE` if you are upgrading from an older schema.
+Scores are 1–5 integers per dimension; `final_score` is a weighted 1–5 float. The manager adds missing columns via `ALTER TABLE` if you are upgrading from an older schema. Newest dimension: `insight`（洞察力）。
 
 ## Insertion, Detail Fetch & De-duplication
 
@@ -123,9 +124,15 @@ ORDER BY publish DESC;
 - Join latest entries with AI scores for rendering:
 ```sql
 SELECT i.id, i.source, i.category, i.publish, i.title, i.link,
-       r.final_score, r.timeliness_score, r.relevance_score,
-       r.insightfulness_score, r.actionability_score,
-       r.ai_comment, r.ai_summary
+       r.final_score,
+       r.timeliness_score,
+       r.game_relevance_score,
+       r.ai_relevance_score,
+       r.tech_relevance_score,
+       r.quality_score,
+       r.insight_score,
+       r.ai_comment,
+       r.ai_summary
 FROM info AS i
 LEFT JOIN info_ai_review AS r ON r.info_id = i.id
 ORDER BY i.id DESC
@@ -145,6 +152,7 @@ ORDER BY missing_count DESC;
 
 - `publish` is stored as TEXT to allow ISO timestamps and coarse strings from sources that lack precise times. For ISO-8601 values, lexicographic order matches chronological order.
 - Scripts attempt to normalize times to ISO-8601 UTC when possible; otherwise keep the original string.
+- During collection, the manager validates publish values and prints hints when missing or non‑standard (e.g., "[时间缺失]" / "[时间非标准]") to help fix scrapers.
 - `category` is optional and may be empty for historical rows; the manager will add the column automatically if missing (via `ALTER TABLE`) and insert values for new rows when provided by scrapers.
 
 ## Migration Note
@@ -154,6 +162,8 @@ ORDER BY missing_count DESC;
   - `DROP INDEX IF EXISTS idx_info_unique;`
   - `CREATE UNIQUE INDEX IF NOT EXISTS idx_info_link_unique ON info(link);`
 - October 2025 (C): Added `detail` column to `info` and introduced `info_ai_review` table. The manager adds `detail` automatically if missing; `ai_evaluate.py` creates `info_ai_review` on first run.
+
+- October 2025 (D): Added `insight_score` to `info_ai_review` and standardized six evaluation dimensions. `ai_evaluate.py` performs an idempotent `ALTER TABLE` to add any missing score columns.
 
 ## Maintenance
 

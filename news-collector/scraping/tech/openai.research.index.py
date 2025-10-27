@@ -76,6 +76,14 @@ def fetch_list_page(url: str | None = None) -> str:
             last_exc = exc
             continue
     # If all attempts failed, raise last error for visibility
+    # Final fallback: use readability proxy (returns Markdown)
+    try:
+        jurl = "https://r.jina.ai/https://openai.com/research/"
+        resp = session.get(jurl, timeout=REQUEST_TIMEOUT)
+        if resp.status_code < 400 and resp.text:
+            return resp.text
+    except Exception:
+        pass
     if last_exc:
         raise last_exc
     raise RuntimeError("无法获取 OpenAI Research 列表页")
@@ -236,6 +244,22 @@ def parse_list(html: str) -> List[Dict[str, str]]:
             })
             seen_urls.add(url)
 
+    # Final fallback: try to parse Markdown links (from r.jina.ai)
+    if not articles:
+        for m in re.finditer(r"\[([^\]]+)\]\((https?://openai\.com/research/[^\s)]+)\)", html):
+            title = m.group(1).strip()
+            url = m.group(2).strip()
+            if url in seen_urls or not title:
+                continue
+            articles.append({
+                "title": title,
+                "url": url,
+                "published": "",
+                "source": SOURCE,
+                "category": CATEGORY,
+            })
+            seen_urls.add(url)
+
     def sort_key(item: Dict[str, str]) -> datetime:
         try:
             return datetime.fromisoformat(item["published"])
@@ -246,9 +270,20 @@ def parse_list(html: str) -> List[Dict[str, str]]:
 
 
 def fetch_article_detail(url: str) -> str:
-    resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    try:
+        resp = requests.get(url, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        # Fallback to readability proxy
+        r = requests.get(f"https://r.jina.ai/{url}", headers={"User-Agent": UA}, timeout=REQUEST_TIMEOUT)
+        r.raise_for_status()
+        # r.jina.ai returns Markdown; return as-is after light cleanup
+        text = r.text
+        text = re.sub(r"\r\n?", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup.find_all([
         "script",
         "style",

@@ -3,6 +3,7 @@ import re
 from datetime import datetime, timezone
 from html import unescape
 from typing import Any, Dict, Iterable, List, Optional
+from datetime import timedelta
 from urllib.parse import urljoin
 
 import requests
@@ -75,6 +76,36 @@ def parse_timestamp(value: Any) -> str:
         raw = value.strip()
         if not raw:
             return ""
+
+        # Chinese relative time: X小时前 / X分钟前 / X天前 / 昨天 / 前天 / 刚刚 / 今天
+        low = raw.lower()
+        try:
+            import re as _re
+            m = _re.match(r"^(\d+)\s*小时前$", raw)
+            if m:
+                h = int(m.group(1))
+                dt = datetime.now(timezone.utc) - timedelta(hours=h)
+                return dt.isoformat()
+            m = _re.match(r"^(\d+)\s*分钟前$", raw)
+            if m:
+                mins = int(m.group(1))
+                dt = datetime.now(timezone.utc) - timedelta(minutes=mins)
+                return dt.isoformat()
+            m = _re.match(r"^(\d+)\s*天前$", raw)
+            if m:
+                d = int(m.group(1))
+                dt = datetime.now(timezone.utc) - timedelta(days=d)
+                return dt.isoformat()
+            if raw in ("昨天", "昨日"):
+                dt = datetime.now(timezone.utc) - timedelta(days=1)
+                return dt.isoformat()
+            if raw in ("前天",):
+                dt = datetime.now(timezone.utc) - timedelta(days=2)
+                return dt.isoformat()
+            if raw in ("刚刚", "今天", "今日"):
+                return datetime.now(timezone.utc).isoformat()
+        except Exception:
+            pass
 
         if raw.isdigit():
             return parse_timestamp(float(raw))
@@ -226,6 +257,18 @@ def extract_articles_from_html(html: str) -> List[Dict[str, str]]:
             if not title:
                 continue
             url = link["href"]
+            # Only keep article detail links like /123456.html
+            u = url.strip()
+            if u.startswith("//"):
+                u = "https:" + u
+            import re as _re
+            if u.startswith("/"):
+                if not _re.match(r"^/\d+\.html$", u):
+                    continue
+            else:
+                # absolute URL: ensure it's the same host and matches /digits.html
+                if BASE_URL not in u or not _re.search(r"/\d+\.html$", u):
+                    continue
             if url.startswith("/"):
                 url = urljoin(BASE_URL, url)
             elif url.startswith("//"):

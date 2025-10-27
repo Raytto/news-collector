@@ -4,6 +4,7 @@ import os
 import sqlite3
 import sys
 from dataclasses import dataclass
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -103,6 +104,27 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
         # Keep original string
         pass
     return Entry(source=source, publish=publish, title=title, link=link, category=category)
+
+
+ISO_PATTERN = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+\-]\d{2}:\d{2})$"
+)
+
+
+def _is_iso8601_full(text: str) -> bool:
+    if not text:
+        return False
+    s = text.strip()
+    if not ISO_PATTERN.match(s):
+        # Quick parse attempt to tolerate rare variants
+        try:
+            from datetime import datetime
+            datetime.fromisoformat(s.replace("Z", "+00:00"))
+            # But still require the presence of 'T' (full timestamp)
+            return "T" in s
+        except Exception:
+            return False
+    return True
 
 
 def _ensure_db(conn: sqlite3.Connection) -> None:
@@ -240,6 +262,7 @@ def main() -> None:
                 items = _to_entry_dicts(mod)
                 entries: List[Entry] = []
                 for item in items:
+                    raw_publish = str(item.get("published") or item.get("publish") or "").strip()
                     e = _coerce_entry(item)
                     if e:
                         # Backfill source/category from module-level constants when missing
@@ -247,6 +270,20 @@ def main() -> None:
                             e.source = str(getattr(mod, "SOURCE"))
                         if not e.category and hasattr(mod, "CATEGORY"):
                             e.category = str(getattr(mod, "CATEGORY"))
+                        # Validate publish time format and print hint if suspicious
+                        if raw_publish and not _is_iso8601_full(raw_publish):
+                            print(
+                                f"  [时间格式疑似异常] {path.name}({e.source}) -> '{raw_publish}'"
+                            )
+                        elif not raw_publish and not e.publish:
+                            print(
+                                f"  [时间缺失] {path.name}({e.source}) -> link={e.link}"
+                            )
+                        elif e.publish and not _is_iso8601_full(e.publish):
+                            print(
+                                f"  [时间非标准] {path.name}({e.source}) -> '{e.publish}'"
+                                + (f" (原始:'{raw_publish}')" if raw_publish else "")
+                            )
                         entries.append(e)
                 newly_added = _insert_entries(conn, entries)
                 total_new += len(newly_added)
