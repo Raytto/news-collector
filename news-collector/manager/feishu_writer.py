@@ -214,6 +214,7 @@ def main() -> None:
             "quality": int(q) if q is not None else 0,
             "insight": int(ins) if ins is not None else 0,
         }
+        source_str = str(source or "")
         score = compute_weighted_score(eva, weights)
         bonus = float(source_bonus.get(source_str, 0.0))
         if bonus:
@@ -243,19 +244,26 @@ def main() -> None:
             ),
             reverse=True,
         )
-        # Enforce per-source cap within a category (<=0 to disable)
-        capped: List[Dict[str, Any]] = []
-        per_source: Dict[str, int] = {}
-        for it in items:
-            src = it.get("source", "")
-            cnt = per_source.get(src, 0)
-            if per_source_cap > 0 and cnt >= per_source_cap:
-                continue
-            capped.append(it)
-            per_source[src] = cnt + 1
-            if len(capped) >= limit_per_cat:
-                break
-        by_cat[cat] = capped
+        # 先对每个来源取评分最高的前三（或 --per-source-cap 指定的数量）
+        if per_source_cap > 0:
+            per_source_trimmed: List[Dict[str, Any]] = []
+            per_source_groups: Dict[str, List[Dict[str, Any]]] = {}
+            for it in items:
+                per_source_groups.setdefault(it.get("source", ""), []).append(it)
+            for group in per_source_groups.values():
+                per_source_trimmed.extend(group[:per_source_cap])
+        else:
+            per_source_trimmed = list(items)
+
+        # 将各来源的候选重新按分数排序后取前 limit_per_cat 条
+        per_source_trimmed.sort(
+            key=lambda it: (
+                float(it.get("score", 0.0)),
+                try_parse_dt(it.get("publish", "")) or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
+        by_cat[cat] = per_source_trimmed[:limit_per_cat]
 
     # 生成文本
     sections: List[str] = []
