@@ -8,7 +8,7 @@
 ## 2. 输入数据与筛选逻辑
 - 数据表：
   - `info`：id, source, category, publish, title, link
-  - `info_ai_review`：各维度分（timeliness, game/ai/tech_relevance, quality）、comment、summary
+  - `info_ai_review`：各维度分（timeliness, game/mobile_game/ai/tech_relevance, quality, insight, depth, novelty）、comment、summary
 - 时间窗口：默认近 24 小时，可通过 `--hours` 指定。
 - 类别范围：默认 `game`、`tech`，可通过 `--categories game,tech` 覆盖。
 - 去重：按 link 去重；同一条不应重复出现在不同分类中（优先保留其自身分类）。
@@ -52,8 +52,8 @@
   - `--dry-run`：仅打印预览，不写文件。
 
 ## 6. 计算细节（与 info_writer 对齐）
-- 维度：`timeliness`、`game_relevance`、`mobile_game_relevance`、`ai_relevance`、`tech_relevance`、`quality`、`insight`。
-- 默认权重：`0.09/0.22/0.10/0.14/0.05/0.18/0.22`（可覆盖，与脚本常量保持一致）。
+- 维度：`timeliness`、`game_relevance`、`mobile_game_relevance`、`ai_relevance`、`tech_relevance`、`quality`、`insight`、`depth`、`novelty`。
+- 默认权重：`0.09/0.14/0.14/0.09/0.05/0.18/0.18/0.08/0.05`（可覆盖，与脚本常量保持一致）。
 - 总分计算：加权平均，范围限制在 `[1.0, 5.0]`，四舍五入两位小数；若所有权重为 0，则总分返回 0（该条可被 `--min-score` 过滤）。
 
 ## 7. 异常与降级

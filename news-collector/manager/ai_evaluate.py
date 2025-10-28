@@ -26,13 +26,15 @@ _PROMPT_CANDIDATES = [
 PROMPT_PATH = next((p for p in _PROMPT_CANDIDATES if p and p.exists()), _PROMPT_CANDIDATES[1])
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.16,
-    "game_relevance": 0.22,
-    "mobile_game_relevance": 0.10,
-    "ai_relevance": 0.16,
-    "tech_relevance": 0.13,
-    "quality": 0.14,
-    "insight": 0.09,
+    "timeliness": 0.14,
+    "game_relevance": 0.20,
+    "mobile_game_relevance": 0.09,
+    "ai_relevance": 0.14,
+    "tech_relevance": 0.11,
+    "quality": 0.13,
+    "insight": 0.08,
+    "depth": 0.06,
+    "novelty": 0.05,
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DEFAULT_WEIGHTS.keys())
 
@@ -61,6 +63,8 @@ class EvaluationResult:
     tech_relevance: int
     quality: int
     insight: int
+    depth: int
+    novelty: int
     comment: str
     summary: str
     raw_response: str
@@ -199,6 +203,8 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             tech_relevance_score INTEGER,
             quality_score INTEGER,
             insight_score INTEGER,
+            depth_score INTEGER,
+            novelty_score INTEGER,
             ai_comment TEXT NOT NULL,
             ai_summary TEXT NOT NULL,
             raw_response TEXT,
@@ -218,6 +224,8 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             "tech_relevance_score",
             "quality_score",
             "insight_score",
+            "depth_score",
+            "novelty_score",
         ):
             if col not in cols:
                 conn.execute(f"ALTER TABLE info_ai_review ADD COLUMN {col} INTEGER")
@@ -368,6 +376,8 @@ def validate_scores(data: Dict[str, object]) -> EvaluationResult:
         tech_relevance=scores["tech_relevance"],
         quality=scores["quality"],
         insight=scores["insight"],
+        depth=scores["depth"],
+        novelty=scores["novelty"],
         comment=comment.strip().replace("\n", " "),
         summary=summary.strip().replace("\n", " "),
         raw_response="",
@@ -404,11 +414,13 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             tech_relevance_score,
             quality_score,
             insight_score,
+            depth_score,
+            novelty_score,
             ai_comment,
             ai_summary,
             raw_response,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(info_id) DO UPDATE SET
             final_score=excluded.final_score,
             timeliness_score=excluded.timeliness_score,
@@ -418,6 +430,8 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             tech_relevance_score=excluded.tech_relevance_score,
             quality_score=excluded.quality_score,
             insight_score=excluded.insight_score,
+            depth_score=excluded.depth_score,
+            novelty_score=excluded.novelty_score,
             ai_comment=excluded.ai_comment,
             ai_summary=excluded.ai_summary,
             raw_response=excluded.raw_response,
@@ -433,6 +447,8 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             evaluation.tech_relevance,
             evaluation.quality,
             evaluation.insight,
+            evaluation.depth,
+            evaluation.novelty,
             evaluation.comment,
             evaluation.summary,
             evaluation.raw_response,
@@ -479,6 +495,8 @@ def evaluate_articles(
                     f"科技:{result.tech_relevance}",
                     f"质量:{result.quality}",
                     f"洞察:{result.insight}",
+                    f"深度:{result.depth}",
+                    f"新颖:{result.novelty}",
                 ]
             )
             print(
@@ -494,7 +512,8 @@ def evaluate_articles(
                 f"[完成] {article.info_id} - {article.title} -> "
                 f"时效:{result.timeliness} / 游戏:{result.game_relevance} / "
                 f"手游:{result.mobile_game_relevance} / AI:{result.ai_relevance} / "
-                f"科技:{result.tech_relevance} / 质量:{result.quality} / 洞察:{result.insight}"
+                f"科技:{result.tech_relevance} / 质量:{result.quality} / "
+                f"洞察:{result.insight} / 深度:{result.depth} / 新颖:{result.novelty}"
             )
         if config.interval > 0:
             time.sleep(config.interval)

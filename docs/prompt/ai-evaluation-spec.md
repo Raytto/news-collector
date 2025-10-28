@@ -22,16 +22,18 @@
 - 需包含占位符（如 `{{title}}`、`{{detail}}`），由脚本渲染；全部中文输出。
 
 ## 5. 评估维度与权重（更新版）
-- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`mobile_game_relevance`（手游相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）。
+- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`mobile_game_relevance`（手游相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）、`depth`（深度）、`novelty`（新颖度）。
 - 分值范围：1（差）— 5（优）。
 - 初始权重（Writer 端动态计算，可用 `AI_SCORE_WEIGHTS` 覆盖）：
-  - `timeliness`: 0.16
-  - `game_relevance`: 0.22
-  - `mobile_game_relevance`: 0.10
-  - `ai_relevance`: 0.16
-  - `tech_relevance`: 0.13
-  - `quality`: 0.14
-  - `insight`: 0.09
+  - `timeliness`: 0.14
+  - `game_relevance`: 0.20
+  - `mobile_game_relevance`: 0.09
+  - `ai_relevance`: 0.14
+  - `tech_relevance`: 0.11
+  - `quality`: 0.13
+  - `insight`: 0.08
+  - `depth`: 0.06
+  - `novelty`: 0.05
 
 ### 维度定义与打分参考
 - 时效性 timeliness：内容与当前时间的相关程度；5=当天/最新事件；4=一周内热点；3=一月内一般新闻；2=旧闻但仍具参考；1=过时或无时间关联。
@@ -40,7 +42,9 @@
 - AI 相关性 ai_relevance：与 AI 技术/模型/工具链/评测/应用相关程度；5=直指模型/算法/评测或标杆案例，1=无关。
 - 科技相关性 tech_relevance：与芯片/云/硬件/互联网基础设施等关联性；5=面向科技产业核心构件或生态，1=无关。
 - 文章质量 quality：结构清晰、论证完整、数据/引用可靠、信息密度高、废话少、可读性好；5=结构严谨数据充分，1=水文或缺乏依据。
- - 洞察力 insight：观点是否罕见/深刻、能否提出新的联系或因果解释；5=罕见且深刻的洞见，3=常见分析与观点，1=显而易见或无实质洞见。
+- 洞察力 insight：观点是否罕见/深刻、能否提出新的联系或因果解释；5=罕见且深刻的洞见，3=常见分析与观点，1=显而易见或无实质洞见。
+- 深度 depth：信息层次、背景交代、逻辑推演是否充分；5=深入拆解并结合多层证据，3=覆盖关键事实但分析有限，1=浅尝辄止或缺乏展开。
+- 新颖度 novelty：信息与视角的新鲜程度；5=提供行业罕见消息或独到观点，3=常见进展或已有报道的整合，1=陈旧/重复且无新意。
 
 ## 6. 数据库（建议）
 - 新建 `info_ai_review` 含以下列（与 `info(id)` 1:1）：
@@ -55,6 +59,8 @@
   | `tech_relevance_score` | SMALLINT | NOT NULL | 1–5 |
   | `quality_score` | SMALLINT | NOT NULL | 1–5 |
   | `insight_score` | SMALLINT | NOT NULL | 1–5 |
+  | `depth_score` | SMALLINT | NOT NULL | 1–5 |
+  | `novelty_score` | SMALLINT | NOT NULL | 1–5 |
   | `ai_comment` | TEXT | NOT NULL | 一句话评价 |
   | `ai_summary` | TEXT | NOT NULL | 一句话概要 |
   | `raw_response` | TEXT |  | 原始响应 |

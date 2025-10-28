@@ -23,18 +23,22 @@ DIMENSION_LABELS: Dict[str, str] = {
     "tech_relevance": "科技相关性",
     "quality": "文章质量",
     "insight": "洞察力",
+    "depth": "深度",
+    "novelty": "新颖度",
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 
 # 默认权重（与 docs/prompt/ai-evaluation-spec.md 保持一致），可在此按用户群体调整
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.10,
-    "game_relevance": 0.15,
-    "mobile_game_relevance": 0.15,
-    "ai_relevance": 0.10,
+    "timeliness": 0.09,
+    "game_relevance": 0.14,
+    "mobile_game_relevance": 0.14,
+    "ai_relevance": 0.09,
     "tech_relevance": 0.05,
-    "quality": 0.20,
-    "insight": 0.25,
+    "quality": 0.18,
+    "insight": 0.18,
+    "depth": 0.08,
+    "novelty": 0.05,
 }
 
 # Optional manual bonus per source, e.g. {"openai.research": 2}
@@ -159,7 +163,7 @@ def fetch_recent(
                    r.final_score,
                    r.timeliness_score, r.game_relevance_score, r.mobile_game_relevance_score,
                    r.ai_relevance_score, r.tech_relevance_score, r.quality_score,
-                   r.insight_score,
+                   r.insight_score, r.depth_score, r.novelty_score,
                    r.ai_comment, r.ai_summary
             FROM info AS i
             LEFT JOIN info_ai_review AS r ON r.info_id = i.id
@@ -191,8 +195,10 @@ def fetch_recent(
                 "tech_relevance": int(row[11]) if row[11] is not None else 0,
                 "quality": int(row[12]) if row[12] is not None else 0,
                 "insight": int(row[13]) if row[13] is not None else 0,
-                "comment": str(row[14] or ""),
-                "summary": str(row[15] or ""),
+                "depth": int(row[14]) if row[14] is not None else 0,
+                "novelty": int(row[15]) if row[15] is not None else 0,
+                "comment": str(row[16] or ""),
+                "summary": str(row[17] or ""),
             }
             # 动态计算当前展示所需的加权总分（忽略数据库中的旧 final_score）
             evaluation["final_score"] = compute_weighted_score(evaluation)
@@ -389,6 +395,9 @@ def main() -> None:
 
     with sqlite3.connect(str(DB_PATH)) as conn:
         entries = fetch_recent(conn, cutoff, source_bonus)
+        if not entries:
+            print("没有符合条件的资讯，未生成文件")
+            return
         doc = render_html(entries, hours)
         out_path.write_text(doc, encoding="utf-8")
 

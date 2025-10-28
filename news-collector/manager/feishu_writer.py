@@ -23,16 +23,20 @@ DIMENSION_LABELS: Dict[str, str] = {
     "tech_relevance": "科技相关性",
     "quality": "文章质量",
     "insight": "洞察力",
+    "depth": "深度",
+    "novelty": "新颖度",
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.10,
-    "game_relevance": 0.15,
-    "mobile_game_relevance": 0.15,
-    "ai_relevance": 0.10,
+    "timeliness": 0.09,
+    "game_relevance": 0.14,
+    "mobile_game_relevance": 0.14,
+    "ai_relevance": 0.09,
     "tech_relevance": 0.05,
-    "quality": 0.20,
-    "insight": 0.25,
+    "quality": 0.18,
+    "insight": 0.18,
+    "depth": 0.08,
+    "novelty": 0.05,
 }
 
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
@@ -119,6 +123,7 @@ def load_rows(conn: sqlite3.Connection) -> List[tuple]:
     SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
            r.timeliness_score, r.game_relevance_score, r.mobile_game_relevance_score,
            r.ai_relevance_score, r.tech_relevance_score, r.quality_score, r.insight_score,
+           r.depth_score, r.novelty_score,
            r.ai_summary
     FROM info AS i
     LEFT JOIN info_ai_review AS r ON r.info_id = i.id
@@ -195,7 +200,24 @@ def main() -> None:
     by_cat: Dict[str, List[Dict[str, Any]]] = {c: [] for c in categories}
     seen_links: set[str] = set()
     for row in rows:
-        _id, cat, source, publish, title, link, t, g, mg, a, te, q, ins, ai_summary = row
+        (
+            _id,
+            cat,
+            source,
+            publish,
+            title,
+            link,
+            t,
+            g,
+            mg,
+            a,
+            te,
+            q,
+            ins,
+            depth_score,
+            novelty_score,
+            ai_summary,
+        ) = row
         dt = try_parse_dt(str(publish or ""))
         if not dt or dt < cutoff:
             continue
@@ -216,6 +238,8 @@ def main() -> None:
             "tech_relevance": int(te) if te is not None else 0,
             "quality": int(q) if q is not None else 0,
             "insight": int(ins) if ins is not None else 0,
+            "depth": int(depth_score) if depth_score is not None else 0,
+            "novelty": int(novelty_score) if novelty_score is not None else 0,
         }
         source_str = str(source or "")
         score = compute_weighted_score(eva, weights)
@@ -269,6 +293,11 @@ def main() -> None:
         by_cat[cat] = per_source_trimmed[:limit_per_cat]
 
     # 生成文本
+    total_items = sum(len(items) for items in by_cat.values())
+    if total_items == 0:
+        print("没有符合条件的资讯，未生成文件")
+        return
+
     sections: List[str] = []
     for cat in categories:
         label = cat.upper()
@@ -283,7 +312,7 @@ def main() -> None:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(content, encoding="utf-8")
-    print(f"已生成: {out_path} ({sum(len(v) for v in by_cat.values())} 条)")
+    print(f"已生成: {out_path} ({total_items} 条)")
 
 
 if __name__ == "__main__":
