@@ -71,6 +71,23 @@ run_once() {
     --subject "$subject" \
     --sender "pangruitaosite@gmail.com" \
     --to "306483372@qq.com"
+
+  wenhao_dir="$ROOT_DIR/data/output/wenhao"
+  mkdir -p "$wenhao_dir"
+  wenhao_file="$wenhao_dir/$(date +%Y%m%d-%H%M%S)-wenhao.html"
+  echo "[INFO] Building Wenhao digest: $wenhao_file" >&2
+  $PYTHON "$ROOT_DIR/news-collector/writer/wenhao_writer.py" --hours 24 --output "$wenhao_file" || true
+  if [ -f "$wenhao_file" ]; then
+    wenhao_subject="问好精选"
+    echo "[INFO] Mailing Wenhao digest to 306483372@qq.com" >&2
+    $PYTHON "$ROOT_DIR/news-collector/deliver/mail_today.py" \
+      --html "$wenhao_file" \
+      --subject "$wenhao_subject" \
+      --sender "pangruitaosite@gmail.com" \
+      --to "306483372@qq.com" || true
+  else
+    echo "[WARN] Wenhao digest not generated, skip email" >&2
+  fi
 }
 
 sleep_until_next_0930() {
