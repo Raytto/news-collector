@@ -39,6 +39,29 @@ def _load_module(path: Path):
     return mod
 
 
+def _get_module_feed_urls(mod) -> List[str]:
+    urls: List[str] = []
+    for attr in ("RSS_URL", "FEED_URL", "URL"):
+        val = getattr(mod, attr, None)
+        if not val:
+            continue
+        try:
+            if isinstance(val, (list, tuple)):
+                urls.extend([str(x) for x in val if x])
+            else:
+                urls.append(str(val))
+        except Exception:
+            continue
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    uniq: List[str] = []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u)
+            seen.add(u)
+    return uniq
+
+
 def _to_entry_dicts(mod) -> List[Dict[str, Any]]:
     # Priority 1: explicit collectors that already return list[dict]
     for name in ("collect_latest", "collect_latest_posts", "collect_latest_digest"):
@@ -68,19 +91,25 @@ def _to_entry_dicts(mod) -> List[Dict[str, Any]]:
     # Priority 5: RSS style with (fetch_feed, collect_entries|process_entries)
     if hasattr(mod, "fetch_feed"):
         fetch = getattr(mod, "fetch_feed")
+        urls = _get_module_feed_urls(mod)
         try:
-            feed = fetch()  # Prefer module defaults
-        except TypeError:
-            url = (
-                getattr(mod, "RSS_URL", None)
-                or getattr(mod, "FEED_URL", None)
-                or getattr(mod, "URL", None)
-            )
-            feed = fetch(url)
-        if hasattr(mod, "collect_entries"):
-            return list(getattr(mod, "collect_entries")(feed))
-        if hasattr(mod, "process_entries"):
-            return list(getattr(mod, "process_entries")(feed))
+            # Prefer module defaults when available
+            try:
+                feed = fetch()
+            except TypeError:
+                url = (
+                    getattr(mod, "RSS_URL", None)
+                    or getattr(mod, "FEED_URL", None)
+                    or getattr(mod, "URL", None)
+                )
+                feed = fetch(url)
+            if hasattr(mod, "collect_entries"):
+                return list(getattr(mod, "collect_entries")(feed))
+            if hasattr(mod, "process_entries"):
+                return list(getattr(mod, "process_entries")(feed))
+        except Exception as ex:
+            ctx = f"feed_urls={urls!r}" if urls else "feed_url=unknown"
+            raise RuntimeError(f"解析 RSS 时出错({ctx}): {ex}")
 
     raise RuntimeError(f"未找到可用于采集的入口函数: {mod.__name__}")
 
@@ -265,11 +294,26 @@ def main() -> None:
         for path in modules:
             try:
                 mod = _load_module(path)
+            except Exception as exc:
+                print(f"{path.name}: 加载模块失败 - {exc}")
+                continue
+            try:
                 items = _to_entry_dicts(mod)
                 entries: List[Entry] = []
                 for item in items:
                     raw_publish = str(item.get("published") or item.get("publish") or "").strip()
-                    e = _coerce_entry(item)
+                    try:
+                        e = _coerce_entry(item)
+                    except Exception as ex_item:
+                        try:
+                            link_hint = str(item.get("url") or item.get("link") or "")
+                        except Exception:
+                            link_hint = ""
+                        src_hint = str(getattr(mod, "SOURCE", "") or "")
+                        print(
+                            f"  [条目解析失败] {path.name}({src_hint}) -> link={link_hint or '(unknown)'} - {ex_item}"
+                        )
+                        continue
                     if e:
                         # Backfill source/category from module-level constants when missing
                         if not e.source and hasattr(mod, "SOURCE"):
@@ -331,7 +375,9 @@ def main() -> None:
                     # Non-fatal
                     pass
             except Exception as exc:
-                print(f"{path.name}: 处理失败 - {exc}")
+                urls = _get_module_feed_urls(locals().get("mod")) if 'mod' in locals() else []
+                extra = f" (feed_urls={urls!r})" if urls else ""
+                print(f"{path.name}: 处理失败 - {exc}{extra}")
 
         print(f"完成，数据库: {DB_PATH}，新增总计 {total_new} 条")
     finally:

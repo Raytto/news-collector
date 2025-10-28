@@ -107,20 +107,26 @@ def run_writer(
         if bonus_json:
             cmd += ["--source-bonus", bonus_json]
     elif wtype == "wenhao_html":
+        # Use unified email_writer in wenhao mode
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
-            str(WRITER_DIR / "wenhao_writer.py"),
+            str(WRITER_DIR / "email_writer.py"),
+            "--mode",
+            "wenhao",
             "--hours",
             str(hours),
             "--output",
             str(out_path),
         ]
     elif wtype == "info_html":
+        # Use unified email_writer in general mode
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
-            str(WRITER_DIR / "info_writer.py"),
+            str(WRITER_DIR / "email_writer.py"),
+            "--mode",
+            "general",
             "--hours",
             str(hours),
             "--output",
@@ -141,7 +147,7 @@ def run_writer(
 def deliver_email(html_file: Path, email: str, subject: str) -> None:
     cmd = [
         PY,
-        str(DELIVER_DIR / "mail_today.py"),
+        str(DELIVER_DIR / "mail_deliver.py"),
         "--html",
         str(html_file),
         "--subject",
@@ -159,7 +165,7 @@ def deliver_feishu(md_file: Path, app_id: str, app_secret: str, title: str, to_a
     env["FEISHU_APP_SECRET"] = app_secret
     base_cmd = [
         PY,
-        str(DELIVER_DIR / "feishu_bot_today.py"),
+        str(DELIVER_DIR / "feishu_deliver.py"),
         "--file",
         str(md_file),
         "--as-card",
