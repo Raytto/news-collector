@@ -75,14 +75,14 @@ run_once() {
 
 sleep_until_next_0930() {
   now_epoch=$(date +%s)
-  today_target=$(date -d "today 09:30" +%s)
+  today_target=$(date -d "today 13:12" +%s)
 
   if [ "$now_epoch" -lt "$today_target" ]; then
     target_epoch="$today_target"
-    target_label="today 09:30"
+    target_label="today 13:12"
   else
-    target_epoch=$(date -d "tomorrow 09:30" +%s)
-    target_label="tomorrow 09:30"
+    target_epoch=$(date -d "tomorrow 13:12" +%s)
+    target_label="tomorrow 13:12"
   fi
 
   sleep_secs=$(( target_epoch - now_epoch ))

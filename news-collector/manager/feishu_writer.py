@@ -143,8 +143,8 @@ def format_section(title: str, items: List[Dict[str, Any]]) -> str:
         # 控制标题长度
         if len(title_txt) > 100:
             title_txt = title_txt[:100] + "…"
-        # lark_md 链接格式 [text](url)
-        line = f"{idx}. (AI推荐:{score_label})({source}) [{title_txt}]({link})"
+        # lark_md 链接格式 [text](url)；来源标注移动到摘要（标题）之后
+        line = f"{idx}. (AI推荐:{score_label}) [{title_txt}]({link}) ({source})"
         lines.append(line)
         idx += 1
     lines.append("")
