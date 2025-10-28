@@ -5,7 +5,7 @@ dependencies:
   - python=3.11
 variables:
   AI_API_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-  AI_API_MODEL: qwen3-max
+  AI_API_MODEL: qwen-flash
   AI_API_KEY: "sk-a5f98c92fa9c4d95a0009e39595fb8b4"
   AI_API_TIMEOUT: "30"
   AI_REQUEST_INTERVAL: "0"
