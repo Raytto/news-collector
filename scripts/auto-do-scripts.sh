@@ -10,14 +10,23 @@ OUT_DIR="$ROOT_DIR/data/output"
 mkdir -p "$OUT_DIR"
 
 activate_conda() {
-  if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    # Common path
-    # shellcheck source=/dev/null
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-  elif command -v conda >/dev/null 2>&1; then
-    # Fallback via hook
-    eval "$(conda shell.bash hook)"
+  # Ensure conda command available; try common installation paths.
+  if ! command -v conda >/dev/null 2>&1; then
+    for base in "$HOME/miniconda3" "$HOME/anaconda3" "/opt/conda" "/root/anaconda3"; do
+      if [ -f "$base/etc/profile.d/conda.sh" ]; then
+        # shellcheck source=/dev/null
+        source "$base/etc/profile.d/conda.sh"
+        break
+      fi
+    done
   fi
+
+  if ! command -v conda >/dev/null 2>&1; then
+    echo "[ERROR] conda command not found; please ensure Conda is installed and on PATH" >&2
+    return 1
+  fi
+
+  eval "$(conda shell.bash hook)"
   conda activate "$ENV_NAME"
 }
 

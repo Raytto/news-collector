@@ -16,6 +16,9 @@ SCRAPING_DIR = ROOT / "scraping"
 DATA_DIR = ROOT.parent / "data"
 DB_PATH = DATA_DIR / "info.db"
 
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 
 @dataclass
 class Entry:
@@ -244,6 +247,8 @@ def main() -> None:
     # Recursively discover scraper scripts (e.g., scraping/game/*.py)
     for path in sorted(SCRAPING_DIR.rglob("*.py")):
         if path.name.startswith("__"):
+            continue
+        if path.name == "_datetime.py":
             continue
         # Skip test modules if present under scraping/tests
         if path.name.startswith("test_") or "tests" in path.parts:

@@ -13,11 +13,19 @@ from urllib3.util.retry import Retry
 try:  # pragma: no cover - allow running as a script
     from .._datetime import normalize_published_datetime
 except ImportError:  # pragma: no cover - fallback for direct execution
+    import importlib.util
     import sys
     from pathlib import Path
 
-    sys.path.append(str(Path(__file__).resolve().parents[1]))
-    from _datetime import normalize_published_datetime
+    helper_path = Path(__file__).resolve().parents[1] / "_datetime.py"
+    module_name = "scraping_datetime_helper"
+    helper = sys.modules.get(module_name)
+    if helper is None:
+        spec = importlib.util.spec_from_file_location(module_name, helper_path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        sys.modules[module_name] = helper
+    normalize_published_datetime = helper.normalize_published_datetime
 
 BASE_URL = "https://www.youxituoluo.com"
 HOMEPAGE_URL = f"{BASE_URL}/"
