@@ -30,8 +30,8 @@ CATEGORY = "game"
 def fetch_feed(url: str):
     d = feedparser.parse(url)
     if d.bozo:
-        # bozo_exception 里通常是解析告警，不一定致命
-        print("解析 RSS 时可能有问题:", getattr(d, "bozo_exception", None))
+        # bozo_exception 里通常是解析告警，不一定致命；带上上下文方便排查
+        print(f"解析 RSS 时可能有问题: {url} ({SOURCE}) ->", getattr(d, "bozo_exception", None))
     return d
 
 def parse_dt(entry):

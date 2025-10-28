@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -8,11 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-WENHAO_CATEGORIES: Tuple[str, ...] = ("humanities", "tech")
-DEFAULT_LIMIT = 10
 DEFAULT_HOURS = 24
 
-# For general mode (aligned with info_writer)
 DIMENSION_LABELS: Dict[str, str] = {
     "timeliness": "时效性",
     "game_relevance": "游戏相关性",
@@ -25,6 +23,19 @@ DIMENSION_LABELS: Dict[str, str] = {
     "novelty": "新颖度",
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
+
+DEFAULT_WEIGHTS: Dict[str, float] = {
+    "timeliness": 0.20,
+    "game_relevance": 0.40,
+    "mobile_game_relevance": 0.20,
+    "ai_relevance": 0.10,
+    "tech_relevance": 0.05,
+    "quality": 0.25,
+    "insight": 0.35,
+    "depth": 0.25,
+    "novelty": 0.20,
+}
+
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "openai.research": 3.0,
     "deepmind": 1.0,
@@ -40,16 +51,14 @@ OUTPUT_BASE = DATA_DIR / "output" / "email"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Generate Email HTML digest (general or wenhao mode)",
-    )
-    parser.add_argument("--mode", choices=["general", "wenhao"], default="general", help="输出模式：general 通用资讯；wenhao 文浩精选")
-    parser.add_argument("--hours", type=int, default=DEFAULT_HOURS, help="时间窗口，默认 24 小时")
-    parser.add_argument("--output", type=str, default="", help="输出 HTML 路径；留空自动生成")
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="（wenhao 模式）每个分类最大条目数 (默认 10)")
-    parser.add_argument("--db", type=str, default=str(DB_PATH), help="SQLite 数据库路径")
-    parser.add_argument("--source-bonus", type=str, default="", help="（general 模式）JSON 格式的来源加成映射")
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="Generate Email HTML digest from SQLite (unified)")
+    p.add_argument("--hours", type=int, default=DEFAULT_HOURS, help="时间窗口（小时，默认 24）")
+    p.add_argument("--output", type=str, default="", help="输出 HTML 路径；留空自动生成")
+    p.add_argument("--db", type=str, default=str(DB_PATH), help="SQLite 数据库路径 (默认 data/info.db)")
+    p.add_argument("--categories", default="", help="分类白名单，逗号分隔（为空表示全部）")
+    p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
+    p.add_argument("--source-bonus", default="", help="来源加成 JSON，例如 '{\"openai.research\": 2}'")
+    return p.parse_args()
 
 
 def try_parse_dt(value: str) -> Optional[datetime]:
@@ -103,157 +112,24 @@ def human_time(publish: str) -> str:
     return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 北京时间")
 
 
-def fetch_rows(conn: sqlite3.Connection) -> List[tuple]:
-    sql = """
-    SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
-           r.timeliness_score, r.depth_score, r.novelty_score,
-           r.ai_summary, r.ai_comment
-    FROM info AS i
-    LEFT JOIN info_ai_review AS r ON r.info_id = i.id
-    """
-    return conn.execute(sql).fetchall()
-
-
-def select_items(rows: List[tuple], hours: int, limit: int) -> Dict[str, List[Dict[str, Any]]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, hours))
-    grouped: Dict[str, List[Dict[str, Any]]] = {cat: [] for cat in WENHAO_CATEGORIES}
-
-    for row in rows:
-        (
-            _id,
-            category,
-            source,
-            publish,
-            title,
-            link,
-            timeliness,
-            depth,
-            novelty,
-            summary,
-            comment,
-        ) = row
-
-        if category not in grouped:
-            continue
-        dt = try_parse_dt(str(publish or ""))
-        if not dt or dt < cutoff:
-            continue
-        if any(score is None for score in (timeliness, depth, novelty)):
-            continue
-        link = str(link or "").strip()
-        title = str(title or "").strip()
-        if not (link and title):
-            continue
-
-        entry = {
-            "id": int(_id),
-            "source": str(source or ""),
-            "publish": str(publish or ""),
-            "title": title,
-            "link": link,
-            "summary": str(summary or ""),
-            "comment": str(comment or ""),
-            "timeliness": int(timeliness or 0),
-            "depth": int(depth or 0),
-            "novelty": int(novelty or 0),
-        }
-        entry["score"] = compute_score(entry["depth"], entry["novelty"], entry["timeliness"])
-        grouped[category].append(entry)
-
-    for cat, items in grouped.items():
-        items.sort(
-            key=lambda it: (
-                float(it.get("score", 0.0)),
-                try_parse_dt(it.get("publish", "")) or datetime.min.replace(tzinfo=timezone.utc),
-            ),
-            reverse=True,
-        )
-        grouped[cat] = items[:max(1, limit)]
-
-    return grouped
-
-
-def render_html_wenhao(groups: Dict[str, List[Dict[str, Any]]], hours: int) -> str:
-    total = sum(len(v) for v in groups.values())
-    now_bj = datetime.now(timezone(timedelta(hours=8)))
-    head = """<!doctype html>
-<html lang=\"zh-CN\">
-<head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>WH精选</title>
-  <style>
-    body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 28px; color: #1f2937; }
-    h1 { font-size: 24px; margin: 0 0 6px; }
-    .meta { color: #6b7280; margin-bottom: 18px; }
-    h2 { font-size: 19px; margin: 26px 0 12px; border-bottom: 2px solid #e5e7eb; padding-bottom: 4px; }
-    .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; background: #fff; box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08); }
-    .card h3 { margin: 0 0 8px; font-size: 17px; }
-    .card a { color: #0b5ed7; text-decoration: none; }
-    .card a:hover { text-decoration: underline; }
-    .meta-line { color: #6b7280; font-size: 13px; margin-bottom: 6px; }
-    .scores { font-size: 14px; color: #374151; margin-bottom: 6px; }
-    .summary { font-size: 14px; color: #1f2937; margin-bottom: 6px; }
-    .comment { font-size: 14px; color: #4b5563; }
-  </style>
-</head>
-<body>
-"""
-    header = f"""
-<h1>WH精选 · 近 {hours} 小时</h1>
-<p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计 {total} 篇</p>
-"""
-
-    sections: List[str] = []
-    label_map = {"humanities": "人文精选", "tech": "科技精选"}
-    for cat in CATEGORIES:
-        items = groups.get(cat, [])
-        if not items:
-            continue
-        sections.append(f"<h2>{escape(label_map.get(cat, cat.title()))}</h2>")
-        for idx, item in enumerate(items, start=1):
-            publish = escape(human_time(item["publish"]))
-            link = escape(item["link"])
-            title = escape(item["title"]) or "Untitled"
-            source = escape(item.get("source", ""))
-            summary = escape(item.get("summary", ""))
-            comment = escape(item.get("comment", ""))
-            scores = (
-                f"深度：{item['depth']} · 新颖度：{item['novelty']} · 时效性：{item['timeliness']} · 总分：{item['score']:.2f}"
-            )
-            sections.append(
-                "<div class=\"card\">"
-                f"<h3>{idx}. <a href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\">{title}</a></h3>"
-                f"<div class=\"meta-line\">来源：{source or '未知'} · 发布时间：{publish}</div>"
-                f"<div class=\"scores\">{scores}</div>"
-                + (f"<div class=\"summary\">概要：{summary}</div>" if summary else "")
-                + (f"<div class=\"comment\">点评：{comment}</div>" if comment else "")
-                + "</div>"
-            )
-
-    if not sections:
-        return ""
-    tail = "\n</body>\n</html>\n"
-    return head + header + "\n".join(sections) + tail
-
-
-def fetch_recent_general(
-    conn: sqlite3.Connection,
-    cutoff: datetime,
-    source_bonus: Dict[str, float],
-) -> List[Dict[str, Any]]:
+def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, Any]]:
     has_review = bool(
-        conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'"
-        ).fetchone()
+        conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'").fetchone()
     )
     if has_review:
         sql = """
             SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
-                   r.timeliness_score, r.game_relevance_score, r.mobile_game_relevance_score,
-                   r.ai_relevance_score, r.tech_relevance_score, r.quality_score,
-                   r.insight_score, r.depth_score, r.novelty_score,
-                   r.ai_comment, r.ai_summary
+                   r.timeliness_score,
+                   r.game_relevance_score,
+                   r.mobile_game_relevance_score,
+                   r.ai_relevance_score,
+                   r.tech_relevance_score,
+                   r.quality_score,
+                   r.insight_score,
+                   r.depth_score,
+                   r.novelty_score,
+                   r.ai_comment,
+                   r.ai_summary
             FROM info AS i
             LEFT JOIN info_ai_review AS r ON r.info_id = i.id
         """
@@ -263,15 +139,15 @@ def fetch_recent_general(
             FROM info AS i
         """
     rows = conn.execute(sql).fetchall()
-    entries: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     for row in rows:
         publish = str(row[3] or "")
         dt = try_parse_dt(publish)
         if not dt or dt < cutoff:
             continue
         evaluation: Optional[Dict[str, Any]] = None
-        if has_review:
-            eva = {
+        if len(row) >= 17:  # joined with review table
+            evaluation = {
                 "timeliness": int(row[6]) if row[6] is not None else 0,
                 "game_relevance": int(row[7]) if row[7] is not None else 0,
                 "mobile_game_relevance": int(row[8]) if row[8] is not None else 0,
@@ -284,13 +160,7 @@ def fetch_recent_general(
                 "comment": str(row[15] or ""),
                 "summary": str(row[16] or ""),
             }
-            eva["final_score"] = compute_weighted_score(eva, {k: 1.0 for k in DIMENSION_ORDER})
-            bonus = float(source_bonus.get(str(row[2] or ""), 0.0))
-            if bonus:
-                eva["final_score"] = round(max(1.0, min(5.0, eva["final_score"] + bonus)), 2)
-                eva["bonus"] = bonus
-            evaluation = eva
-        entries.append(
+        items.append(
             {
                 "id": int(row[0]),
                 "category": str(row[1] or ""),
@@ -301,20 +171,20 @@ def fetch_recent_general(
                 "evaluation": evaluation,
             }
         )
-    entries.sort(
-        key=lambda item: try_parse_dt(item["publish"]) or datetime.min.replace(tzinfo=timezone.utc),
-        reverse=True,
-    )
-    return entries
+    return items
 
 
-def render_html_general(entries: List[Dict[str, Any]], hours: int) -> str:
+def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, float]) -> str:
     from collections import defaultdict
     by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     count = 0
     for e in entries:
+        eva = e.get("evaluation") or {}
+        if eva:
+            e["final_score"] = compute_weighted_score(eva, weights)
         by_cat[e.get("category", "")].append(e)
         count += 1
+
     now_bj = datetime.now(timezone(timedelta(hours=8)))
     head = f"""<!doctype html>
 <html lang=\"zh-CN\">
@@ -344,15 +214,12 @@ def render_html_general(entries: List[Dict[str, Any]], hours: int) -> str:
   </head>
 <body>
 """
+
     header = f"""
 <h1>最近 {hours} 小时资讯汇总</h1>
 <p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计：{count} 条</p>
 """
-    def human_time(p: str) -> str:
-        dt = try_parse_dt(p)
-        if not dt:
-            return p
-        return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 北京时间")
+
     def _render_article_card(entry: Dict[str, Any]) -> str:
         publish = entry.get("publish", "")
         dt = try_parse_dt(publish)
@@ -369,7 +236,7 @@ def render_html_general(entries: List[Dict[str, Any]], hours: int) -> str:
         title = escape(f"{source}:{raw_title}")
         evaluation = entry.get("evaluation")
         if evaluation:
-            final_score = float(evaluation.get("final_score", 0.0))
+            final_score = float(entry.get("final_score") or 0.0)
             rounded = int(final_score + 0.5)
             rounded = max(1, min(5, rounded))
             stars = "★" * rounded + "☆" * (5 - rounded)
@@ -399,7 +266,8 @@ def render_html_general(entries: List[Dict[str, Any]], hours: int) -> str:
             f"{rating_html}"
             "</article>"
         )
-    # category order
+
+    # Order categories: 'game' first, then others alphabetically, then empty
     categories = list(by_cat.keys())
     def cat_key(c: str):
         if c == "game":
@@ -408,19 +276,25 @@ def render_html_general(entries: List[Dict[str, Any]], hours: int) -> str:
             return (1, c.lower())
         return (2, "")
     categories.sort(key=cat_key)
+
     sections: List[str] = []
     for cat in categories:
         label = cat or "(未分类)"
         sections.append(f"<h2>{escape(label)}</h2>")
-        cat_entries = sorted(by_cat[cat], key=lambda e: try_parse_dt(e.get("publish","")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        # Sort entries by final_score then time
+        def key_fn(e: Dict[str, Any]):
+            score = float(e.get("final_score") or 0.0)
+            dt = try_parse_dt(e.get("publish", "") or "") or datetime.min.replace(tzinfo=timezone.utc)
+            return (score, dt)
+        cat_entries = sorted(by_cat[cat], key=key_fn, reverse=True)
         for entry in cat_entries:
             sections.append(_render_article_card(entry))
+
     tail = "\n</body>\n</html>\n"
     return head + header + "\n".join(sections) + tail
 
 
 def main() -> None:
-    import json
     args = parse_args()
     db_path = Path(args.db)
     if not db_path.exists():
@@ -432,35 +306,55 @@ def main() -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
     else:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        suffix = "general" if args.mode == "general" else "wenhao"
-        out_path = OUTPUT_BASE / f"{ts}-{suffix}.html"
+        out_path = OUTPUT_BASE / f"{ts}-email.html"
 
+    # Load config
+    weights = DEFAULT_WEIGHTS.copy()
+    if args.weights.strip():
+        try:
+            overrides = json.loads(args.weights)
+            if isinstance(overrides, dict):
+                for k, v in overrides.items():
+                    if k in DIMENSION_LABELS and isinstance(v, (int, float)):
+                        weights[k] = float(v)
+        except json.JSONDecodeError:
+            pass
+    source_bonus = DEFAULT_SOURCE_BONUS.copy()
+    if args.source_bonus.strip():
+        try:
+            overrides = json.loads(args.source_bonus)
+            if isinstance(overrides, dict):
+                for k, v in overrides.items():
+                    if isinstance(v, (int, float)):
+                        source_bonus[str(k)] = float(v)
+        except json.JSONDecodeError:
+            pass
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, args.hours))
     with sqlite3.connect(str(db_path)) as conn:
-        if args.mode == "wenhao":
-            rows = fetch_rows(conn)
-            groups = select_items(rows, args.hours, args.limit)
-            if sum(len(v) for v in groups.values()) == 0:
-                print("没有符合条件的资讯，未生成文件")
-                return
-            html = render_html_wenhao(groups, args.hours)
-        else:
-            # general mode: include all categories; optional source bonus
-            source_bonus = DEFAULT_SOURCE_BONUS.copy()
-            if args.source_bonus.strip():
-                try:
-                    overrides = json.loads(args.source_bonus)
-                    if isinstance(overrides, dict):
-                        for k, v in overrides.items():
-                            if isinstance(v, (int, float)):
-                                source_bonus[str(k)] = float(v)
-                except json.JSONDecodeError:
-                    pass
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, args.hours))
-            entries = fetch_recent_general(conn, cutoff, source_bonus)
-            if not entries:
-                print("没有符合条件的资讯，未生成文件")
-                return
-            html = render_html_general(entries, args.hours)
+        entries = fetch_recent(conn, cutoff)
+        # Apply category filter
+        if args.categories.strip():
+            cats = [c.strip() for c in args.categories.split(",") if c.strip()]
+            if cats:
+                entries = [e for e in entries if (e.get("category") or "") in cats]
+        # Apply source bonus and compute final_score
+        for e in entries:
+            eva = e.get("evaluation") or {}
+            if eva:
+                bonus = float(source_bonus.get(e.get("source", ""), 0.0))
+                if bonus:
+                    eva["bonus"] = bonus
+                score = compute_weighted_score(eva, weights)
+                if bonus:
+                    score = max(1.0, min(5.0, score + bonus))
+                e["final_score"] = round(score, 2)
+
+    if not entries:
+        print("没有符合条件的资讯，未生成文件")
+        return
+
+    html = render_html(entries, args.hours, weights)
     if not html:
         print("没有符合条件的资讯，未生成文件")
         return
@@ -470,3 +364,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

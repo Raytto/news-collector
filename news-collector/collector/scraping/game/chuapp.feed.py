@@ -72,7 +72,7 @@ def fetch_feed(url: str = RSS_URL):
         # Only log truly unexpected parse errors; ignore undefined entity noise we already sanitized
         exc = getattr(feed, "bozo_exception", None)
         if exc and "undefined entity" not in str(exc).lower():
-            print("解析 RSS 时可能有问题:", exc)
+            print(f"解析 RSS 时可能有问题: {url} ({SOURCE}) ->", exc)
     return feed
 
 

@@ -72,7 +72,7 @@ def _html_to_text(html: str) -> str:
 def fetch_feed(url: str = RSS_URL):
     d = feedparser.parse(url)
     if getattr(d, "bozo", False):
-        print("解析 RSS 时可能有问题:", getattr(d, "bozo_exception", None))
+        print(f"解析 RSS 时可能有问题: {url} ({SOURCE}) ->", getattr(d, "bozo_exception", None))
     return d
 
 
@@ -183,4 +183,3 @@ def main(limit: int = 10) -> None:
 
 if __name__ == "__main__":
     main()
-

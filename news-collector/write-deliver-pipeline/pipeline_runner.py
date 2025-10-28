@@ -107,31 +107,47 @@ def run_writer(
         if bonus_json:
             cmd += ["--source-bonus", bonus_json]
     elif wtype == "wenhao_html":
-        # Use unified email_writer in wenhao mode
+        # Use unified email_writer with DB-provided categories/weights/bonus
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
             str(WRITER_DIR / "email_writer.py"),
-            "--mode",
-            "wenhao",
             "--hours",
             str(hours),
             "--output",
             str(out_path),
         ]
+        if int(filters.get("all_categories") or 1) == 0:
+            try:
+                cats = json.loads(filters.get("categories_json") or "[]")
+                if isinstance(cats, list) and cats:
+                    cmd += ["--categories", ",".join(str(c).strip() for c in cats if str(c).strip())]
+            except json.JSONDecodeError:
+                pass
+        if weights_json:
+            cmd += ["--weights", weights_json]
+        if bonus_json:
+            cmd += ["--source-bonus", bonus_json]
     elif wtype == "info_html":
-        # Use unified email_writer in general mode
+        # Use unified email_writer in general mode with optional categories/weights/bonus
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
             str(WRITER_DIR / "email_writer.py"),
-            "--mode",
-            "general",
             "--hours",
             str(hours),
             "--output",
             str(out_path),
         ]
+        if int(filters.get("all_categories") or 1) == 0:
+            try:
+                cats = json.loads(filters.get("categories_json") or "[]")
+                if isinstance(cats, list) and cats:
+                    cmd += ["--categories", ",".join(str(c).strip() for c in cats if str(c).strip())]
+            except json.JSONDecodeError:
+                pass
+        if weights_json:
+            cmd += ["--weights", weights_json]
         if bonus_json:
             cmd += ["--source-bonus", bonus_json]
     else:
@@ -214,7 +230,7 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
         raise SystemExit(f"pipeline {p.name} 未配置投递")
 
     # If writer depends on AI review table, ensure it exists before running
-    needs_ai = str(writer.get("type", "")) in {"feishu_md", "wenhao_html"}
+    needs_ai = str(writer.get("type", "")) in {"feishu_md"}
     has_ai_table = bool(cur.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'"
     ).fetchone())
