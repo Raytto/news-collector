@@ -18,6 +18,7 @@ OUTPUT_DIR = DATA_DIR / "output"
 DIMENSION_LABELS: Dict[str, str] = {
     "timeliness": "时效性",
     "game_relevance": "游戏相关性",
+    "mobile_game_relevance": "手游相关性",
     "ai_relevance": "AI相关性",
     "tech_relevance": "科技相关性",
     "quality": "文章质量",
@@ -27,12 +28,13 @@ DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 
 # 默认权重（与 docs/prompt/ai-evaluation-spec.md 保持一致），可在此按用户群体调整
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.10,
-    "game_relevance": 0.24,
-    "ai_relevance": 0.18,
+    "timeliness": 0.09,
+    "game_relevance": 0.22,
+    "mobile_game_relevance": 0.10,
+    "ai_relevance": 0.16,
     "tech_relevance": 0.04,
-    "quality": 0.16,
-    "insight": 0.28,
+    "quality": 0.14,
+    "insight": 0.25,
 }
 
 # Optional manual bonus per source, e.g. {"openai.research": 2}
@@ -155,7 +157,8 @@ def fetch_recent(
         sql = """
             SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
                    r.final_score,
-                   r.timeliness_score, r.game_relevance_score, r.ai_relevance_score, r.tech_relevance_score, r.quality_score,
+                   r.timeliness_score, r.game_relevance_score, r.mobile_game_relevance_score,
+                   r.ai_relevance_score, r.tech_relevance_score, r.quality_score,
                    r.insight_score,
                    r.ai_comment, r.ai_summary
             FROM info AS i
@@ -183,12 +186,13 @@ def fetch_recent(
                 "final_score": float(final_score),
                 "timeliness": int(row[7]) if row[7] is not None else 0,
                 "game_relevance": int(row[8]) if row[8] is not None else 0,
-                "ai_relevance": int(row[9]) if row[9] is not None else 0,
-                "tech_relevance": int(row[10]) if row[10] is not None else 0,
-                "quality": int(row[11]) if row[11] is not None else 0,
-                "insight": int(row[12]) if row[12] is not None else 0,
-                "comment": str(row[13] or ""),
-                "summary": str(row[14] or ""),
+                "mobile_game_relevance": int(row[9]) if row[9] is not None else 0,
+                "ai_relevance": int(row[10]) if row[10] is not None else 0,
+                "tech_relevance": int(row[11]) if row[11] is not None else 0,
+                "quality": int(row[12]) if row[12] is not None else 0,
+                "insight": int(row[13]) if row[13] is not None else 0,
+                "comment": str(row[14] or ""),
+                "summary": str(row[15] or ""),
             }
             # 动态计算当前展示所需的加权总分（忽略数据库中的旧 final_score）
             evaluation["final_score"] = compute_weighted_score(evaluation)

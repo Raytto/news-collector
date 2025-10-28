@@ -52,8 +52,8 @@
   - `--dry-run`：仅打印预览，不写文件。
 
 ## 6. 计算细节（与 info_writer 对齐）
-- 维度：`timeliness`、`game_relevance`、`ai_relevance`、`tech_relevance`、`quality`。
-- 默认权重：`0.20/0.25/0.20/0.15/0.20`（可覆盖）。
+- 维度：`timeliness`、`game_relevance`、`mobile_game_relevance`、`ai_relevance`、`tech_relevance`、`quality`、`insight`。
+- 默认权重：`0.09/0.22/0.10/0.14/0.05/0.18/0.22`（可覆盖，与脚本常量保持一致）。
 - 总分计算：加权平均，范围限制在 `[1.0, 5.0]`，四舍五入两位小数；若所有权重为 0，则总分返回 0（该条可被 `--min-score` 过滤）。
 
 ## 7. 异常与降级

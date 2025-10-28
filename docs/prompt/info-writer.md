@@ -19,7 +19,7 @@ HTML 输出规范：
 - 仅包含能够解析为时间的 publish 值；其余记录忽略。
 - 组内按“加权总分”降序，再以发布时间降序打破并列。
 - 默认权重遵循 docs/prompt/ai-evaluation-spec.md：
-  - timeliness 0.20，game_relevance 0.25，ai_relevance 0.20，tech_relevance 0.15，quality 0.20。
+  - timeliness 0.16，game_relevance 0.22，mobile_game_relevance 0.10，ai_relevance 0.16，tech_relevance 0.13，quality 0.14，insight 0.09。
   - Writer 在渲染阶段根据各维度分数动态计算总分，不依赖数据库中的 final_score。
   - 如需为不同用户群体定制，可按需求调整 info_writer.py 中的权重映射。
 
