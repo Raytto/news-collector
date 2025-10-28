@@ -28,19 +28,19 @@ DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 
 # 默认权重（与 docs/prompt/ai-evaluation-spec.md 保持一致），可在此按用户群体调整
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.09,
-    "game_relevance": 0.22,
-    "mobile_game_relevance": 0.10,
-    "ai_relevance": 0.16,
-    "tech_relevance": 0.04,
-    "quality": 0.14,
+    "timeliness": 0.10,
+    "game_relevance": 0.15,
+    "mobile_game_relevance": 0.15,
+    "ai_relevance": 0.10,
+    "tech_relevance": 0.05,
+    "quality": 0.20,
     "insight": 0.25,
 }
 
 # Optional manual bonus per source, e.g. {"openai.research": 2}
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "openai.research": 2.0,
-    "deepmind": 2.0,
+    "deepmind": 1.0,
     "qbitai-zhiku": 2.0,
 }
 

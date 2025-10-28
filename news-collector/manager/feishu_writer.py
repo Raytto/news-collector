@@ -26,13 +26,13 @@ DIMENSION_LABELS: Dict[str, str] = {
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.09,
-    "game_relevance": 0.22,
-    "mobile_game_relevance": 0.10,
-    "ai_relevance": 0.14,
+    "timeliness": 0.10,
+    "game_relevance": 0.15,
+    "mobile_game_relevance": 0.15,
+    "ai_relevance": 0.10,
     "tech_relevance": 0.05,
-    "quality": 0.18,
-    "insight": 0.22,
+    "quality": 0.20,
+    "insight": 0.25,
 }
 
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
