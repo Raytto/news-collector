@@ -1,0 +1,1 @@
+python news-collector/collector/collect_to_sqlite.py  && python news-collector/evaluator/ai_evaluate.py
