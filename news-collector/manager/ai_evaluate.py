@@ -26,12 +26,13 @@ _PROMPT_CANDIDATES = [
 PROMPT_PATH = next((p for p in _PROMPT_CANDIDATES if p and p.exists()), _PROMPT_CANDIDATES[1])
 
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.18,
-    "game_relevance": 0.24,
-    "ai_relevance": 0.18,
-    "tech_relevance": 0.14,
-    "quality": 0.16,
-    "insight": 0.10,
+    "timeliness": 0.16,
+    "game_relevance": 0.22,
+    "mobile_game_relevance": 0.10,
+    "ai_relevance": 0.16,
+    "tech_relevance": 0.13,
+    "quality": 0.14,
+    "insight": 0.09,
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DEFAULT_WEIGHTS.keys())
 
@@ -55,6 +56,7 @@ class EvaluationResult:
     final_score: float
     timeliness: int
     game_relevance: int
+    mobile_game_relevance: int
     ai_relevance: int
     tech_relevance: int
     quality: int
@@ -192,6 +194,7 @@ def ensure_table(conn: sqlite3.Connection) -> None:
             final_score REAL NOT NULL,
             timeliness_score INTEGER NOT NULL,
             game_relevance_score INTEGER,
+            mobile_game_relevance_score INTEGER,
             ai_relevance_score INTEGER,
             tech_relevance_score INTEGER,
             quality_score INTEGER,
@@ -208,7 +211,14 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     # Backfill/migrate: add new columns if missing
     try:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(info_ai_review)")}
-        for col in ("game_relevance_score", "ai_relevance_score", "tech_relevance_score", "quality_score", "insight_score"):
+        for col in (
+            "game_relevance_score",
+            "mobile_game_relevance_score",
+            "ai_relevance_score",
+            "tech_relevance_score",
+            "quality_score",
+            "insight_score",
+        ):
             if col not in cols:
                 conn.execute(f"ALTER TABLE info_ai_review ADD COLUMN {col} INTEGER")
         conn.commit()
@@ -353,6 +363,7 @@ def validate_scores(data: Dict[str, object]) -> EvaluationResult:
         final_score=0.0,  # placeholder, 将在外部计算
         timeliness=scores["timeliness"],
         game_relevance=scores["game_relevance"],
+        mobile_game_relevance=scores["mobile_game_relevance"],
         ai_relevance=scores["ai_relevance"],
         tech_relevance=scores["tech_relevance"],
         quality=scores["quality"],
@@ -388,6 +399,7 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             final_score,
             timeliness_score,
             game_relevance_score,
+            mobile_game_relevance_score,
             ai_relevance_score,
             tech_relevance_score,
             quality_score,
@@ -396,11 +408,12 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             ai_summary,
             raw_response,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(info_id) DO UPDATE SET
             final_score=excluded.final_score,
             timeliness_score=excluded.timeliness_score,
             game_relevance_score=excluded.game_relevance_score,
+            mobile_game_relevance_score=excluded.mobile_game_relevance_score,
             ai_relevance_score=excluded.ai_relevance_score,
             tech_relevance_score=excluded.tech_relevance_score,
             quality_score=excluded.quality_score,
@@ -415,6 +428,7 @@ def store_evaluation(conn: sqlite3.Connection, evaluation: EvaluationResult) -> 
             evaluation.final_score,
             evaluation.timeliness,
             evaluation.game_relevance,
+            evaluation.mobile_game_relevance,
             evaluation.ai_relevance,
             evaluation.tech_relevance,
             evaluation.quality,
@@ -456,13 +470,20 @@ def evaluate_articles(
         result.final_score = 0.0
 
         if dry_run:
+            dims = " / ".join(
+                [
+                    f"时效:{result.timeliness}",
+                    f"游戏:{result.game_relevance}",
+                    f"手游:{result.mobile_game_relevance}",
+                    f"AI:{result.ai_relevance}",
+                    f"科技:{result.tech_relevance}",
+                    f"质量:{result.quality}",
+                    f"洞察:{result.insight}",
+                ]
+            )
             print(
                 f"[预览] {article.info_id} {article.title}\n"
-                f"  总推荐度: {result.final_score}"
-                f" | 时效性: {result.timeliness}"
-                f" | 相关性: {result.relevance}"
-                f" | 洞察力: {result.insightfulness}"
-                f" | 可行动性: {result.actionability}\n"
+                f"  {dims}\n"
                 f"  评价: {result.comment}\n  概要: {result.summary}"
             )
         else:
@@ -472,7 +493,8 @@ def evaluate_articles(
             print(
                 f"[完成] {article.info_id} - {article.title} -> "
                 f"时效:{result.timeliness} / 游戏:{result.game_relevance} / "
-                f"AI:{result.ai_relevance} / 科技:{result.tech_relevance} / 质量:{result.quality} / 洞察:{result.insight}"
+                f"手游:{result.mobile_game_relevance} / AI:{result.ai_relevance} / "
+                f"科技:{result.tech_relevance} / 质量:{result.quality} / 洞察:{result.insight}"
             )
         if config.interval > 0:
             time.sleep(config.interval)

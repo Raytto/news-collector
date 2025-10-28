@@ -18,6 +18,7 @@ OUT_DIR = DATA_DIR / "feishu-msg"
 DIMENSION_LABELS: Dict[str, str] = {
     "timeliness": "时效性",
     "game_relevance": "游戏相关性",
+    "mobile_game_relevance": "手游相关性",
     "ai_relevance": "AI相关性",
     "tech_relevance": "科技相关性",
     "quality": "文章质量",
@@ -25,12 +26,13 @@ DIMENSION_LABELS: Dict[str, str] = {
 }
 DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.10,
-    "game_relevance": 0.25,
-    "ai_relevance": 0.10,
+    "timeliness": 0.09,
+    "game_relevance": 0.22,
+    "mobile_game_relevance": 0.10,
+    "ai_relevance": 0.14,
     "tech_relevance": 0.05,
-    "quality": 0.20,
-    "insight": 0.30,
+    "quality": 0.18,
+    "insight": 0.22,
 }
 
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
@@ -115,8 +117,8 @@ def compute_weighted_score(eva: Dict[str, Any], weights: Dict[str, float]) -> fl
 def load_rows(conn: sqlite3.Connection) -> List[tuple]:
     sql = """
     SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
-           r.timeliness_score, r.game_relevance_score, r.ai_relevance_score,
-           r.tech_relevance_score, r.quality_score, r.insight_score,
+           r.timeliness_score, r.game_relevance_score, r.mobile_game_relevance_score,
+           r.ai_relevance_score, r.tech_relevance_score, r.quality_score, r.insight_score,
            r.ai_summary
     FROM info AS i
     LEFT JOIN info_ai_review AS r ON r.info_id = i.id
@@ -193,7 +195,7 @@ def main() -> None:
     by_cat: Dict[str, List[Dict[str, Any]]] = {c: [] for c in categories}
     seen_links: set[str] = set()
     for row in rows:
-        _id, cat, source, publish, title, link, t, g, a, te, q, ins, ai_summary = row
+        _id, cat, source, publish, title, link, t, g, mg, a, te, q, ins, ai_summary = row
         dt = try_parse_dt(str(publish or ""))
         if not dt or dt < cutoff:
             continue
@@ -209,6 +211,7 @@ def main() -> None:
         eva = {
             "timeliness": int(t) if t is not None else 0,
             "game_relevance": int(g) if g is not None else 0,
+            "mobile_game_relevance": int(mg) if mg is not None else 0,
             "ai_relevance": int(a) if a is not None else 0,
             "tech_relevance": int(te) if te is not None else 0,
             "quality": int(q) if q is not None else 0,

@@ -22,19 +22,21 @@
 - 需包含占位符（如 `{{title}}`、`{{detail}}`），由脚本渲染；全部中文输出。
 
 ## 5. 评估维度与权重（更新版）
-- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）。
+- 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`mobile_game_relevance`（手游相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）。
 - 分值范围：1（差）— 5（优）。
 - 初始权重（Writer 端动态计算，可用 `AI_SCORE_WEIGHTS` 覆盖）：
-  - `timeliness`: 0.18
-  - `game_relevance`: 0.24
-  - `ai_relevance`: 0.18
-  - `tech_relevance`: 0.14
-  - `quality`: 0.16
-  - `insight`: 0.10
+  - `timeliness`: 0.16
+  - `game_relevance`: 0.22
+  - `mobile_game_relevance`: 0.10
+  - `ai_relevance`: 0.16
+  - `tech_relevance`: 0.13
+  - `quality`: 0.14
+  - `insight`: 0.09
 
 ### 维度定义与打分参考
 - 时效性 timeliness：内容与当前时间的相关程度；5=当天/最新事件；4=一周内热点；3=一月内一般新闻；2=旧闻但仍具参考；1=过时或无时间关联。
 - 游戏相关性 game_relevance：与游戏产业/产品/市场/发行/买量/数据等贴合程度；5=深度聚焦核心议题/数据/案例，1=无关。
+- 手游相关性 mobile_game_relevance：针对移动游戏（手游）赛道的聚焦程度；5=核心聚焦手游产品/发行/买量/数据/市场洞察；3=泛游戏且与手游有一定关联；1=与手游无直接关系。
 - AI 相关性 ai_relevance：与 AI 技术/模型/工具链/评测/应用相关程度；5=直指模型/算法/评测或标杆案例，1=无关。
 - 科技相关性 tech_relevance：与芯片/云/硬件/互联网基础设施等关联性；5=面向科技产业核心构件或生态，1=无关。
 - 文章质量 quality：结构清晰、论证完整、数据/引用可靠、信息密度高、废话少、可读性好；5=结构严谨数据充分，1=水文或缺乏依据。
@@ -48,11 +50,13 @@
   | `final_score` | NUMERIC(3,2) | NOT NULL | 加权总分 |
   | `timeliness_score` | SMALLINT | NOT NULL | 1–5 |
   | `game_relevance_score` | SMALLINT | NOT NULL | 1–5 |
+  | `mobile_game_relevance_score` | SMALLINT | NOT NULL | 1–5 |
   | `ai_relevance_score` | SMALLINT | NOT NULL | 1–5 |
   | `tech_relevance_score` | SMALLINT | NOT NULL | 1–5 |
   | `quality_score` | SMALLINT | NOT NULL | 1–5 |
-  | `ai_summary` | TEXT | NOT NULL | 一句话概要 |
+  | `insight_score` | SMALLINT | NOT NULL | 1–5 |
   | `ai_comment` | TEXT | NOT NULL | 一句话评价 |
+  | `ai_summary` | TEXT | NOT NULL | 一句话概要 |
   | `raw_response` | TEXT |  | 原始响应 |
   | `created_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |  |
   | `updated_at` | TIMESTAMP | DEFAULT CURRENT_TIMESTAMP |  |

@@ -53,12 +53,13 @@ Created by `ai_evaluate.py` when first executed.
 CREATE TABLE IF NOT EXISTS info_ai_review (
   info_id                INTEGER PRIMARY KEY,
   final_score            REAL    NOT NULL,
-  timeliness_score       INTEGER NOT NULL,
-  game_relevance_score   INTEGER,
-  ai_relevance_score     INTEGER,
-  tech_relevance_score   INTEGER,
-  quality_score          INTEGER,
-  insight_score          INTEGER,
+  timeliness_score             INTEGER NOT NULL,
+  game_relevance_score         INTEGER,
+  mobile_game_relevance_score  INTEGER,
+  ai_relevance_score           INTEGER,
+  tech_relevance_score         INTEGER,
+  quality_score                INTEGER,
+  insight_score                INTEGER,
   ai_comment             TEXT    NOT NULL,
   ai_summary             TEXT    NOT NULL,
   raw_response           TEXT,
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS info_ai_review (
 );
 ```
 
-Scores are 1–5 integers per dimension; `final_score` is a weighted 1–5 float. The manager adds missing columns via `ALTER TABLE` if you are upgrading from an older schema. Newest dimension: `insight`（洞察力）。
+Scores are 1–5 integers per dimension; `final_score` is a weighted 1–5 float. The manager adds missing columns via `ALTER TABLE` if you are upgrading from an older schema. 最新维度：`mobile_game_relevance`（手游相关性）。
 
 ## Insertion, Detail Fetch & De-duplication
 
@@ -127,6 +128,7 @@ SELECT i.id, i.source, i.category, i.publish, i.title, i.link,
        r.final_score,
        r.timeliness_score,
        r.game_relevance_score,
+       r.mobile_game_relevance_score,
        r.ai_relevance_score,
        r.tech_relevance_score,
        r.quality_score,
