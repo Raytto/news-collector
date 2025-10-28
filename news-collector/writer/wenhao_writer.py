@@ -163,7 +163,7 @@ def render_html(groups: Dict[str, List[Dict[str, Any]]], hours: int) -> str:
 <head>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  <title>问好精选</title>
+  <title>WH精选</title>
   <style>
     body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 28px; color: #1f2937; }
     h1 { font-size: 24px; margin: 0 0 6px; }
@@ -182,7 +182,7 @@ def render_html(groups: Dict[str, List[Dict[str, Any]]], hours: int) -> str:
 <body>
 """
     header = f"""
-<h1>问好精选 · 近 {hours} 小时</h1>
+<h1>WH精选 · 近 {hours} 小时</h1>
 <p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计 {total} 篇</p>
 """
 

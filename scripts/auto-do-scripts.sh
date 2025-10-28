@@ -79,13 +79,13 @@ run_once() {
   echo "[INFO] Building Wenhao digest: $wenhao_file" >&2
   $PYTHON "$ROOT_DIR/news-collector/writer/wenhao_writer.py" --hours 24 --output "$wenhao_file" || true
   if [ -f "$wenhao_file" ]; then
-    wenhao_subject="问好精选"
-    echo "[INFO] Mailing Wenhao digest to 306483372@qq.com" >&2
+    wenhao_subject="HW精选"
+    echo "[INFO] Mailing Wenhao digest to 410861858@qq.com" >&2
     $PYTHON "$ROOT_DIR/news-collector/deliver/mail_today.py" \
       --html "$wenhao_file" \
       --subject "$wenhao_subject" \
       --sender "pangruitaosite@gmail.com" \
-      --to "306483372@qq.com" || true
+      --to "410861858@qq.com" || true
   else
     echo "[WARN] Wenhao digest not generated, skip email" >&2
   fi
