@@ -59,7 +59,7 @@ run_once() {
       --to-all \
       --file "$feishu_msg_file" \
       --as-card \
-      --title "40小时新文章AI推荐" || true
+      --title "情报官今日推荐" || true
   else
     echo "[WARN] Feishu message file not found, skip broadcast: $feishu_msg_file" >&2
   fi
