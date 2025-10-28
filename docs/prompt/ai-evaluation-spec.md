@@ -69,13 +69,13 @@
 - 为 `final_score` 与时间列增加索引，便于排序与筛选。
 
 ## 7. 管理脚本职责
-- 位置：`news-collector/manager/ai_evaluate.py`。
+- 位置：`news-collector/evaluator/ai_evaluate.py`。
 - 核心流程：选择缺评估的 `info` 行 → 渲染提示词 → 调用 API（重试/限速）→ 校验字段 → 写入 `info_ai_review`。
 - 注意：评估阶段不必计算“加权总分”，只需存储各维度评分、`comment` 与 `summary`。总分由展示层在渲染时按当前权重规则动态计算。
 - CLI：支持 `--limit`、`--dry-run`、`--hours`（时间窗筛选）。
 
 ## 8. 展示层输出
-- `manager/info_writer.py` 展示：总分（星级+数值）+ 各维度分 + 中文评价/概要；缺评估显示占位提示。
+- `news-collector/writer/info_writer.py` 展示：总分（星级+数值）+ 各维度分 + 中文评价/概要；缺评估显示占位提示。
 
 ## 9. AI 客户端实现要点
 - 从环境变量加载配置；处理网络错误/超时/重试；严格校验 JSON 字段与分值区间。
@@ -90,7 +90,7 @@
 
 ## 12. 测试与验收
 - 单元：提示词渲染、响应解析与校验、加权逻辑；集成：模拟 API 响应。
-- 手动：配置测试 Key → 运行 `python manager/ai_evaluate.py --dry-run` → 检查 `info_ai_review`。
+- 手动：配置测试 Key → 运行 `python news-collector/evaluator/ai_evaluate.py --dry-run` → 检查 `info_ai_review`。
 
 ## 13. 发布与回填
 - 回填历史记录；权重更新时可定期重跑；同步表结构与输出格式给下游。

@@ -1,4 +1,4 @@
-在 manager 目录下写脚本，使其能运行一遍 scraping 目录下的所有信息源，并把信息保存到 sqlite 中（在 data 目录下放一个 info.db）
+在 `news-collector/collector` 目录下编写脚本，使其能运行一遍 `collector/scraping` 目录下的所有信息源，并把信息保存到 sqlite 中（在 `data` 目录下放一个 info.db）。
 需要包含列：
 - source:来源
 - publish:发布时间,精确到秒

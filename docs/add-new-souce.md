@@ -1,9 +1,9 @@
 # 增加信息源的实施指南
 
-为了保持各信息源脚本的一致性，新增信息源时请遵循以下约定。可参考 `news-collector/scraping` 目录下现有的脚本（例如 `game/gamedeveloper.rss.py`、`game/naavik.digest.py`、`game/nikopartners.blog.py` 等）完成实现。
+为了保持各信息源脚本的一致性，新增信息源时请遵循以下约定。可参考 `news-collector/collector/scraping` 目录下现有的脚本（例如 `game/gamedeveloper.rss.py`、`game/naavik.digest.py`、`game/nikopartners.blog.py` 等）完成实现。
 
 ## 目录结构与命名
-- 所有脚本放在 `news-collector/scraping/<category>/` 目录下，`<category>` 与返回的 `category` 字段保持一致，例如游戏资讯放在 `news-collector/scraping/game/`。
+- 所有脚本放在 `news-collector/collector/scraping/<category>/` 目录下，`<category>` 与返回的 `category` 字段保持一致，例如游戏资讯放在 `news-collector/collector/scraping/game/`。
 - 文件名使用来源域名或品牌 + 数据来源类型（`rss.py`、`feed.py`、`blog.py` 等），全部小写并以点分隔，参考 `gameindustry.biz.rss.py`、`sensortower.blog.py`。
 - 在脚本顶层定义 `SOURCE`（信息源标识）、`CATEGORY`（所属分类）、`UA`（必要时的 User-Agent）等常量，方便统一复用。
 
@@ -30,7 +30,7 @@
 
 ## 调试与自检
 - 在模块末尾保留 `if __name__ == "__main__":` 块，打印最近若干条结果，便于快速验证抓取是否成功。
-- 新增脚本后，至少本地运行一次 `python news-collector/scraping/<category>/<script>.py` 确认无异常。
+- 新增脚本后，至少本地运行一次 `python news-collector/collector/scraping/<category>/<script>.py` 确认无异常。
 - 若新增公共工具函数，可在模块顶部定义，保持纯函数便于复用。
 
 ## 依赖与文档

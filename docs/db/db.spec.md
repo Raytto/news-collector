@@ -7,8 +7,8 @@ This document describes the SQLite schema used by the manager scripts to persist
 - Engine: SQLite 3
 - File path: `data/info.db` (relative to repo root)
 - Writers:
-  - Articles: `news-collector/manager/collect_to_sqlite.py`
-  - AI evaluation: `news-collector/manager/ai_evaluate.py`
+  - Articles: `news-collector/collector/collect_to_sqlite.py`
+  - AI evaluation: `news-collector/evaluator/ai_evaluate.py`
 - De-duplication: unique on `link` in `info` (for new databases created by the manager). Existing databases may still use the older `(source, publish, title)` index unless migrated manually.
 
 ## Schema

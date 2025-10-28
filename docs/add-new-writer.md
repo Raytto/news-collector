@@ -1,9 +1,9 @@
 # Writer 扩展实施指南
 
-本文档约定在 `news-collector/manager/` 目录内新增“Writer”类脚本时需遵守的规范，确保输出样式、依赖和 CLI 行为与现有 `info_writer.py`、`feishu_writer.py` 一致。
+本文档约定在 `news-collector/writer/` 目录内新增“Writer”类脚本时需遵守的规范，确保输出样式、依赖和 CLI 行为与现有 `info_writer.py`、`feishu_writer.py` 一致。
 
 ## 1. 目录与命名
-- 统一放在 `news-collector/manager/` 下，文件名使用 `snake_case`，并带有 `_writer` 后缀（例如 `newsletter_writer.py`）。
+- 统一放在 `news-collector/writer/` 下，文件名使用 `snake_case`，并带有 `_writer` 后缀（例如 `newsletter_writer.py`）。
 - 若 Writer 需要专属文档或示例，请在 `docs/prompt/` 子目录中新增对应说明；不要把说明散落在脚本文件里。
 
 ## 2. 数据来源与依赖
@@ -33,7 +33,7 @@
 
 ## 6. 测试与校验
 - 至少确保 `python -m compileall news-collector` 通过。
-- 推荐补充针对权重计算、过滤逻辑的单元测试，可放置在 `news-collector/manager/tests/`（若目录尚不存在需创建）。
+- 推荐补充针对权重计算、过滤逻辑的单元测试，可放置在 `news-collector/writer/tests/`（若目录尚不存在需创建）。
 - 新增 Writer 前请运行一次 `info_writer.py` 与 `feishu_writer.py` 验证共享常量未被破坏。
 
 ## 7. 与现有 Writer 对齐的要点
@@ -42,4 +42,3 @@
 - 新 Writer 若与上述脚本共享逻辑（例如 `compute_weighted_score`），优先复用或提取公共函数，避免复制粘贴后出现漂移。
 
 遵循以上规范可以确保新增 Writer 在命名、数据处理与输出风格上保持一致，便于其他模块复用与维护。
-

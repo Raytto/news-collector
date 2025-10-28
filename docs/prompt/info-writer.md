@@ -1,4 +1,4 @@
-manager 下的 info_writer.py 脚本需要支持参数设置近 X 小时（默认 24 小时）。
+`news-collector/writer/info_writer.py` 脚本需要支持参数设置近 X 小时（默认 24 小时）。
 
 根据近 X 小时参数，从 info.db 的 info 表中过滤信息（仅保留“发布时间 publish 能被解析为时间且位于窗口内”的记录）。
 
@@ -21,7 +21,7 @@ HTML 输出规范：
 - 默认权重遵循 docs/prompt/ai-evaluation-spec.md：
   - timeliness 0.09，game_relevance 0.14，mobile_game_relevance 0.14，ai_relevance 0.09，tech_relevance 0.05，quality 0.18，insight 0.18，depth 0.08，novelty 0.05。
   - Writer 在渲染阶段根据各维度分数动态计算总分，不依赖数据库中的 final_score。
-  - 如需为不同用户群体定制，可按需求调整 info_writer.py 中的权重映射。
+  - 如需为不同用户群体定制，可按需求调整 `info_writer.py` 中的权重映射。
 
 可选增强（非强制）：
 - 在页面顶部加入来源统计（每个来源的条目数）。

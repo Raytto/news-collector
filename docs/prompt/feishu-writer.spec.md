@@ -1,4 +1,4 @@
-实现一个“飞书消息写入脚本”，用于生成适配飞书发送的精简 Markdown 文本（更适合 `--as-card` 发送），按类别输出最近资讯的“AI 推荐榜”。脚本位于 `news-collector/manager/feishu_writer.py`。
+实现一个“飞书消息写入脚本”，用于生成适配飞书发送的精简 Markdown 文本（更适合 `--as-card` 发送），按类别输出最近资讯的“AI 推荐榜”。脚本位于 `news-collector/writer/feishu_writer.py`。
 
 ## 1. 目标与产物
 - 从 SQLite（`data/info.db`）读取最近 N 小时的资讯，并按“AI 推荐度”挑选每个大类的 Top K。
@@ -40,7 +40,7 @@
   - 处理 HTML 实体与多余空白；确保链接为绝对 URL。
 
 ## 5. CLI 设计
-- 位置：`news-collector/manager/feishu_writer.py`
+- 位置：`news-collector/writer/feishu_writer.py`
 - 参数：
   - `--hours 24`：时间窗口，默认 24。
   - `--limit-per-cat 10`：每类最多条目数。
@@ -70,8 +70,8 @@
 - 示例：
   ```
   export FILE=$(python -c 'import datetime as d;print(d.datetime.now().strftime("data/feishu-msg/%Y%m%d-feishu-msg.md"))')
-  python news-collector/manager/feishu_writer.py --hours 24 --output "$FILE"
-  python news-collector/manager/feishu_bot_today.py --chat-name "日报群" --file "$FILE" --as-card --title "今日推荐"
+  python news-collector/writer/feishu_writer.py --hours 24 --output "$FILE"
+  python news-collector/deliver/feishu_bot_today.py --chat-name "日报群" --file "$FILE" --as-card --title "今日推荐"
   ```
 
 ## 9. 实现建议

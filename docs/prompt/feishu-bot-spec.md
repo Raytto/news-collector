@@ -1,7 +1,7 @@
 # 飞书机器人发送群消息规范（spec）
 
 ## 目标
-- 新增一个 manager 脚本，可通过飞书自建应用（机器人）向其所在的指定群聊发送一条文本消息（首版固定为 `test`，后续可替换为正式内容）。
+- 新增一个 `deliver` 脚本，可通过飞书自建应用（机器人）向其所在的指定群聊发送一条文本消息（首版固定为 `test`，后续可替换为正式内容）。
 
 ## 环境与配置
 - 在 `environment.yml` 的 `variables:` 节下声明以下环境变量（仅示例，不要提交真实密钥）：
@@ -21,7 +21,7 @@ variables:
 ```
 
 ## 脚本位置与名称
-- 文件：`news-collector/manager/feishu_bot.py`
+- 文件：`news-collector/deliver/feishu_bot_today.py`
 - 作用：
   1) 读取环境变量，申请 `tenant_access_token`；
   2) 调用 IM 消息发送接口，向指定 `chat_id` 发送文本 `test`；
@@ -56,9 +56,9 @@ variables:
 
 示例：
 - 使用默认群并发送 `test`：
-  `python news-collector/manager/feishu_bot.py`
+  `python news-collector/deliver/feishu_bot_today.py`
 - 指定群并自定义内容：
-  `python news-collector/manager/feishu_bot.py --chat-id oc_123 --text "hello from bot"`
+  `python news-collector/deliver/feishu_bot_today.py --chat-id oc_123 --text "hello from bot"`
 
 ## 错误处理
 - 缺少必要环境变量时退出并打印中英文可读提示。
@@ -79,4 +79,3 @@ variables:
 - 支持发送富文本/卡片消息；
 - 支持从本地 HTML（日报）转为消息卡片摘要；
 - 与现有自动任务脚本集成（收集 → 评估 → 生成 → 飞书通知）。
-
