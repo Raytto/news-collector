@@ -56,7 +56,7 @@ run_once() {
       --to-all \
       --file "$feishu_msg_file" \
       --as-card \
-      --title "情报官今日推荐" || true
+      --title "24小时最新情报" || true
   else
     echo "[WARN] Feishu message file not found, skip broadcast: $feishu_msg_file" >&2
   fi
