@@ -1,7 +1,12 @@
-针对 scripts/auto-do-scripts.sh
-负责：
-1. 先 conda activate news-collector
-2. 用 collect_to_sqlite.py 拉取最新数据到 db
-3. 用 info_writer.py 写最近24小时的消息摘要到 data/output 下的 YYMMDD-HHMMSS-24h-info.html 中 （此文件名在 sh 脚本中指定，只是如果没指定 python 再用当前的作为默认,可能需要修改 info_writer.py）
-4. 参考 mail-today.md 发送刚才写的 YYMMDD-HHMMSS-24h-info.html 内容为邮件 给 306483372@qq.com (需要同时补全 mail_today.py)
-5. 等到到明天的早上 10:30 再从1重新执行
+针对 scripts/auto-do-scripts.sh（已迁移为 DB 驱动）
+职责：
+1. conda activate `news-collector`
+2. 运行 `collector/collect_to_sqlite.py` 拉取最新数据到 SQLite
+3. 运行 `evaluator/ai_evaluate.py`（默认 40h）写入 AI 评估
+4. 初始化并（幂等地）seed 管线：`write-deliver-pipeline/pipeline_admin.py init|seed`
+5. 调用 `write-deliver-pipeline/pipeline_runner.py --all` 执行所有启用的管线（writer 与 deliver 均从 DB 自动读取配置）
+6. 等到明天早上 10:30 再从 1 重新执行
+
+说明：
+- 旧流程（直接调用 `writer/info_writer.py`、`deliver/mail_today.py`、`deliver/feishu_bot_today.py`）已收敛为 DB 管线，便于按订阅人/场景集中配置。
+- 具体的写作窗口、类别过滤、权重与投递目标等均维护在 `data/info.db` 的 pipeline 表中；runner 会为子进程设置 `PIPELINE_ID` 环境变量，writers/deliverers 会以此自取配置。

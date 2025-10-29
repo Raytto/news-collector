@@ -38,7 +38,7 @@
 
 ## 7. 与现有 Writer 对齐的要点
 - `info_writer.py`：生成 HTML 卡片视图；按分类分组，展示评分星级、各维度分与评语。
-- `feishu_writer.py`：输出 Lark Markdown，强调序号、评分与超链接；需兼容 `feishu_bot_today.py`。
+- `feishu_writer.py`：输出 Lark Markdown，强调序号、评分与超链接；与 `deliver/feishu_deliver.py` 配合发送（支持 `--as-card/--as-post`）。
 - 新 Writer 若与上述脚本共享逻辑（例如 `compute_weighted_score`），优先复用或提取公共函数，避免复制粘贴后出现漂移。
 
 遵循以上规范可以确保新增 Writer 在命名、数据处理与输出风格上保持一致，便于其他模块复用与维护。

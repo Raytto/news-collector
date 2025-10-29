@@ -38,53 +38,12 @@ run_once() {
   echo "[INFO] Running AI evaluation for recent 40h..." >&2
   $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 40 --limit 400 || true
 
-  ts="$(date +%y%m%d-%H%M%S)"
-  out_file="$OUT_DIR/${ts}-40h-info.html"
+  echo "[INFO] Ensuring pipeline schema and defaults (idempotent)" >&2
+  $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" init
+  $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" seed || true
 
-  echo "[INFO] Writing 40h digest: $out_file" >&2
-  $PYTHON "$ROOT_DIR/news-collector/writer/info_writer.py" --hours 40 --output "$out_file"
-
-  msg_dir="$ROOT_DIR/data/feishu-msg"
-  mkdir -p "$msg_dir"
-  feishu_msg_file="$msg_dir/$(date +%Y%m%d)-feishu-msg.md"
-  echo "[INFO] Building Feishu message: $feishu_msg_file" >&2
-  $PYTHON "$ROOT_DIR/news-collector/writer/feishu_writer.py" --hours 40 --output "$feishu_msg_file" || true
-
-  if [ -f "$feishu_msg_file" ]; then
-    echo "[INFO] Broadcasting Feishu message to all groups" >&2
-    $PYTHON "$ROOT_DIR/news-collector/deliver/feishu_bot_today.py" \
-      --to-all \
-      --file "$feishu_msg_file" \
-      --as-card \
-      --title "24小时最新情报" || true
-  else
-    echo "[WARN] Feishu message file not found, skip broadcast: $feishu_msg_file" >&2
-  fi
-
-  subject="$(date +%Y年%m月%d日)整合"
-  echo "[INFO] Mailing digest to 306483372@qq.com (subject: $subject)" >&2
-  $PYTHON "$ROOT_DIR/news-collector/deliver/mail_today.py" \
-    --html "$out_file" \
-    --subject "$subject" \
-    --sender "pangruitaosite@gmail.com" \
-    --to "306483372@qq.com"
-
-  wenhao_dir="$ROOT_DIR/data/output/wenhao"
-  mkdir -p "$wenhao_dir"
-  wenhao_file="$wenhao_dir/$(date +%Y%m%d-%H%M%S)-wenhao.html"
-  echo "[INFO] Building Wenhao digest: $wenhao_file" >&2
-  $PYTHON "$ROOT_DIR/news-collector/writer/wenhao_writer.py" --hours 24 --output "$wenhao_file" || true
-  if [ -f "$wenhao_file" ]; then
-    wenhao_subject="HW精选"
-    echo "[INFO] Mailing Wenhao digest to 410861858@qq.com" >&2
-    $PYTHON "$ROOT_DIR/news-collector/deliver/mail_today.py" \
-      --html "$wenhao_file" \
-      --subject "$wenhao_subject" \
-      --sender "pangruitaosite@gmail.com" \
-      --to "410861858@qq.com" || true
-  else
-    echo "[WARN] Wenhao digest not generated, skip email" >&2
-  fi
+  echo "[INFO] Running all DB pipelines via pipeline_runner" >&2
+  $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_runner.py" --all
 }
 
 run_once

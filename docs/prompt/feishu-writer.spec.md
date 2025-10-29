@@ -2,7 +2,7 @@
 
 ## 1. 目标与产物
 - 从 SQLite（`data/info.db`）读取最近 N 小时的资讯，并按“AI 推荐度”挑选每个大类的 Top K。
-- 生成一段“类 Markdown 文本”（lark_md 友好），供 `feishu_bot_today.py` 读取并通过 `--as-card` 或 `--as-post` 发送到群聊。
+- 生成一段“类 Markdown 文本”（lark_md 友好），供 `feishu_deliver.py` 读取并通过 `--as-card` 或 `--as-post` 发送到群聊。
 - 默认输出文件：`data/feishu-msg/YYYYMMDD-feishu-msg.md`（注意 feishu 的拼写）。
 
 ## 2. 输入数据与筛选逻辑
@@ -64,14 +64,14 @@
   - 标题/链接为空：丢弃该条。
 
 ## 8. 发送到飞书的推荐路径
-- 使用 `feishu_bot_today.py` 读取该 md 并发送：
+- 使用 `feishu_deliver.py` 读取该 md 并发送：
   - 推荐 `--as-card`：卡片的 `markdown` 元素对本格式兼容性最好。
   - 可选 `--as-post`：若需要“普通对话气泡”，脚本已提供简易 Markdown→post 的转换；对复杂列表/样式容忍度不如卡片。
 - 示例：
   ```
   export FILE=$(python -c 'import datetime as d;print(d.datetime.now().strftime("data/feishu-msg/%Y%m%d-feishu-msg.md"))')
   python news-collector/writer/feishu_writer.py --hours 24 --output "$FILE"
-  python news-collector/deliver/feishu_bot_today.py --chat-name "日报群" --file "$FILE" --as-card --title "今日推荐"
+  python news-collector/deliver/feishu_deliver.py --chat-name "日报群" --file "$FILE" --as-card --title "今日推荐"
   ```
 
 ## 9. 实现建议

@@ -2,7 +2,7 @@
 
 本指南说明如何配置并使用仓库中的机器人脚本，将一条文本消息发送到机器人所在的群聊。
 
-脚本位置：`news-collector/deliver/feishu_bot_today.py`
+脚本位置：`news-collector/deliver/feishu_deliver.py`
 
 ## 一、准备工作
 
@@ -37,19 +37,19 @@ conda deactivate && conda activate news-collector
 
 - 指定 chat_id 发送文本：
 ```
-python news-collector/deliver/feishu_bot_today.py \
+python news-collector/deliver/feishu_deliver.py \
   --chat-id oc_xxx \
   --text "test"
 ```
 
 - 使用默认 chat_id（来自 `FEISHU_DEFAULT_CHAT_ID`）发送：
 ```
-python news-collector/deliver/feishu_bot_today.py --text "test"
+python news-collector/deliver/feishu_deliver.py --text "test"
 ```
 
 - 干跑（仅打印将要发送的内容，不发消息）：
 ```
-python news-collector/deliver/feishu_bot_today.py --chat-id oc_xxx --text "test" --dry-run
+python news-collector/deliver/feishu_deliver.py --chat-id oc_xxx --text "test" --dry-run
 ```
 
 ## 四、自动解析 chat_id
@@ -58,13 +58,13 @@ python news-collector/deliver/feishu_bot_today.py --chat-id oc_xxx --text "test"
 
 - 列出机器人可见的群（名称 与 chat_id）：
 ```
-python news-collector/deliver/feishu_bot_today.py --list-chats
+python news-collector/deliver/feishu_deliver.py --list-chats
 ```
   依赖权限：`im:chat:readonly`；且机器人必须已在目标群内。
 
 - 根据群名称解析 chat_id 并发送（不区分大小写，支持包含匹配）：
 ```
-python news-collector/deliver/feishu_bot_today.py \
+python news-collector/deliver/feishu_deliver.py \
   --chat-name "日报群" \
   --text "test"
 ```
@@ -93,10 +93,14 @@ python news-collector/deliver/feishu_bot_today.py \
 
 示例（伪代码）：
 ```
-$PYTHON news-collector/deliver/feishu_bot_today.py \
+$PYTHON news-collector/deliver/feishu_deliver.py \
   --chat-name "日报群" \
   --text "24小时汇总已生成：$out_file"
 ```
+
+补充：
+- 发送 Markdown 卡片：加 `--as-card --file data/output/test.md --title "今日推荐"`；
+- 发送富文本 post：加 `--as-post`（对 Markdown 解析较宽松）。
 
 ---
 如有需要，我可以在该脚本中加入“发送卡片消息/携带链接”的扩展能力。
