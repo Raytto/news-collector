@@ -6,7 +6,8 @@
 **Schema Summary**
 - `pipelines`: name, enabled, description, timestamps.
 - `pipeline_filters`: category/source selectors with all-or-whitelist controls (`all_categories`, `categories_json`, `all_src`, `include_src_json`).
-- `pipeline_writers`: `type` (info_html | wenhao_html | feishu_md), `hours`, optional `weights_json`, `bonus_json` (TEXT JSON).
+- `pipeline_writers`: `type` (info_html | email_html | feishu_md), `hours`, optional `weights_json` (metric-key → weight), `bonus_json`.
+- `pipeline_writer_metric_weights`: normalized per-pipeline metric weights (preferred over JSON).
 - `pipeline_deliveries_email`: single recipient email + `subject_tpl`. One row per pipeline.
 - `pipeline_deliveries_feishu`: Feishu card delivery with `app_id`, `app_secret`, `to_all_chat` (1=all groups, 0=use `chat_id`), optional `title_tpl`, `to_all`, `content_json`. One row per pipeline.
 - Constraint: a pipeline must have exactly one delivery, in either email table or Feishu table.
@@ -32,11 +33,12 @@
 - Uses current Python (`PYTHON` env var or `sys.executable`) to call writers/deliveries.
 
 **Writers**
-- Unified email writer: `writer/email_writer.py`
-  - `--mode general` (maps from `info_html`): generic digest; optional `--source-bonus`; does not require AI table.
-  - `--mode wenhao` (maps from `wenhao_html`): humanities/tech curated digest; requires `info_ai_review`.
-- Feishu writer: `writer/feishu_writer.py` (maps from `feishu_md`): Feishu-friendly Markdown; requires `info_ai_review`.
-- DB-driven defaults: when `PIPELINE_ID` is present, writers read hours/categories/weights/bonus from DB (`pipeline_writers`/`pipeline_filters`). CLI flags still override for ad-hoc runs.
+- Email writer: `writer/email_writer.py`
+  - Generates HTML digest; applies per-source bonus, category limits, etc.
+  - If AI scoring is available, reads from `ai_metrics` + `info_ai_scores` to compute weighted scores；否则仅按时间排序。
+- Feishu writer: `writer/feishu_writer.py`
+  - Generates Feishu-friendly Markdown; requires AI评分（`ai_metrics` + `info_ai_scores`）。
+- DB-driven defaults: when `PIPELINE_ID` is present, writers read hours/categories/weights/bonus from DB. Weights precedence: `pipeline_writer_metric_weights` > `pipeline_writers.weights_json` > `ai_metrics.default_weight`. CLI flags still override for ad-hoc runs.
 
 **Delivery Config**
 - Email: `deliver/mail_deliver.py` used by runner with `--html` only; when `PIPELINE_ID` is present it reads recipient and subject template from DB.
@@ -49,7 +51,7 @@
 - Item fields:
   - `pipeline`: `{ "id?", "name", "enabled", "description" }` (`id` optional; exported for reference)
   - `filters`: `{ "all_categories", "categories_json", "all_src", "include_src_json" }` (arrays or JSON strings accepted)
-  - `writer`: `{ "type", "hours", "weights_json", "bonus_json" }` (objects or JSON strings accepted)
+  - `writer`: `{ "type", "hours", "weights_json", "bonus_json" }` (objects or JSON strings accepted; `weights_json` keys must be metric keys defined in `ai_metrics`)
   - `delivery`:
     - Email: `{ "kind": "email", "email": "a@b.com", "subject_tpl": "${date_zh}整合" }`
     - Feishu: `{ "kind": "feishu", "app_id": "...", "app_secret": "...", "to_all_chat": 1, "chat_id": null, "title_tpl": "通知", "to_all": 1, "content_json": null }`
@@ -70,7 +72,7 @@
 
 **Gotchas**
 - Missing deps: collectors require `feedparser`/`beautifulsoup4`; install with `pip install -r requirements.txt`.
-- AI evaluator requires `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY`. Without it, `info_ai_review` may be absent; runners skip writers that need AI scores.
+- AI evaluator requires `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY`. Without it, `ai_metrics`/`info_ai_scores` won’t be populated; runners skip writers that need AI scores.
 - Single-delivery rule: each pipeline must have exactly one delivery (email or Feishu). Both present → runner fails.
 - Secrets: keep `app_secret` out of VCS; use environment overrides during runtime when possible.
 

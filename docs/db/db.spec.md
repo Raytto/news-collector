@@ -7,7 +7,7 @@ This document describes the SQLite schema used by the project to persist scraped
 - Engine: SQLite 3
 - File path: `data/info.db` (relative to repo root)
 - Producers/Consumers:
-  - Collection: `news-collector/collector/collect_to_sqlite.py`
+  - Collection: `news-collector/collector/collect_to_sqlite.py`（遍历 DB `sources.enabled=1` 的脚本路径并执行）
   - AI evaluation: `news-collector/evaluator/ai_evaluate.py`
   - Pipelines (DB‑backed write + deliver):
     - Admin: `news-collector/write-deliver-pipeline/pipeline_admin.py`
@@ -50,36 +50,120 @@ Columns (`info`):
 - `category` (TEXT, nullable): High‑level category such as `game`, `tech`.
 - `detail` (TEXT, nullable): Plain‑text content fetched from detail pages when available.
 
+### Sources and Categories
+
+To standardize source management and decouple it from filesystem scanning, the collector reads two admin tables and executes enabled sources.
+
+#### Table: `categories`
+
+```sql
+CREATE TABLE IF NOT EXISTS categories (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT NOT NULL UNIQUE,
+  label_zh   TEXT NOT NULL,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Semantics:
+
+- `key` is a stable identifier used in `info.category` (e.g., `game`, `tech`).
+- Disable a category by setting `enabled=0` (writers may still filter by explicit lists).
+
+#### Table: `sources`
+
+```sql
+CREATE TABLE IF NOT EXISTS sources (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,     -- e.g., 'sensortower', 'gamedeveloper'
+  label_zh     TEXT NOT NULL,            -- 中文名
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  category_key TEXT NOT NULL,            -- references categories.key
+  script_path  TEXT NOT NULL,            -- repo-relative python path to the scraper file
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (category_key) REFERENCES categories(key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_enabled
+  ON sources (enabled);
+CREATE INDEX IF NOT EXISTS idx_sources_category
+  ON sources (category_key, enabled);
+```
+
+Semantics:
+
+- `script_path` is a repository-relative file path (e.g., `news-collector/collector/scraping/game/sensortower.blog.py`).
+- The collector enumerates rows where `enabled=1`, imports and runs each `script_path`, and writes rows with:
+  - `info.source` = `sources.key`
+  - `info.category` = `sources.category_key`
+- If a `script_path` is missing or import fails, the collector logs an error for that source and continues (non-zero exit optional). The failure is visible in the run log.
+
+#### Table: `ai_metrics`
+
+Defines the available evaluation metrics (clean rebuild; no migration of old columns).
+
+```sql
+CREATE TABLE IF NOT EXISTS ai_metrics (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  key            TEXT NOT NULL UNIQUE,
+  label_zh       TEXT NOT NULL,
+  rate_guide_zh  TEXT,
+  default_weight REAL,
+  active         INTEGER NOT NULL DEFAULT 1,
+  sort_order     INTEGER NOT NULL DEFAULT 0,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_metrics_active
+  ON ai_metrics (active, sort_order);
+```
+
+#### Table: `info_ai_scores`
+
+Stores per-article per-metric scores (long table; 1..N rows per article).
+
+```sql
+CREATE TABLE IF NOT EXISTS info_ai_scores (
+  info_id   INTEGER NOT NULL,
+  metric_id INTEGER NOT NULL,
+  score     INTEGER NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (info_id, metric_id),
+  FOREIGN KEY (info_id) REFERENCES info(id),
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_info_ai_scores_info
+  ON info_ai_scores (info_id);
+CREATE INDEX IF NOT EXISTS idx_info_ai_scores_metric
+  ON info_ai_scores (metric_id);
+```
+
 #### Table: `info_ai_review`
 
-Created by `ai_evaluate.py`.
+Created by `ai_evaluate.py`. Holds text outputs and raw LLM response; no per-dimension columns.
 
 ```sql
 CREATE TABLE IF NOT EXISTS info_ai_review (
-  info_id                       INTEGER PRIMARY KEY,
-  final_score                   REAL    NOT NULL,
-  timeliness_score              INTEGER NOT NULL,
-  game_relevance_score          INTEGER,
-  mobile_game_relevance_score   INTEGER,
-  ai_relevance_score            INTEGER,
-  tech_relevance_score          INTEGER,
-  quality_score                 INTEGER,
-  insight_score                 INTEGER,
-  depth_score                   INTEGER,
-  novelty_score                 INTEGER,
-  ai_comment                    TEXT    NOT NULL,
-  ai_summary                    TEXT    NOT NULL,
-  raw_response                  TEXT,
-  created_at                    TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at                    TEXT DEFAULT CURRENT_TIMESTAMP,
+  info_id     INTEGER PRIMARY KEY,
+  final_score REAL    NOT NULL DEFAULT 0.0,
+  ai_comment  TEXT    NOT NULL,
+  ai_summary  TEXT    NOT NULL,
+  raw_response TEXT,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (info_id) REFERENCES info(id)
 );
 ```
 
 Notes:
 
-- Scores are 1–5 integers; `final_score` is a weighted 1–5 float used by writers.
-- Newer dimensions include `depth` and `novelty`; the evaluator idempotently `ALTER TABLE`s to add any missing columns.
+- Metric scores live in `info_ai_scores`. Writers compute the final weighted score dynamically based on `ai_metrics` and pipeline weights.
 
 ### DB‑Backed Pipelines (Write + Deliver)
 
@@ -123,12 +207,33 @@ CREATE TABLE IF NOT EXISTS pipeline_writers (
   pipeline_id         INTEGER NOT NULL,
   type                TEXT NOT NULL,   -- e.g., 'feishu_md', 'info_html'
   hours               INTEGER NOT NULL, -- lookback window
-  weights_json        TEXT,             -- JSON overrides for dimension weights
+  weights_json        TEXT,             -- JSON overrides: metric-key -> weight
   bonus_json          TEXT,             -- JSON per-source bonus map
   limit_per_category  TEXT,             -- JSON or integer text; see below
   per_source_cap      INTEGER,          -- <=0 means unlimited
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+```
+
+#### Table: `pipeline_writer_metric_weights`
+
+Stores per-writer (per-pipeline) metric weights in a normalized long table. Preferred over JSON for robustness.
+
+```sql
+CREATE TABLE IF NOT EXISTS pipeline_writer_metric_weights (
+  pipeline_id INTEGER NOT NULL,
+  metric_id   INTEGER NOT NULL,
+  weight      REAL    NOT NULL,           -- >= 0; 0 means included but not scored
+  enabled     INTEGER NOT NULL DEFAULT 1, -- 1=enabled, 0=disabled
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id, metric_id),
+  FOREIGN KEY (pipeline_id) REFERENCES pipelines(id),
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wm_weights_pipeline
+  ON pipeline_writer_metric_weights (pipeline_id);
 ```
 
 Limits fields used by writers:
@@ -140,12 +245,14 @@ Limits fields used by writers:
 
 Writers read these configs when `PIPELINE_ID` is present in the environment:
 
-- `feishu_writer.py`: loads hours/weights/bonus; applies `limit_per_category` and `per_source_cap` to produce Markdown sections per category.
-- `email_writer.py`: same interpretation to produce HTML digest (unified writer for email output).
+- `feishu_writer.py`: loads hours/weights/bonus; weights are keyed by active metric `key` (see `ai_metrics`); applies `limit_per_category` and `per_source_cap` to produce Markdown sections per category。
+- `email_writer.py`: same interpretation to produce HTML digest (unified writer for email output)。
 
 Display note:
 
-- Writers compute final scores only from dimensions whose weights are greater than 0.0. For readability, `email_writer.py` also displays only those enabled dimensions in the per‑article “维度”行; if all weights are 0, it falls back to displaying all dimensions.
+- Weight precedence: `pipeline_writer_metric_weights` > `pipeline_writers.weights_json` > `ai_metrics.default_weight`.
+- Metric set: when long-table rows exist for the pipeline, use rows with `enabled=1`; otherwise use `ai_metrics(active=1)`.
+- Writers compute final scores only from metrics whose weights are greater than 0.0. Metrics and labels are loaded from `ai_metrics(active=1 ORDER BY sort_order)`.
 
 #### Delivery Tables
 
@@ -224,6 +331,11 @@ UPDATE info SET detail = ? WHERE link = ?;
 
 The collector also backfills missing details for a small, recent batch per source.
 
+Notes on collector behavior (with `sources` table):
+
+- `info.source` is always set from `sources.key`; `info.category` is set from `sources.category_key` (overrides script-provided values if any).
+- The collector iterates `sources` where `enabled=1`; if a `script_path` does not exist or cannot be imported, it logs an error for that source and continues.
+
 ## Typical Queries
 
 - Latest 20 across all sources:
@@ -243,25 +355,24 @@ ORDER BY publish DESC
 LIMIT 10;
 ```
 
-- Join with AI scores:
+- Join with AI scores (long table):
 ```sql
-SELECT i.id, i.source, i.category, i.publish, i.title, i.link,
-       r.final_score,
-       r.timeliness_score,
-       r.game_relevance_score,
-       r.mobile_game_relevance_score,
-       r.ai_relevance_score,
-       r.tech_relevance_score,
-       r.quality_score,
-       r.insight_score,
-       r.depth_score,
-       r.novelty_score,
+SELECT i.id,
+       i.source,
+       i.category,
+       i.publish,
+       i.title,
+       i.link,
+       m.key   AS metric_key,
+       s.score AS metric_score,
        r.ai_comment,
        r.ai_summary
 FROM info AS i
 LEFT JOIN info_ai_review AS r ON r.info_id = i.id
-ORDER BY i.id DESC
-LIMIT 100;
+LEFT JOIN info_ai_scores AS s ON s.info_id = i.id
+LEFT JOIN ai_metrics AS m ON m.id = s.metric_id AND m.active = 1
+ORDER BY i.id DESC, m.sort_order ASC
+LIMIT 200;
 ```
 
 - Pipelines overview (enabled):
@@ -285,16 +396,20 @@ When `PIPELINE_ID` is present in the environment:
   - `per_source_cap`: integer; `<=0` disables per‑source limiting.
 - CLI flags still override DB when provided (ad‑hoc runs).
 
-## Migration Notes
+Weights semantics (clean rebuild):
 
-- 2025‑10 A: Added `category` to `info`; backfilled by collector via `ALTER TABLE` if missing.
-- 2025‑10 B: New installs use `UNIQUE(link)`; migrate old DBs if desired:
-  - `DROP INDEX IF EXISTS idx_info_unique;`
-  - `CREATE UNIQUE INDEX IF NOT EXISTS idx_info_link_unique ON info(link);`
-- 2025‑10 C: Added `detail` to `info`; introduced `info_ai_review` with 9+ dimensions. Evaluator ensures columns via idempotent `ALTER TABLE`.
-- 2025‑10 D: Introduced DB‑backed pipelines (`pipelines`, `pipeline_filters`, `pipeline_writers`, deliveries). `pipeline_admin.py init` creates tables.
-- 2025‑10 E: Added writer limit fields to `pipeline_writers`:
-  - `limit_per_category` (TEXT as integer/JSON) and `per_source_cap` (INTEGER). Admin ensures columns via `ALTER TABLE` and migration helper `scripts/migrations/202410_add_writer_limits.py` normalizes/backs fills values (defaults: 10 per category, per‑source cap 3).
+- `weights_json` uses metric `key` as JSON field names, e.g. `{ "timeliness": 0.2, "game_relevance": 0.4 }`。
+- Unknown keys are ignored. For missing keys, writers use `ai_metrics.default_weight` (null → treat as 0.0).
+- Writers compute final scores from active metrics only (`ai_metrics.active=1`), ordered by `sort_order`.
+
+## Release Notes
+
+- 2025‑10 A: Added `category` to `info`.
+- 2025‑10 B: New installs use `UNIQUE(link)` on `info(link)`.
+- 2025‑10 C: Added `detail` to `info`.
+- 2025‑10 D: Introduced DB‑backed pipelines (`pipelines`, `pipeline_filters`, `pipeline_writers`, deliveries).
+- 2025‑10 E: Added writer limit fields to `pipeline_writers`: `limit_per_category` (TEXT as integer/JSON) and `per_source_cap` (INTEGER).
+- 2025‑10 F: Rebuilt AI metrics architecture (clean): added `ai_metrics` + `info_ai_scores`; `info_ai_review` holds text outputs only; `weights_json` uses metric `key`.
 
 ## Maintenance
 

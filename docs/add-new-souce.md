@@ -1,14 +1,14 @@
-# 增加信息源的实施指南
+# 增加信息源的实施指南（基于 sources 表）
 
 为了保持各信息源脚本的一致性，新增信息源时请遵循以下约定。可参考 `news-collector/collector/scraping` 目录下现有的脚本（例如 `game/gamedeveloper.rss.py`、`game/naavik.digest.py`、`game/nikopartners.blog.py` 等）完成实现。
 
 ## 目录结构与命名
-- 所有脚本放在 `news-collector/collector/scraping/<category>/` 目录下，`<category>` 与返回的 `category` 字段保持一致，例如游戏资讯放在 `news-collector/collector/scraping/game/`。
+- 所有脚本放在 `news-collector/collector/scraping/<category>/` 目录下；`<category>` 应与数据库 `categories.key` 匹配（如 `game`、`tech`）。
 - 文件名使用来源域名或品牌 + 数据来源类型（`rss.py`、`feed.py`、`blog.py` 等），全部小写并以点分隔，参考 `gameindustry.biz.rss.py`、`sensortower.blog.py`。
-- 在脚本顶层定义 `SOURCE`（信息源标识）、`CATEGORY`（所属分类）、`UA`（必要时的 User-Agent）等常量，方便统一复用。
+- 在脚本顶层可定义 `UA`（必要时的 User-Agent）与复用的解析函数。脚本返回的条目无需强制包含 `source`/`category`（采集器会用 DB 中的 `sources.key` 与 `sources.category_key` 覆盖）。
 
 ## 产出字段要求
-- 每条列表结果需包含 `title`、`url`（或 `link`）、`source`、`category`、`published`（ISO 8601，UTC 时区）等字段，可按 `game/gamedeveloper.rss.py` 的 `process_entries` 实现。
+- 每条列表结果需包含：`title`、`url`（或 `link`）、`published`（ISO 8601，UTC）。`source`/`category` 可省略（采集器将以 DB 行覆盖）。
 - 若原始数据缺失发布时间，优先补齐为 UTC 时间；无法获取时可设为空字符串，但需在代码注释中说明原因。
 - 额外字段（例如 `summary`、`author`）需保证下游消费者有兼容逻辑，默认不要随意增加。
 
@@ -32,6 +32,38 @@
 - 在模块末尾保留 `if __name__ == "__main__":` 块，打印最近若干条结果，便于快速验证抓取是否成功。
 - 新增脚本后，至少本地运行一次 `python news-collector/collector/scraping/<category>/<script>.py` 确认无异常。
 - 若新增公共工具函数，可在模块顶部定义，保持纯函数便于复用。
+
+## 在数据库注册 Source 与 Category
+
+采集器按数据库 `sources` 的 `enabled=1` 行执行脚本，不再扫描目录。新增信息源需在 DB 中注册对应分类与来源。
+
+1) 若分类不存在，先插入 `categories` 行：
+
+```sql
+INSERT OR IGNORE INTO categories (key, label_zh, enabled)
+VALUES ('game', '游戏', 1);
+```
+
+2) 插入 `sources` 行（`script_path` 为仓库相对路径）：
+
+```sql
+INSERT OR REPLACE INTO sources (key, label_zh, enabled, category_key, script_path)
+VALUES (
+  'sensortower',
+  'Sensor Tower 博客',
+  1,
+  'game',
+  'news-collector/collector/scraping/game/sensortower.blog.py'
+);
+```
+
+完成上述步骤后，执行采集器：
+
+```
+python news-collector/collector/collect_to_sqlite.py
+```
+
+采集器将遍历 `sources.enabled=1` 的行，按 `script_path` 导入并运行脚本，并将 `info.source` 与 `info.category` 分别写为 `sources.key` 与 `sources.category_key`。
 
 ## 依赖与文档
 - 新增外部依赖请同步更新根目录的 `requirements.txt`，并在提交说明中解释用途。
