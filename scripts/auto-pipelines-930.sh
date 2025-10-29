@@ -54,6 +54,11 @@ run_once() {
   echo "[INFO] Ensuring pipeline schema and seed" >&2
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" init
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" seed || true
+  if [ -f "$ROOT_DIR/data/pipelines/all_settings.json" ]; then
+    echo "[INFO] Importing pipelines from data/pipelines/all_settings.json (replace)" >&2
+    $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" import \
+      --input "$ROOT_DIR/data/pipelines/all_settings.json" --mode replace || true
+  fi
 
   echo "[INFO] Collecting latest into SQLite..." >&2
   $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
@@ -69,4 +74,3 @@ while true; do
   sleep_until_next_0930
   run_once || true
 done
-

@@ -34,11 +34,12 @@ def fetch_feed(url: str):
     # can still parse entries without noisy warnings.
     d = feedparser.parse(url, sanitize_html=False, resolve_relative_uris=False)
     if d.bozo:
-        # Keep visibility but make it clear it's non-fatal.
-        print(
-            f"解析 RSS 时可能有问题(已忽略): {url} ({SOURCE}) ->",
-            getattr(d, "bozo_exception", None),
-        )
+        bex = getattr(d, "bozo_exception", None)
+        # Suppress the frequent Squarespace "undefined entity" noise.
+        if bex and "undefined entity" in str(bex).lower():
+            pass
+        else:
+            print(f"解析 RSS 时可能有问题: {url} ({SOURCE}) ->", bex)
     return d
 
 

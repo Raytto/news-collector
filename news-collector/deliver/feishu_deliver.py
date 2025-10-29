@@ -267,7 +267,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sleep", type=float, default=0.2, help="群发时每条消息之间的间隔秒数，默认 0.2")
     p.add_argument("--as-card", action="store_true", help="以交互卡片(支持 Markdown) 发送内容")
     p.add_argument("--as-post", action="store_true", help="以富文本 post（聊天气泡）发送内容")
-    p.add_argument("--title", default="通知", help="卡片/富文本标题（--as-card/--as-post 时生效）")
+    # default empty; we'll derive from DB title_tpl or fallback to '通知'
+    p.add_argument("--title", default="", help="卡片/富文本标题（--as-card/--as-post 时生效）")
     p.add_argument("--dry-run", action="store_true", help="仅打印将要发送的内容，不调用 API")
     return p.parse_args()
 
@@ -314,15 +315,26 @@ def main() -> None:
     if (not args.to_all) and (not args.chat_id) and (not args.chat_name) and db_delivery.get("to_all_chat") == 1:
         args.to_all = True
 
-    # Default title from DB when not provided
-    if (args.as_card or args.as_post) and (not args.title) and db_delivery.get("title_tpl"):
-        args.title = _render_title_from_tpl(db_delivery.get("title_tpl") or "")
+    # Default title from DB when not provided via CLI
+    if (args.as_card or args.as_post):
+        if (not args.title) and db_delivery.get("title_tpl"):
+            args.title = _render_title_from_tpl(db_delivery.get("title_tpl") or "")
+        # Final fallback to a sensible default
+        if not args.title:
+            args.title = "通知"
 
     # 群发
     if args.to_all:
         chats = _list_all_chats(cfg, token)
         if not chats:
             raise SystemExit("未获取到任何群，无法群发（检查权限与机器人是否进群）")
+        # Deduplicate by chat_id to avoid accidental double sends when API returns duplicates
+        uniq_map = {}
+        for it in chats:
+            cid = (it.get("chat_id") or "").strip()
+            if cid and cid not in uniq_map:
+                uniq_map[cid] = it
+        chats = list(uniq_map.values())
         if args.dry_run:
             mode = 'post' if args.as_post else ('card' if args.as_card else 'text')
             print(f"[DRY-RUN] 将向 {len(chats)} 个群群发，文本长度 {len(text)} via {cfg.api_base} as {mode}")

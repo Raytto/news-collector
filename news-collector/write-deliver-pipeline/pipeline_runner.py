@@ -96,11 +96,11 @@ def run_writer(
             str(out_path),
         ]
     elif wtype == "wenhao_html":
-        # Use unified email_writer with DB-provided categories/weights/bonus
+        # Use dedicated Wenhao writer for humanities & tech digest
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
-            str(WRITER_DIR / "email_writer.py"),
+            str(WRITER_DIR / "wenhao_writer.py"),
             "--output",
             str(out_path),
         ]

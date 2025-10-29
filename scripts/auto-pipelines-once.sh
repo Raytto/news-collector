@@ -55,6 +55,13 @@ run_once() {
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" init
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" seed || true
 
+  # If user-provided settings exist, import to override defaults
+  if [ -f "$ROOT_DIR/data/pipelines/all_settings.json" ]; then
+    echo "[INFO] Importing pipelines from data/pipelines/all_settings.json (replace)" >&2
+    $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_admin.py" import \
+      --input "$ROOT_DIR/data/pipelines/all_settings.json" --mode replace || true
+  fi
+
   echo "[INFO] Collecting latest into SQLite..." >&2
   $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
 
@@ -67,5 +74,4 @@ run_once() {
 
 
 run_once || true
-
 
