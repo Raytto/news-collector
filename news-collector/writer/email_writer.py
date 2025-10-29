@@ -395,8 +395,13 @@ def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, fl
             rounded = int(final_score + 0.5)
             rounded = max(1, min(5, rounded))
             stars = "★" * rounded + "☆" * (5 - rounded)
+            # 仅显示当前权重配置中启用（权重大于 0）的维度；
+            # 若全部为 0，则回退到显示全部维度。
+            active_dims = [k for k in DIMENSION_ORDER if float(weights.get(k, 0.0)) > 0.0]
+            if not active_dims:
+                active_dims = list(DIMENSION_ORDER)
             dims = " · ".join(
-                f"{DIMENSION_LABELS[key]}：{evaluation.get(key, '-')}" for key in DIMENSION_ORDER
+                f"{DIMENSION_LABELS[key]}：{evaluation.get(key, '-')}" for key in active_dims
             )
             bonus_note = ""
             bonus_val = evaluation.get("bonus")
