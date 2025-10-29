@@ -3,3 +3,6 @@ data/
 # Python bytecode/cache
 __pycache__/
 *.pyc
+
+# Tooling caches
+.cache/
