@@ -518,8 +518,10 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 7. 文档更新(如 db.spec.sh)、示例 pipelines 更新 `weights_json` 为 key 形式
 8. 更新各个 auto sh 脚本（如果需要）
 9. 执行 auto-pipeline-once.sh 看是否能顺利运行完成（如果发现问题则及时修改）
+10. 检查前后端代码，看是否有需要匹配着修改的
+11. 测试访问前端，并模拟用户进行简单的查看和修改操作，看看是否符合预期（不符合就及时修改）
 
----asd
+---
 
 附：本次涉及主要文件
 
@@ -527,4 +529,3 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 - Writer：`news-collector/writer/feishu_writer.py`、`news-collector/writer/email_writer.py`
 - Pipeline：`news-collector/write-deliver-pipeline/pipeline_admin.py`、`pipeline_runner.py`
 - 提示词：`prompts/ai/article_evaluation_zh.prompt`（模板化占位）
-- 迁移脚本：`scripts/migrations/202510_ai_metrics_refactor.py`
