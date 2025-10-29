@@ -50,15 +50,68 @@ DEFAULT_LIMIT_PER_CATEGORY = 10
 DEFAULT_PER_SOURCE_CAP = 3
 
 
+def parse_limit_config(raw: Any) -> Tuple[Dict[str, int], int]:
+    """Return (per-category map, default) from raw JSON/int configuration."""
+    limit_map: Dict[str, int] = {}
+    default_limit = DEFAULT_LIMIT_PER_CATEGORY
+    value: Any = raw
+    if value is None:
+        return limit_map, default_limit
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore").strip()
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return limit_map, default_limit
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            try:
+                default_limit = int(s)
+            except (TypeError, ValueError):
+                return limit_map, default_limit
+            return limit_map, default_limit
+        else:
+            value = parsed
+    if isinstance(value, (int, float)):
+        default_limit = int(value)
+        return limit_map, default_limit
+    if isinstance(value, dict):
+        temp_default = default_limit
+        for key, val in value.items():
+            if key is None:
+                continue
+            key_str = str(key).strip()
+            if not key_str:
+                continue
+            try:
+                int_val = int(val)
+            except (TypeError, ValueError):
+                continue
+            if key_str.lower() == "default":
+                temp_default = int_val
+            else:
+                limit_map[key_str] = int_val
+        return limit_map, temp_default
+    return limit_map, default_limit
+
+
+def limit_for_category(limit_map: Dict[str, int], default_limit: int, category: str) -> int:
+    return int(limit_map.get(category, default_limit))
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate Feishu-friendly markdown summary from SQLite")
     p.add_argument("--db", default=str(DB_PATH), help="SQLite 数据库路径 (默认: data/info.db)")
     p.add_argument("--hours", type=int, default=24, help="时间窗口（小时，默认 24）")
     p.add_argument(
         "--limit-per-cat",
-        type=int,
-        default=None,
-        help=f"每个分类的最大条目数（默认 {DEFAULT_LIMIT_PER_CATEGORY}）",
+        type=str,
+        default="",
+        help=(
+            f"每个分类的最大条目数；可传整数或 JSON（例如 '12' 或 '{{\"default\":10,\"tech\":5}}'；"
+            f"默认 {DEFAULT_LIMIT_PER_CATEGORY}）"
+        ),
     )
     p.add_argument(
         "--per-source-cap",
@@ -114,7 +167,7 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         out["weights_json"] = str(w[1] or "")
         out["bonus_json"] = str(w[2] or "")
         if has_limit_cols:
-            out["limit_per_category"] = int(w[3]) if w[3] is not None else None
+            out["limit_per_category"] = w[3]
             out["per_source_cap"] = int(w[4]) if w[4] is not None else None
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
@@ -221,7 +274,8 @@ def main() -> None:
 
     weights = DEFAULT_WEIGHTS.copy()
     categories = [c.strip() for c in args.categories.split(",") if c.strip()]
-    limit_per_cat = DEFAULT_LIMIT_PER_CATEGORY
+    limit_map: Dict[str, int] = {}
+    limit_default = DEFAULT_LIMIT_PER_CATEGORY
     per_source_cap = DEFAULT_PER_SOURCE_CAP
     min_score = float(args.min_score)
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
@@ -260,11 +314,9 @@ def main() -> None:
                                 source_bonus[str(k)] = float(v)
                 except json.JSONDecodeError:
                     pass
-            if cfg.get("limit_per_category") is not None:
-                try:
-                    limit_per_cat = max(1, int(cfg["limit_per_category"]))
-                except (TypeError, ValueError):
-                    pass
+            limit_raw = cfg.get("limit_per_category")
+            if limit_raw not in (None, ""):
+                limit_map, limit_default = parse_limit_config(limit_raw)
             if cfg.get("per_source_cap") is not None:
                 try:
                     per_source_cap = int(cfg["per_source_cap"])
@@ -298,8 +350,8 @@ def main() -> None:
                             source_bonus[str(k)] = float(v)
             except json.JSONDecodeError:
                 pass
-        if args.limit_per_cat is not None:
-            limit_per_cat = max(1, int(args.limit_per_cat))
+        if args.limit_per_cat and args.limit_per_cat.strip():
+            limit_map, limit_default = parse_limit_config(args.limit_per_cat)
         if args.per_source_cap is not None:
             per_source_cap = int(args.per_source_cap)
 
@@ -391,7 +443,7 @@ def main() -> None:
         else:
             per_source_trimmed = list(items)
 
-        # 将各来源的候选重新按分数排序后取前 limit_per_cat 条
+        # 将候选重新按分数排序后应用分类上限
         per_source_trimmed.sort(
             key=lambda it: (
                 float(it.get("score", 0.0)),
@@ -399,7 +451,11 @@ def main() -> None:
             ),
             reverse=True,
         )
-        by_cat[cat] = per_source_trimmed[:limit_per_cat]
+        cat_limit = limit_for_category(limit_map, limit_default, cat)
+        if cat_limit > 0:
+            by_cat[cat] = per_source_trimmed[:cat_limit]
+        else:
+            by_cat[cat] = per_source_trimmed
 
     # 生成文本
     total_items = sum(len(items) for items in by_cat.values())

@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS pipeline_writers (
   hours               INTEGER NOT NULL,
   weights_json        TEXT,
   bonus_json          TEXT,
-  limit_per_category  INTEGER,
+  limit_per_category  TEXT,
   per_source_cap      INTEGER,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
@@ -98,7 +98,7 @@ def ensure_db() -> None:
             cur.execute("PRAGMA table_info(pipeline_writers)")
             existing_cols = {row[1] for row in cur.fetchall()}
             if "limit_per_category" not in existing_cols:
-                cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category INTEGER")
+                cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category TEXT")
             if "per_source_cap" not in existing_cols:
                 cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
         conn.commit()
@@ -126,6 +126,52 @@ def insert_pipeline(
     )
     row = conn.execute("SELECT id FROM pipelines WHERE name=?", (name,)).fetchone()
     return int(row[0])
+
+
+def _normalize_limit_map(value: Any) -> Optional[Dict[str, int]]:
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, (int, float)):
+        return {"default": int(value)}
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            try:
+                return {"default": int(s)}
+            except (TypeError, ValueError):
+                return None
+        else:
+            value = parsed
+    if isinstance(value, dict):
+        result: Dict[str, int] = {}
+        for key, val in value.items():
+            if key is None:
+                continue
+            key_str = str(key).strip()
+            if not key_str:
+                continue
+            try:
+                int_val = int(val)
+            except (TypeError, ValueError):
+                continue
+            result[key_str] = int_val
+        return result
+    if isinstance(value, list):
+        # Unsupported structure; ignore silently
+        return None
+    return None
+
+
+def _limit_map_to_json(limit_map: Optional[Dict[str, int]]) -> Optional[str]:
+    if limit_map is None:
+        return None
+    return json.dumps(limit_map, ensure_ascii=False)
 
 
 def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
@@ -157,12 +203,13 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
     ).fetchone()
     writer = {}
     if wrow:
+        limit_map = _normalize_limit_map(wrow[4])
         writer = {
             "type": str(wrow[0] or ""),
             "hours": int(wrow[1] or 24),
             "weights_json": str(wrow[2] or "") or None,
             "bonus_json": str(wrow[3] or "") or None,
-            "limit_per_category": int(wrow[4]) if wrow[4] is not None else None,
+            "limit_per_category": limit_map,
             "per_source_cap": int(wrow[5]) if wrow[5] is not None else None,
         }
     # delivery (email or feishu)
@@ -354,6 +401,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             )
             # writer
             w = it.get("writer") or {}
+            limit_map = _normalize_limit_map(w.get("limit_per_category"))
             cur.execute(
                 "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -363,7 +411,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                     int(w["hours"]) if ("hours" in w and w.get("hours") is not None) else 24,
                     _to_json_text(w.get("weights_json")),
                     _to_json_text(w.get("bonus_json")),
-                    _to_optional_int(w.get("limit_per_category")),
+                    _limit_map_to_json(limit_map),
                     _to_optional_int(w.get("per_source_cap")),
                 ),
             )
@@ -465,8 +513,8 @@ def cmd_seed(_: argparse.Namespace) -> None:
             ),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, 10, 3)",
-            (p3, "feishu_md", 40),
+            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, ?, 3)",
+            (p3, "feishu_md", 40, json.dumps({"default": 10}, ensure_ascii=False)),
         )
         # App credentials from environment.yml (as requested); set to_all_chat=1
         conn.execute(

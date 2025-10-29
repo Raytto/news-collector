@@ -43,8 +43,8 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "qbitai-zhiku": 2.0,
 }
 
-DEFAULT_LIMIT_PER_CATEGORY = 0  # <=0 means unlimited
-DEFAULT_PER_SOURCE_CAP = 0      # <=0 means unlimited
+DEFAULT_LIMIT_PER_CATEGORY = 10  # 默认每个分类展示 10 条
+DEFAULT_PER_SOURCE_CAP = 0       # <=0 means unlimited
 
 
 WRITER_DIR = Path(__file__).resolve().parent
@@ -64,9 +64,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--source-bonus", default="", help="来源加成 JSON，例如 '{\"openai.research\": 2}'")
     p.add_argument(
         "--limit-per-cat",
-        type=int,
-        default=None,
-        help="每个分类的最大条目数（<=0 表示不限制；默认不限制）",
+        type=str,
+        default="",
+        help=(
+            f"每个分类的最大条目数；支持整数或 JSON (如 '12' 或 '{{\"default\":10,\"tech\":5}}'；"
+            f"默认 {DEFAULT_LIMIT_PER_CATEGORY})"
+        ),
     )
     p.add_argument(
         "--per-source-cap",
@@ -85,6 +88,56 @@ def _env_pipeline_id() -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def parse_limit_config(raw: Any) -> Tuple[Dict[str, int], int]:
+    """Interpret DB/CLI limit config into (per-category map, default)."""
+    limit_map: Dict[str, int] = {}
+    default_limit = DEFAULT_LIMIT_PER_CATEGORY
+    value: Any = raw
+    if value is None:
+        return limit_map, default_limit
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore").strip()
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return limit_map, default_limit
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            try:
+                default_limit = int(s)
+            except (TypeError, ValueError):
+                return limit_map, default_limit
+            return limit_map, default_limit
+        else:
+            value = parsed
+    if isinstance(value, (int, float)):
+        default_limit = int(value)
+        return limit_map, default_limit
+    if isinstance(value, dict):
+        temp_default = default_limit
+        for key, val in value.items():
+            if key is None:
+                continue
+            key_str = str(key).strip()
+            if not key_str:
+                continue
+            try:
+                int_val = int(val)
+            except (TypeError, ValueError):
+                continue
+            if key_str.lower() == "default":
+                temp_default = int_val
+            else:
+                limit_map[key_str] = int_val
+        return limit_map, temp_default
+    return limit_map, default_limit
+
+
+def limit_for_category(limit_map: Dict[str, int], default_limit: int, category: str) -> int:
+    return int(limit_map.get(category, default_limit))
 
 
 def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
@@ -113,7 +166,7 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         out["weights_json"] = str(w[1] or "")
         out["bonus_json"] = str(w[2] or "")
         if has_limit_cols:
-            out["limit_per_category"] = int(w[3]) if w[3] is not None else None
+            out["limit_per_category"] = w[3]
             out["per_source_cap"] = int(w[4]) if w[4] is not None else None
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
@@ -236,11 +289,12 @@ def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, A
 
 def apply_limits(
     entries: List[Dict[str, Any]],
-    limit_per_cat: int,
+    limit_map: Dict[str, int],
+    limit_default: int,
     per_source_cap: int,
 ) -> List[Dict[str, Any]]:
-    """Trim entries per category and source based on configured caps."""
-    if (limit_per_cat is None or limit_per_cat <= 0) and (per_source_cap is None or per_source_cap <= 0):
+    """Trim entries according to per-category/per-source caps."""
+    if (not limit_map and limit_default <= 0) and (per_source_cap is None or per_source_cap <= 0):
         return entries
 
     by_cat: Dict[str, List[Dict[str, Any]]] = {}
@@ -260,6 +314,7 @@ def apply_limits(
         )
         per_src_counts: Dict[str, int] = {}
         kept: List[Dict[str, Any]] = []
+        cat_limit = limit_for_category(limit_map, limit_default, cat)
         for it in sorted_items:
             if per_source_cap is not None and per_source_cap > 0:
                 src = str(it.get("source") or "")
@@ -268,7 +323,7 @@ def apply_limits(
                     continue
                 per_src_counts[src] = seen + 1
             kept.append(it)
-            if limit_per_cat is not None and limit_per_cat > 0 and len(kept) >= limit_per_cat:
+            if cat_limit > 0 and len(kept) >= cat_limit:
                 break
         trimmed.extend(kept)
     return trimmed
@@ -413,7 +468,8 @@ def main() -> None:
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
     effective_hours = max(1, int(args.hours))
     categories_filter: list[str] = []
-    limit_per_cat = DEFAULT_LIMIT_PER_CATEGORY
+    limit_map: Dict[str, int] = {}
+    limit_default = DEFAULT_LIMIT_PER_CATEGORY
     per_source_cap = DEFAULT_PER_SOURCE_CAP
 
     # If running under pipeline, load config from DB by default (no extra flags)
@@ -454,11 +510,9 @@ def main() -> None:
                         categories_filter = [str(c).strip() for c in cats if str(c).strip()]
                 except json.JSONDecodeError:
                     pass
-            if cfg.get("limit_per_category") is not None:
-                try:
-                    limit_per_cat = int(cfg["limit_per_category"])
-                except (TypeError, ValueError):
-                    pass
+            limit_raw = cfg.get("limit_per_category")
+            if limit_raw not in (None, ""):
+                limit_map, limit_default = parse_limit_config(limit_raw)
             if cfg.get("per_source_cap") is not None:
                 try:
                     per_source_cap = int(cfg["per_source_cap"])
@@ -487,8 +541,8 @@ def main() -> None:
         # explicit CLI categories (highest precedence)
         if args.categories.strip():
             categories_filter = [c.strip() for c in args.categories.split(",") if c.strip()]
-        if args.limit_per_cat is not None:
-            limit_per_cat = int(args.limit_per_cat)
+        if args.limit_per_cat and args.limit_per_cat.strip():
+            limit_map, limit_default = parse_limit_config(args.limit_per_cat)
         if args.per_source_cap is not None:
             per_source_cap = int(args.per_source_cap)
 
@@ -507,7 +561,7 @@ def main() -> None:
                 if bonus:
                     score = max(1.0, min(5.0, score + bonus))
                 e["final_score"] = round(score, 2)
-        entries = apply_limits(entries, limit_per_cat, per_source_cap)
+        entries = apply_limits(entries, limit_map, limit_default, per_source_cap)
 
     if not entries:
         print("没有符合条件的资讯，未生成文件")
