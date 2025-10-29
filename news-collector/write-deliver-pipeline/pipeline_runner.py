@@ -80,121 +80,74 @@ def run_writer(
     Returns: output file path
     """
     wtype = str(writer.get("type", "")).strip()
-    hours = int(writer.get("hours") or 24)
+    # Respect explicit zeros; only default when key missing
+    hours = int(writer["hours"]) if ("hours" in writer and writer.get("hours") is not None) else 24
     weights_json = (writer.get("weights_json") or "").strip()
     bonus_json = (writer.get("bonus_json") or "").strip()
+    # Determine whether to pass category filters (0 means not all -> filtered)
+    all_cats = int(filters["all_categories"]) if ("all_categories" in filters and filters.get("all_categories") is not None) else 1
 
     if wtype == "feishu_md":
         out_path = out_dir / f"{ts}.md"
         cmd = [
             PY,
             str(WRITER_DIR / "feishu_writer.py"),
-            "--hours",
-            str(hours),
             "--output",
             str(out_path),
         ]
-        # categories from filters
-        if int(filters.get("all_categories") or 1) == 0:
-            try:
-                cats = json.loads(filters.get("categories_json") or "[]")
-                if isinstance(cats, list) and cats:
-                    cmd += ["--categories", ",".join(str(c).strip() for c in cats if str(c).strip())]
-            except json.JSONDecodeError:
-                pass
-        if weights_json:
-            cmd += ["--weights", weights_json]
-        if bonus_json:
-            cmd += ["--source-bonus", bonus_json]
     elif wtype == "wenhao_html":
         # Use unified email_writer with DB-provided categories/weights/bonus
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
             str(WRITER_DIR / "email_writer.py"),
-            "--hours",
-            str(hours),
             "--output",
             str(out_path),
         ]
-        if int(filters.get("all_categories") or 1) == 0:
-            try:
-                cats = json.loads(filters.get("categories_json") or "[]")
-                if isinstance(cats, list) and cats:
-                    cmd += ["--categories", ",".join(str(c).strip() for c in cats if str(c).strip())]
-            except json.JSONDecodeError:
-                pass
-        if weights_json:
-            cmd += ["--weights", weights_json]
-        if bonus_json:
-            cmd += ["--source-bonus", bonus_json]
     elif wtype == "info_html":
         # Use unified email_writer in general mode with optional categories/weights/bonus
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
             str(WRITER_DIR / "email_writer.py"),
-            "--hours",
-            str(hours),
             "--output",
             str(out_path),
         ]
-        if int(filters.get("all_categories") or 1) == 0:
-            try:
-                cats = json.loads(filters.get("categories_json") or "[]")
-                if isinstance(cats, list) and cats:
-                    cmd += ["--categories", ",".join(str(c).strip() for c in cats if str(c).strip())]
-            except json.JSONDecodeError:
-                pass
-        if weights_json:
-            cmd += ["--weights", weights_json]
-        if bonus_json:
-            cmd += ["--source-bonus", bonus_json]
     else:
         raise SystemExit(f"未知 writer 类型: {wtype}")
 
     print(f"[PIPELINE {pipeline_id}] Running writer: {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    env = os.environ.copy()
+    env["PIPELINE_ID"] = str(pipeline_id)
+    subprocess.run(cmd, check=True, env=env)
     if not out_path.exists():
         raise SystemExit(f"writer 未生成输出文件: {out_path}")
     return out_path
 
-
-def deliver_email(html_file: Path, email: str, subject: str) -> None:
+def deliver_email(html_file: Path, pipeline_id: int) -> None:
     cmd = [
         PY,
         str(DELIVER_DIR / "mail_deliver.py"),
         "--html",
         str(html_file),
-        "--subject",
-        subject,
-        "--to",
-        email,
     ]
-    print(f"[DELIVER] email -> {email} : {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
-
-
-def deliver_feishu(md_file: Path, app_id: str, app_secret: str, title: str, to_all_chat: int, chat_id: Optional[str]) -> None:
     env = os.environ.copy()
-    env["FEISHU_APP_ID"] = app_id
-    env["FEISHU_APP_SECRET"] = app_secret
+    env["PIPELINE_ID"] = str(pipeline_id)
+    print(f"[DELIVER] email via DB (pipeline={pipeline_id}): {' '.join(cmd)}")
+    subprocess.run(cmd, check=True, env=env)
+
+
+def deliver_feishu(md_file: Path, pipeline_id: int) -> None:
+    env = os.environ.copy()
+    env["PIPELINE_ID"] = str(pipeline_id)
     base_cmd = [
         PY,
         str(DELIVER_DIR / "feishu_deliver.py"),
         "--file",
         str(md_file),
         "--as-card",
-        "--title",
-        title,
     ]
-    if int(to_all_chat or 0) == 1:
-        base_cmd.insert(2, "--to-all")
-    else:
-        if not chat_id:
-            raise SystemExit("Feishu: 需要 chat_id 或设置 to_all_chat=1")
-        base_cmd += ["--chat-id", chat_id]
-    print(f"[DELIVER] feishu: {' '.join(base_cmd)}")
+    print(f"[DELIVER] feishu via DB (pipeline={pipeline_id}): {' '.join(base_cmd)}")
     subprocess.run(base_cmd, check=True, env=env)
 
 
@@ -241,28 +194,10 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
     out_path = run_writer(p.id, writer, filters, out_dir, ts)
 
     if has_email:
-        d = _fetchone_dict(
-            cur,
-            "SELECT email, subject_tpl FROM pipeline_deliveries_email WHERE pipeline_id=?",
-            (p.id,),
-        )
-        subject = render_subject(d.get("subject_tpl", ""), ts, date_zh)
-        deliver_email(out_path, str(d.get("email") or "").strip(), subject)
+        deliver_email(out_path, p.id)
     else:
-        d = _fetchone_dict(
-            cur,
-            "SELECT app_id, app_secret, to_all_chat, chat_id, COALESCE(title_tpl,'通知') AS title_tpl, to_all, content_json FROM pipeline_deliveries_feishu WHERE pipeline_id=?",
-            (p.id,),
-        )
         # If content_json is present, we could pass --text instead of --file, but current bot expects file for card.
-        deliver_feishu(
-            out_path,
-            str(d.get("app_id") or ""),
-            str(d.get("app_secret") or ""),
-            str(d.get("title_tpl") or "通知"),
-            int(d.get("to_all_chat") or 0),
-            (str(d.get("chat_id") or "").strip() or None),
-        )
+        deliver_feishu(out_path, p.id)
 
 
 def parse_args() -> argparse.Namespace:

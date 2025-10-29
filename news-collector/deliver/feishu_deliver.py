@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -38,6 +39,46 @@ def load_config() -> FeishuConfig:
         app_secret=app_secret,
         default_chat_id=default_chat_id,
     )
+
+
+def _env_pipeline_id() -> int | None:
+    raw = (os.getenv("PIPELINE_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _load_feishu_delivery_from_db(db_path: Path, pipeline_id: int) -> dict:
+    """Load Feishu delivery config for a pipeline from SQLite."""
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT app_id, app_secret, to_all_chat, chat_id, COALESCE(title_tpl,'') FROM pipeline_deliveries_feishu WHERE pipeline_id=?",
+                (pipeline_id,),
+            ).fetchone()
+            if not row:
+                return {}
+            return {
+                "app_id": str(row[0] or ""),
+                "app_secret": str(row[1] or ""),
+                "to_all_chat": int(row[2] or 0),
+                "chat_id": (str(row[3] or "").strip() or None),
+                "title_tpl": str(row[4] or ""),
+            }
+    except Exception:
+        return {}
+
+
+def _render_title_from_tpl(tpl: str | None) -> str:
+    ts = __import__("datetime").datetime.now().strftime("%Y%m%d-%H%M%S")
+    date_zh = __import__("datetime").datetime.now().strftime("%Y年%m月%d日")
+    s = (tpl or "").strip()
+    s = s.replace("${date_zh}", date_zh)
+    s = s.replace("${ts}", ts)
+    return s or "通知"
 
 
 def get_tenant_access_token(cfg: FeishuConfig) -> str:
@@ -233,6 +274,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    # DB-driven defaults via PIPELINE_ID
+    pid = _env_pipeline_id()
+    repo_root = Path(__file__).resolve().parents[2]
+    db_path = repo_root / "data" / "info.db"
+    db_delivery: dict = {}
+    if pid is not None and db_path.exists():
+        db_delivery = _load_feishu_delivery_from_db(db_path, pid)
+        # If credentials present in DB, set env for load_config()
+        if db_delivery.get("app_id") and db_delivery.get("app_secret"):
+            os.environ["FEISHU_APP_ID"] = str(db_delivery["app_id"])  # override
+            os.environ["FEISHU_APP_SECRET"] = str(db_delivery["app_secret"])  # override
+
     cfg = load_config()
     token = get_tenant_access_token(cfg)
 
@@ -255,6 +309,14 @@ def main() -> None:
         if not p.exists():
             raise SystemExit(f"指定文件不存在: {p}")
         text = p.read_text(encoding="utf-8")
+
+    # If DB says to broadcast to all and CLI didn't specify a target, respect DB
+    if (not args.to_all) and (not args.chat_id) and (not args.chat_name) and db_delivery.get("to_all_chat") == 1:
+        args.to_all = True
+
+    # Default title from DB when not provided
+    if (args.as_card or args.as_post) and (not args.title) and db_delivery.get("title_tpl"):
+        args.title = _render_title_from_tpl(db_delivery.get("title_tpl") or "")
 
     # 群发
     if args.to_all:
@@ -290,6 +352,8 @@ def main() -> None:
 
     # 单群发送
     chat_id = (args.chat_id or cfg.default_chat_id or "").strip()
+    if not chat_id and (db_delivery.get("chat_id") or ""):
+        chat_id = str(db_delivery.get("chat_id") or "").strip()
     if not chat_id and args.chat_name:
         chat_id = _resolve_chat_id_by_name(cfg, token, args.chat_name)
     if not chat_id:

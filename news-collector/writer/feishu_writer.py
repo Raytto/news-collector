@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +64,37 @@ def parse_args() -> argparse.Namespace:
         help="JSON mapping for manual bonus per source before clipping (例如 '{\"openai.research\": 2}')",
     )
     return p.parse_args()
+
+
+def _env_pipeline_id() -> Optional[int]:
+    raw = (os.getenv("PIPELINE_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
+    cur = conn.cursor()
+    w = cur.execute(
+        "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+        (pipeline_id,),
+    ).fetchone()
+    f = cur.execute(
+        "SELECT all_categories, COALESCE(categories_json,'') FROM pipeline_filters WHERE pipeline_id=?",
+        (pipeline_id,),
+    ).fetchone()
+    out: Dict[str, Any] = {}
+    if w:
+        out["hours"] = int(w[0]) if w[0] is not None else None
+        out["weights_json"] = str(w[1] or "")
+        out["bonus_json"] = str(w[2] or "")
+    if f:
+        out["all_categories"] = int(f[0]) if f[0] is not None else 1
+        out["categories_json"] = str(f[1] or "")
+    return out
 
 
 def try_parse_dt(value: str) -> Optional[datetime]:
@@ -159,34 +191,15 @@ def format_section(title: str, items: List[Dict[str, Any]]) -> str:
 
 def main() -> None:
     args = parse_args()
-    hours = max(1, int(args.hours))
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    effective_hours = max(1, int(args.hours))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=effective_hours)
 
     weights = DEFAULT_WEIGHTS.copy()
-    if args.weights.strip():
-        try:
-            overrides = json.loads(args.weights)
-            if isinstance(overrides, dict):
-                for k, v in overrides.items():
-                    if k in weights and isinstance(v, (int, float)):
-                        weights[k] = float(v)
-        except json.JSONDecodeError:
-            pass
-
     categories = [c.strip() for c in args.categories.split(",") if c.strip()]
     limit_per_cat = max(1, int(args.limit_per_cat))
     per_source_cap = int(args.per_source_cap)
     min_score = float(args.min_score)
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
-    if args.source_bonus.strip():
-        try:
-            overrides = json.loads(args.source_bonus)
-            if isinstance(overrides, dict):
-                for k, v in overrides.items():
-                    if isinstance(v, (int, float)):
-                        source_bonus[str(k)] = float(v)
-        except json.JSONDecodeError:
-            pass
 
     out_path = Path(args.output) if args.output else (OUT_DIR / f"{datetime.now():%Y%m%d}-feishu-msg.md")
 
@@ -195,6 +208,62 @@ def main() -> None:
         raise SystemExit(f"数据库不存在: {db_path}")
 
     with sqlite3.connect(str(db_path)) as conn:
+        # DB-driven defaults when PIPELINE_ID present
+        pid = _env_pipeline_id()
+        if pid is not None:
+            cfg = _load_pipeline_cfg(conn, pid)
+            if isinstance(cfg.get("hours"), int) and int(cfg["hours"]) > 0:
+                effective_hours = int(cfg["hours"])  # override hours
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=effective_hours)
+            wj = (cfg.get("weights_json") or "").strip()
+            if wj:
+                try:
+                    w_map = json.loads(wj)
+                    if isinstance(w_map, dict):
+                        for k, v in w_map.items():
+                            if k in weights and isinstance(v, (int, float)):
+                                weights[k] = float(v)
+                except json.JSONDecodeError:
+                    pass
+            bj = (cfg.get("bonus_json") or "").strip()
+            if bj:
+                try:
+                    b_map = json.loads(bj)
+                    if isinstance(b_map, dict):
+                        for k, v in b_map.items():
+                            if isinstance(v, (int, float)):
+                                source_bonus[str(k)] = float(v)
+                except json.JSONDecodeError:
+                    pass
+            all_cats = int(cfg.get("all_categories", 1) or 1)
+            if all_cats == 0:
+                try:
+                    cats = json.loads(cfg.get("categories_json") or "[]")
+                    if isinstance(cats, list):
+                        categories = [str(c).strip() for c in cats if str(c).strip()]
+                except json.JSONDecodeError:
+                    pass
+
+        # CLI overrides still supported
+        if args.weights.strip():
+            try:
+                overrides = json.loads(args.weights)
+                if isinstance(overrides, dict):
+                    for k, v in overrides.items():
+                        if k in weights and isinstance(v, (int, float)):
+                            weights[k] = float(v)
+            except json.JSONDecodeError:
+                pass
+        if args.source_bonus.strip():
+            try:
+                overrides = json.loads(args.source_bonus)
+                if isinstance(overrides, dict):
+                    for k, v in overrides.items():
+                        if isinstance(v, (int, float)):
+                            source_bonus[str(k)] = float(v)
+            except json.JSONDecodeError:
+                pass
+
         rows = load_rows(conn)
 
     # 聚合并评分

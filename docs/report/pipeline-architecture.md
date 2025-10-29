@@ -16,6 +16,7 @@
 - Pipeline Runner（仅 Write/Deliver）
   - 从数据库读取多条“写作/推送”管线配置（见第 3 节）。
   - 对每条管线：按配置过滤 DB → 选择 writer → 生成文件 → 选择 deliver 方式推送。
+  - Runner 仅负责计算输出路径并设置 `PIPELINE_ID` 环境变量，具体参数（hours/categories/weights/bonus/收件人/Feishu 目标与凭证）由 writer/deliver 脚本按 `PIPELINE_ID` 默认自取，无需额外 flag。
   - 顺序执行各管线；单条失败不影响其它管线。
 
 ## 3. 数据库模型（仅 write/deliver）
@@ -122,10 +123,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   - 输入：SQLite + 过滤（类别/来源）+ 权重/来源加成 + 小时窗口。
   - 输出：文件（HTML/Markdown）。
   - 输出路径：由 runner 统一计算为 `data/output/pipeline-${pipeline_id}/${ts}.{html|md}`，并通过 `--output` 传入 writer；各表不再存储路径模板。
-  - 现有 writer 已支持 `--hours --weights --source-bonus --output`，可直接复用。
+  - DB 优先：当存在 `PIPELINE_ID` 时，writer 默认从 DB 读取 `pipeline_writers` 与 `pipeline_filters`（hours/categories/weights/bonus）；仍保留 CLI 覆盖能力用于单次调试。
 - Deliver（按管线）
   - 渠道：email 与 feishu 分表管理；Feishu 统一使用 feishu_card。
-  - 复用 `deliver/mail_today.py` 与 `deliver/feishu_bot_today.py`。
+  - DB 优先：当存在 `PIPELINE_ID` 时，`mail_deliver.py` 默认自 DB 读取收件人与标题模板；`feishu_deliver.py` 默认自 DB 读取 App 凭证、发送范围（to_all_chat/chat_id）与标题模板。Runner 仅传入待发送文件路径（`--html` 或 `--file`）与展示形式（如 `--as-card`）。
+  - 仍支持通过 CLI 与环境变量手动覆盖，便于独立调试。
 
 ## 5. 过滤与排序策略
 - 过滤优先放在 writer 层（避免重复评估）。

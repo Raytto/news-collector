@@ -179,8 +179,9 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
             }
         else:
             delivery = {}
+    # expose id as well so exports/imports can optionally match by id
     return {
-        "pipeline": {"name": name, "enabled": enabled, "description": desc},
+        "pipeline": {"id": pid, "name": name, "enabled": enabled, "description": desc},
         "filters": filters,
         "writer": writer,
         "delivery": delivery,
@@ -270,12 +271,47 @@ def cmd_import(args: argparse.Namespace) -> None:
         for it in items:
             meta = it.get("pipeline") or {}
             name = str(meta.get("name") or "").strip()
+            raw_id = meta.get("id")
             if not name:
                 print("[SKIP] 缺少 pipeline.name")
                 continue
-            enabled = int(meta.get("enabled") or 1)
+            # Respect explicit zeros: only use default when key missing
+            enabled = int(meta["enabled"]) if ("enabled" in meta and meta.get("enabled") is not None) else 1
             desc = str(meta.get("description") or "")
-            pid = _get_or_create_pipeline(conn, name, enabled, desc, args.mode)
+            # Prefer matching by id when provided and valid; otherwise, fall back to name
+            pid: Optional[int] = None
+            if isinstance(raw_id, int):
+                row = cur.execute("SELECT id, name FROM pipelines WHERE id=?", (raw_id,)).fetchone()
+                if row:
+                    pid = int(row[0])
+                    # Update name if different
+                    db_name = str(row[1] or "")
+                    if name and name != db_name:
+                        try:
+                            cur.execute(
+                                "UPDATE pipelines SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                                (name, pid),
+                            )
+                        except sqlite3.IntegrityError:
+                            # Name conflict; fall back to name-based resolution below
+                            pid = None
+            if pid is None:
+                pid = _get_or_create_pipeline(conn, name, enabled, desc, args.mode)
+            else:
+                # id path: honor replace semantics for child rows
+                if args.mode == "replace":
+                    for t in (
+                        "pipeline_filters",
+                        "pipeline_writers",
+                        "pipeline_deliveries_email",
+                        "pipeline_deliveries_feishu",
+                    ):
+                        cur.execute(f"DELETE FROM {t} WHERE pipeline_id=?", (pid,))
+                # Ensure base fields up-to-date
+                cur.execute(
+                    "UPDATE pipelines SET enabled=?, description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (int(enabled), desc, pid),
+                )
 
             # filters
             f = it.get("filters") or {}
@@ -296,7 +332,8 @@ def cmd_import(args: argparse.Namespace) -> None:
                 (
                     pid,
                     str(w.get("type") or ""),
-                    int(w.get("hours") or 24),
+                    # Respect explicit zeros; default only when key missing
+                    int(w["hours"]) if ("hours" in w and w.get("hours") is not None) else 24,
                     _to_json_text(w.get("weights_json")),
                     _to_json_text(w.get("bonus_json")),
                 ),

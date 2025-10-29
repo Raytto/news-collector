@@ -1,7 +1,7 @@
 **Overview**
 - Purpose: Manage write/deliver pipelines via SQLite so writers and deliveries are configurable without editing scripts.
 - Location: tables live in `data/info.db`; tools in `news-collector/write-deliver-pipeline/`.
-- Writers used: `info_writer.py`, `wenhao_writer.py`, `feishu_writer.py` (existing). Deliveries reuse `deliver/mail_today.py` and `deliver/feishu_bot_today.py`.
+- Writers used: `info_writer.py`, `wenhao_writer.py`, `feishu_writer.py` (existing). Deliveries use `deliver/mail_deliver.py` and `deliver/feishu_deliver.py`.
 
 **Schema Summary**
 - `pipelines`: name, enabled, description, timestamps.
@@ -14,7 +14,7 @@
 **Output Rules**
 - Directory per pipeline: `data/output/pipeline-<pipeline_id>`.
 - Filename: `${ts}.html` for email, `${ts}.md` for Feishu; `ts=YYYYMMDD-HHMMSS`.
-- Runner computes the full path and passes `--output` to writers.
+- Runner computes the full path and passes `--output` to writers. It also sets `PIPELINE_ID` for subprocesses so writers/deliveries self-fetch configuration from DB by default.
 
 **Admin Commands**
 - Initialize tables: `python news-collector/write-deliver-pipeline/pipeline_admin.py init`
@@ -36,23 +36,27 @@
   - `--mode general` (maps from `info_html`): generic digest; optional `--source-bonus`; does not require AI table.
   - `--mode wenhao` (maps from `wenhao_html`): humanities/tech curated digest; requires `info_ai_review`.
 - Feishu writer: `writer/feishu_writer.py` (maps from `feishu_md`): Feishu-friendly Markdown; requires `info_ai_review`.
-- Filters: Feishu writer respects category whitelist when `all_categories=0` and `categories_json` is set (pipeline runner passes args).
+- DB-driven defaults: when `PIPELINE_ID` is present, writers read hours/categories/weights/bonus from DB (`pipeline_writers`/`pipeline_filters`). CLI flags still override for ad-hoc runs.
 
 **Delivery Config**
-- Email: `deliver/mail_deliver.py` used by runner with `--html` + `--subject` + `--to`.
-- Feishu (card): `deliver/feishu_deliver.py` used by runner with `--file --as-card --title` and credentials via env.
+- Email: `deliver/mail_deliver.py` used by runner with `--html` only; when `PIPELINE_ID` is present it reads recipient and subject template from DB.
+- Feishu (card): `deliver/feishu_deliver.py` used by runner with `--file --as-card`; when `PIPELINE_ID` is present it reads credentials and target (to_all/chat_id) and title template from DB.
 - Pipeline DB fields: Email uses `email` + `subject_tpl`; Feishu uses `app_id`/`app_secret` + `to_all_chat` or `chat_id` + `title_tpl`/`to_all`.
 - Security: do not commit real secrets; prefer environment variables for local runs. The seed/import flow accepts values for convenience but treat them as sensitive.
 
 **JSON Import/Export Format**
 - Root: `{ "version": 1, "pipelines": [ ... ] }`
 - Item fields:
-  - `pipeline`: `{ "name", "enabled", "description" }`
+  - `pipeline`: `{ "id?", "name", "enabled", "description" }` (`id` optional; exported for reference)
   - `filters`: `{ "all_categories", "categories_json", "all_src", "include_src_json" }` (arrays or JSON strings accepted)
   - `writer`: `{ "type", "hours", "weights_json", "bonus_json" }` (objects or JSON strings accepted)
   - `delivery`:
     - Email: `{ "kind": "email", "email": "a@b.com", "subject_tpl": "${date_zh}整合" }`
     - Feishu: `{ "kind": "feishu", "app_id": "...", "app_secret": "...", "to_all_chat": 1, "chat_id": null, "title_tpl": "通知", "to_all": 1, "content_json": null }`
+- Import behavior:
+  - Explicit zeros are respected (e.g., `enabled: 0`, `all_categories: 0`).
+  - Export includes `pipeline.id` to aid debugging and optional matching during import.
+  - When importing, if a valid `pipeline.id` exists in the DB, it is used (and name updated if needed); otherwise, matching falls back to `pipeline.name`.
 - Import modes:
   - `replace`: clears existing child rows for same-name pipeline then inserts (recommended when syncing from JSON).
   - `merge`: upserts without clearing; ensures only one delivery table is used.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import smtplib
+import sqlite3
 import subprocess
 from email.header import Header
 from email.mime.text import MIMEText
@@ -30,6 +31,43 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smtp-use-tls", action="store_true", default=os.getenv("SMTP_USE_TLS", "false").lower() == "true")
     p.add_argument("--dry-run", action="store_true", help="Print message metadata without sending")
     return p.parse_args()
+
+
+def _env_pipeline_id() -> int | None:
+    raw = (os.getenv("PIPELINE_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _load_email_delivery_from_db(db_path: Path, pipeline_id: int) -> tuple[str | None, str | None]:
+    """Return (email, subject_tpl) for pipeline, or (None, None) when not found."""
+    # DB lives at data/info.db relative to repo root by convention
+    try:
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT email, subject_tpl FROM pipeline_deliveries_email WHERE pipeline_id=?",
+                (pipeline_id,),
+            ).fetchone()
+            if not row:
+                return (None, None)
+            email = str(row[0] or "").strip() or None
+            subject_tpl = str(row[1] or "").strip() or None
+            return (email, subject_tpl)
+    except Exception:
+        return (None, None)
+
+
+def _render_subject_from_tpl(tpl: str | None) -> str:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    date_zh = datetime.now().strftime("%Y年%m月%d日")
+    s = (tpl or "").strip()
+    s = s.replace("${date_zh}", date_zh)
+    s = s.replace("${ts}", ts)
+    return s or date_zh
 
 
 def try_send_via_smtp(msg: MIMEText, sender: str, receivers: list[str], host: str, port: int,
@@ -79,9 +117,24 @@ def main() -> None:
     if not html_path.exists():
         raise SystemExit(f"HTML 文件不存在: {html_path}")
 
-    subject = args.subject.strip() or datetime.now().strftime("%Y年%m月%d日整合")
+    # Default subject/receivers; allow DB to override when PIPELINE_ID present
+    subject = args.subject.strip()
     sender = args.sender.strip()
     receivers = [addr.strip() for addr in args.to.split(",") if addr.strip()]
+
+    pid = _env_pipeline_id()
+    # Locate db at repo data/info.db by walking relative paths (this script lives in news-collector/deliver)
+    repo_root = Path(__file__).resolve().parents[2]
+    db_path = repo_root / "data" / "info.db"
+    if pid is not None and db_path.exists():
+        email_addr, subject_tpl = _load_email_delivery_from_db(db_path, pid)
+        if email_addr:
+            receivers = [email_addr]
+        # When DB present, always use its subject template if available
+        if subject_tpl:
+            subject = _render_subject_from_tpl(subject_tpl)
+    if not subject:
+        subject = datetime.now().strftime("%Y年%m月%d日整合")
 
     body = html_path.read_text(encoding="utf-8")
 

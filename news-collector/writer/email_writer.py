@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -59,6 +60,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
     p.add_argument("--source-bonus", default="", help="来源加成 JSON，例如 '{\"openai.research\": 2}'")
     return p.parse_args()
+
+
+def _env_pipeline_id() -> Optional[int]:
+    raw = (os.getenv("PIPELINE_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
+    cur = conn.cursor()
+    # writer
+    w = cur.execute(
+        "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+        (pipeline_id,),
+    ).fetchone()
+    # filters
+    f = cur.execute(
+        "SELECT all_categories, COALESCE(categories_json,'') FROM pipeline_filters WHERE pipeline_id=?",
+        (pipeline_id,),
+    ).fetchone()
+    out: Dict[str, Any] = {}
+    if w:
+        out["hours"] = int(w[0]) if w[0] is not None else None
+        out["weights_json"] = str(w[1] or "")
+        out["bonus_json"] = str(w[2] or "")
+    if f:
+        out["all_categories"] = int(f[0]) if f[0] is not None else 1
+        out["categories_json"] = str(f[1] or "")
+    return out
 
 
 def try_parse_dt(value: str) -> Optional[datetime]:
@@ -308,36 +342,78 @@ def main() -> None:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = OUTPUT_BASE / f"{ts}-email.html"
 
-    # Load config
+    # Base config from CLI defaults
     weights = DEFAULT_WEIGHTS.copy()
-    if args.weights.strip():
-        try:
-            overrides = json.loads(args.weights)
-            if isinstance(overrides, dict):
-                for k, v in overrides.items():
-                    if k in DIMENSION_LABELS and isinstance(v, (int, float)):
-                        weights[k] = float(v)
-        except json.JSONDecodeError:
-            pass
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
-    if args.source_bonus.strip():
-        try:
-            overrides = json.loads(args.source_bonus)
-            if isinstance(overrides, dict):
-                for k, v in overrides.items():
-                    if isinstance(v, (int, float)):
-                        source_bonus[str(k)] = float(v)
-        except json.JSONDecodeError:
-            pass
+    effective_hours = max(1, int(args.hours))
+    categories_filter: list[str] = []
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, args.hours))
+    # If running under pipeline, load config from DB by default (no extra flags)
+    pid = _env_pipeline_id()
     with sqlite3.connect(str(db_path)) as conn:
-        entries = fetch_recent(conn, cutoff)
-        # Apply category filter
+        if pid is not None:
+            cfg = _load_pipeline_cfg(conn, pid)
+            if isinstance(cfg.get("hours"), int) and int(cfg["hours"]) > 0:
+                effective_hours = int(cfg["hours"])  # DB overrides CLI default
+            # weights_json
+            wj = (cfg.get("weights_json") or "").strip()
+            if wj:
+                try:
+                    w_map = json.loads(wj)
+                    if isinstance(w_map, dict):
+                        for k, v in w_map.items():
+                            if k in DIMENSION_LABELS and isinstance(v, (int, float)):
+                                weights[k] = float(v)
+                except json.JSONDecodeError:
+                    pass
+            # bonus_json
+            bj = (cfg.get("bonus_json") or "").strip()
+            if bj:
+                try:
+                    b_map = json.loads(bj)
+                    if isinstance(b_map, dict):
+                        for k, v in b_map.items():
+                            if isinstance(v, (int, float)):
+                                source_bonus[str(k)] = float(v)
+                except json.JSONDecodeError:
+                    pass
+            # categories from filters when all_categories=0
+            all_cats = int(cfg.get("all_categories", 1) or 1)
+            if all_cats == 0:
+                try:
+                    cats = json.loads(cfg.get("categories_json") or "[]")
+                    if isinstance(cats, list):
+                        categories_filter = [str(c).strip() for c in cats if str(c).strip()]
+                except json.JSONDecodeError:
+                    pass
+
+        # CLI overrides remain supported for ad-hoc runs
+        if args.weights.strip():
+            try:
+                overrides = json.loads(args.weights)
+                if isinstance(overrides, dict):
+                    for k, v in overrides.items():
+                        if k in DIMENSION_LABELS and isinstance(v, (int, float)):
+                            weights[k] = float(v)
+            except json.JSONDecodeError:
+                pass
+        if args.source_bonus.strip():
+            try:
+                overrides = json.loads(args.source_bonus)
+                if isinstance(overrides, dict):
+                    for k, v in overrides.items():
+                        if isinstance(v, (int, float)):
+                            source_bonus[str(k)] = float(v)
+            except json.JSONDecodeError:
+                pass
+        # explicit CLI categories (highest precedence)
         if args.categories.strip():
-            cats = [c.strip() for c in args.categories.split(",") if c.strip()]
-            if cats:
-                entries = [e for e in entries if (e.get("category") or "") in cats]
+            categories_filter = [c.strip() for c in args.categories.split(",") if c.strip()]
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, effective_hours))
+        entries = fetch_recent(conn, cutoff)
+        if categories_filter:
+            entries = [e for e in entries if (e.get("category") or "") in categories_filter]
         # Apply source bonus and compute final_score
         for e in entries:
             eva = e.get("evaluation") or {}
@@ -354,7 +430,7 @@ def main() -> None:
         print("没有符合条件的资讯，未生成文件")
         return
 
-    html = render_html(entries, args.hours, weights)
+    html = render_html(entries, effective_hours, weights)
     if not html:
         print("没有符合条件的资讯，未生成文件")
         return
@@ -364,4 +440,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
