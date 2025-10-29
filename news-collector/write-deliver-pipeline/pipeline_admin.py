@@ -488,7 +488,7 @@ def cmd_seed(_: argparse.Namespace) -> None:
             (p1, "306483372@qq.com", "${date_zh}整合"),
         )
 
-        # 2) Email to 410861858@qq.com using wenhao_writer (24h)
+        # 2) Email to 410861858@qq.com using unified email_writer (24h)
         p2 = insert_pipeline(conn, "email_410861858_wenhao", "WH 精选发给 410861858@qq.com", 1)
         conn.execute(
             "INSERT OR REPLACE INTO pipeline_filters (pipeline_id, all_categories, categories_json, all_src, include_src_json) VALUES (?, 1, NULL, 1, NULL)",
@@ -496,7 +496,7 @@ def cmd_seed(_: argparse.Namespace) -> None:
         )
         conn.execute(
             "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, NULL, NULL)",
-            (p2, "wenhao_html", 24),
+            (p2, "info_html", 24),
         )
         conn.execute(
             "INSERT OR REPLACE INTO pipeline_deliveries_email (pipeline_id, email, subject_tpl) VALUES (?, ?, ?)",

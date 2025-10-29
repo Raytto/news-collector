@@ -87,6 +87,8 @@ def run_writer(
     # Determine whether to pass category filters (0 means not all -> filtered)
     all_cats = int(filters["all_categories"]) if ("all_categories" in filters and filters.get("all_categories") is not None) else 1
 
+    # Map writer types to concrete scripts. We unify all email HTML
+    # generation to email_writer.py, including the legacy "wenhao_html".
     if wtype == "feishu_md":
         out_path = out_dir / f"{ts}.md"
         cmd = [
@@ -95,17 +97,8 @@ def run_writer(
             "--output",
             str(out_path),
         ]
-    elif wtype == "wenhao_html":
-        # Use dedicated Wenhao writer for humanities & tech digest
-        out_path = out_dir / f"{ts}.html"
-        cmd = [
-            PY,
-            str(WRITER_DIR / "wenhao_writer.py"),
-            "--output",
-            str(out_path),
-        ]
-    elif wtype == "info_html":
-        # Use unified email_writer in general mode with optional categories/weights/bonus
+    elif wtype in {"info_html", "wenhao_html", "email_html"}:
+        # Unified email writer for all HTML digests
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
