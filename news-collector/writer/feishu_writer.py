@@ -46,13 +46,26 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "qbitai-zhiku": 2.0,
 }
 
+DEFAULT_LIMIT_PER_CATEGORY = 10
+DEFAULT_PER_SOURCE_CAP = 3
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate Feishu-friendly markdown summary from SQLite")
     p.add_argument("--db", default=str(DB_PATH), help="SQLite 数据库路径 (默认: data/info.db)")
     p.add_argument("--hours", type=int, default=24, help="时间窗口（小时，默认 24）")
-    p.add_argument("--limit-per-cat", type=int, default=10, help="每个分类的最大条目数（默认 10）")
-    p.add_argument("--per-source-cap", type=int, default=3, help="每个来源在同一分类内的最大条目数（默认 3；<=0 表示不限制）")
+    p.add_argument(
+        "--limit-per-cat",
+        type=int,
+        default=None,
+        help=f"每个分类的最大条目数（默认 {DEFAULT_LIMIT_PER_CATEGORY}）",
+    )
+    p.add_argument(
+        "--per-source-cap",
+        type=int,
+        default=None,
+        help=f"每个来源在同一分类内的最大条目数（默认 {DEFAULT_PER_SOURCE_CAP}；<=0 表示不限制）",
+    )
     p.add_argument("--categories", default="game,tech", help="要输出的分类，逗号分隔（默认 game,tech）")
     p.add_argument("--min-score", type=float, default=0.0, help="最小推荐分阈值，低于此值将被过滤（默认 0）")
     p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
@@ -78,10 +91,19 @@ def _env_pipeline_id() -> Optional[int]:
 
 def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
     cur = conn.cursor()
-    w = cur.execute(
-        "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
-        (pipeline_id,),
-    ).fetchone()
+    cur.execute("PRAGMA table_info(pipeline_writers)")
+    writer_cols = {row[1] for row in cur.fetchall()}
+    has_limit_cols = {"limit_per_category", "per_source_cap"} <= writer_cols
+    if has_limit_cols:
+        w = cur.execute(
+            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,''), limit_per_category, per_source_cap FROM pipeline_writers WHERE pipeline_id=?",
+            (pipeline_id,),
+        ).fetchone()
+    else:
+        w = cur.execute(
+            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+            (pipeline_id,),
+        ).fetchone()
     f = cur.execute(
         "SELECT all_categories, COALESCE(categories_json,'') FROM pipeline_filters WHERE pipeline_id=?",
         (pipeline_id,),
@@ -91,6 +113,9 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         out["hours"] = int(w[0]) if w[0] is not None else None
         out["weights_json"] = str(w[1] or "")
         out["bonus_json"] = str(w[2] or "")
+        if has_limit_cols:
+            out["limit_per_category"] = int(w[3]) if w[3] is not None else None
+            out["per_source_cap"] = int(w[4]) if w[4] is not None else None
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
         out["categories_json"] = str(f[1] or "")
@@ -196,8 +221,8 @@ def main() -> None:
 
     weights = DEFAULT_WEIGHTS.copy()
     categories = [c.strip() for c in args.categories.split(",") if c.strip()]
-    limit_per_cat = max(1, int(args.limit_per_cat))
-    per_source_cap = int(args.per_source_cap)
+    limit_per_cat = DEFAULT_LIMIT_PER_CATEGORY
+    per_source_cap = DEFAULT_PER_SOURCE_CAP
     min_score = float(args.min_score)
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
 
@@ -235,6 +260,16 @@ def main() -> None:
                                 source_bonus[str(k)] = float(v)
                 except json.JSONDecodeError:
                     pass
+            if cfg.get("limit_per_category") is not None:
+                try:
+                    limit_per_cat = max(1, int(cfg["limit_per_category"]))
+                except (TypeError, ValueError):
+                    pass
+            if cfg.get("per_source_cap") is not None:
+                try:
+                    per_source_cap = int(cfg["per_source_cap"])
+                except (TypeError, ValueError):
+                    pass
             all_cats = int(cfg.get("all_categories", 1) or 1)
             if all_cats == 0:
                 try:
@@ -263,6 +298,10 @@ def main() -> None:
                             source_bonus[str(k)] = float(v)
             except json.JSONDecodeError:
                 pass
+        if args.limit_per_cat is not None:
+            limit_per_cat = max(1, int(args.limit_per_cat))
+        if args.per_source_cap is not None:
+            per_source_cap = int(args.per_source_cap)
 
         rows = load_rows(conn)
 

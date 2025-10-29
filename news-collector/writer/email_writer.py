@@ -43,6 +43,9 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "qbitai-zhiku": 2.0,
 }
 
+DEFAULT_LIMIT_PER_CATEGORY = 0  # <=0 means unlimited
+DEFAULT_PER_SOURCE_CAP = 0      # <=0 means unlimited
+
 
 WRITER_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WRITER_DIR.parent
@@ -59,6 +62,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--categories", default="", help="分类白名单，逗号分隔（为空表示全部）")
     p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
     p.add_argument("--source-bonus", default="", help="来源加成 JSON，例如 '{\"openai.research\": 2}'")
+    p.add_argument(
+        "--limit-per-cat",
+        type=int,
+        default=None,
+        help="每个分类的最大条目数（<=0 表示不限制；默认不限制）",
+    )
+    p.add_argument(
+        "--per-source-cap",
+        type=int,
+        default=None,
+        help="同一分类内每个来源的最大条目数（<=0 表示不限制；默认不限制）",
+    )
     return p.parse_args()
 
 
@@ -74,11 +89,19 @@ def _env_pipeline_id() -> Optional[int]:
 
 def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
     cur = conn.cursor()
-    # writer
-    w = cur.execute(
-        "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
-        (pipeline_id,),
-    ).fetchone()
+    cur.execute("PRAGMA table_info(pipeline_writers)")
+    writer_cols = {row[1] for row in cur.fetchall()}
+    has_limit_cols = {"limit_per_category", "per_source_cap"} <= writer_cols
+    if has_limit_cols:
+        w = cur.execute(
+            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,''), limit_per_category, per_source_cap FROM pipeline_writers WHERE pipeline_id=?",
+            (pipeline_id,),
+        ).fetchone()
+    else:
+        w = cur.execute(
+            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+            (pipeline_id,),
+        ).fetchone()
     # filters
     f = cur.execute(
         "SELECT all_categories, COALESCE(categories_json,'') FROM pipeline_filters WHERE pipeline_id=?",
@@ -89,6 +112,9 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         out["hours"] = int(w[0]) if w[0] is not None else None
         out["weights_json"] = str(w[1] or "")
         out["bonus_json"] = str(w[2] or "")
+        if has_limit_cols:
+            out["limit_per_category"] = int(w[3]) if w[3] is not None else None
+            out["per_source_cap"] = int(w[4]) if w[4] is not None else None
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
         out["categories_json"] = str(f[1] or "")
@@ -206,6 +232,46 @@ def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, A
             }
         )
     return items
+
+
+def apply_limits(
+    entries: List[Dict[str, Any]],
+    limit_per_cat: int,
+    per_source_cap: int,
+) -> List[Dict[str, Any]]:
+    """Trim entries per category and source based on configured caps."""
+    if (limit_per_cat is None or limit_per_cat <= 0) and (per_source_cap is None or per_source_cap <= 0):
+        return entries
+
+    by_cat: Dict[str, List[Dict[str, Any]]] = {}
+    for entry in entries:
+        cat = str(entry.get("category") or "")
+        by_cat.setdefault(cat, []).append(entry)
+
+    trimmed: List[Dict[str, Any]] = []
+    for cat, items in by_cat.items():
+        sorted_items = sorted(
+            items,
+            key=lambda e: (
+                float(e.get("final_score") or 0.0),
+                try_parse_dt(e.get("publish", "") or "") or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
+        per_src_counts: Dict[str, int] = {}
+        kept: List[Dict[str, Any]] = []
+        for it in sorted_items:
+            if per_source_cap is not None and per_source_cap > 0:
+                src = str(it.get("source") or "")
+                seen = per_src_counts.get(src, 0)
+                if seen >= per_source_cap:
+                    continue
+                per_src_counts[src] = seen + 1
+            kept.append(it)
+            if limit_per_cat is not None and limit_per_cat > 0 and len(kept) >= limit_per_cat:
+                break
+        trimmed.extend(kept)
+    return trimmed
 
 
 def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, float]) -> str:
@@ -347,6 +413,8 @@ def main() -> None:
     source_bonus = DEFAULT_SOURCE_BONUS.copy()
     effective_hours = max(1, int(args.hours))
     categories_filter: list[str] = []
+    limit_per_cat = DEFAULT_LIMIT_PER_CATEGORY
+    per_source_cap = DEFAULT_PER_SOURCE_CAP
 
     # If running under pipeline, load config from DB by default (no extra flags)
     pid = _env_pipeline_id()
@@ -386,6 +454,16 @@ def main() -> None:
                         categories_filter = [str(c).strip() for c in cats if str(c).strip()]
                 except json.JSONDecodeError:
                     pass
+            if cfg.get("limit_per_category") is not None:
+                try:
+                    limit_per_cat = int(cfg["limit_per_category"])
+                except (TypeError, ValueError):
+                    pass
+            if cfg.get("per_source_cap") is not None:
+                try:
+                    per_source_cap = int(cfg["per_source_cap"])
+                except (TypeError, ValueError):
+                    pass
 
         # CLI overrides remain supported for ad-hoc runs
         if args.weights.strip():
@@ -409,6 +487,10 @@ def main() -> None:
         # explicit CLI categories (highest precedence)
         if args.categories.strip():
             categories_filter = [c.strip() for c in args.categories.split(",") if c.strip()]
+        if args.limit_per_cat is not None:
+            limit_per_cat = int(args.limit_per_cat)
+        if args.per_source_cap is not None:
+            per_source_cap = int(args.per_source_cap)
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, effective_hours))
         entries = fetch_recent(conn, cutoff)
@@ -425,6 +507,7 @@ def main() -> None:
                 if bonus:
                     score = max(1.0, min(5.0, score + bonus))
                 e["final_score"] = round(score, 2)
+        entries = apply_limits(entries, limit_per_cat, per_source_cap)
 
     if not entries:
         print("没有符合条件的资讯，未生成文件")

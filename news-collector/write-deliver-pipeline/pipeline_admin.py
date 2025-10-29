@@ -35,13 +35,14 @@ CREATE TABLE IF NOT EXISTS pipeline_filters (
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
 
--- Writer 配置
 CREATE TABLE IF NOT EXISTS pipeline_writers (
-  pipeline_id     INTEGER NOT NULL,
-  type            TEXT NOT NULL,
-  hours           INTEGER NOT NULL,
-  weights_json    TEXT,
-  bonus_json      TEXT,
+  pipeline_id         INTEGER NOT NULL,
+  type                TEXT NOT NULL,
+  hours               INTEGER NOT NULL,
+  weights_json        TEXT,
+  bonus_json          TEXT,
+  limit_per_category  INTEGER,
+  per_source_cap      INTEGER,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
 
@@ -89,6 +90,18 @@ def ensure_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.executescript(SCHEMA_SQL)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_writers'"
+        )
+        if cur.fetchone():
+            cur.execute("PRAGMA table_info(pipeline_writers)")
+            existing_cols = {row[1] for row in cur.fetchall()}
+            if "limit_per_category" not in existing_cols:
+                cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category INTEGER")
+            if "per_source_cap" not in existing_cols:
+                cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
+        conn.commit()
 
 
 def cmd_init(_: argparse.Namespace) -> None:
@@ -139,7 +152,7 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
         }
     # writer
     wrow = cur.execute(
-        "SELECT type, hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+        "SELECT type, hours, COALESCE(weights_json,''), COALESCE(bonus_json,''), limit_per_category, per_source_cap FROM pipeline_writers WHERE pipeline_id=?",
         (pid,)
     ).fetchone()
     writer = {}
@@ -149,6 +162,8 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
             "hours": int(wrow[1] or 24),
             "weights_json": str(wrow[2] or "") or None,
             "bonus_json": str(wrow[3] or "") or None,
+            "limit_per_category": int(wrow[4]) if wrow[4] is not None else None,
+            "per_source_cap": int(wrow[5]) if wrow[5] is not None else None,
         }
     # delivery (email or feishu)
     drow = cur.execute(
@@ -266,6 +281,18 @@ def cmd_import(args: argparse.Namespace) -> None:
         s = str(val)
         return s
 
+    def _to_optional_int(val):
+        if val is None:
+            return None
+        if isinstance(val, bool):
+            return int(val)
+        if isinstance(val, (int, float)):
+            return int(val)
+        try:
+            return int(str(val).strip())
+        except (TypeError, ValueError):
+            return None
+
     with sqlite3.connect(str(DB_PATH)) as conn:
         cur = conn.cursor()
         for it in items:
@@ -328,7 +355,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             # writer
             w = it.get("writer") or {}
             cur.execute(
-                "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     pid,
                     str(w.get("type") or ""),
@@ -336,6 +363,8 @@ def cmd_import(args: argparse.Namespace) -> None:
                     int(w["hours"]) if ("hours" in w and w.get("hours") is not None) else 24,
                     _to_json_text(w.get("weights_json")),
                     _to_json_text(w.get("bonus_json")),
+                    _to_optional_int(w.get("limit_per_category")),
+                    _to_optional_int(w.get("per_source_cap")),
                 ),
             )
             # delivery
@@ -402,7 +431,7 @@ def cmd_seed(_: argparse.Namespace) -> None:
         )
         # Writer: info_html 40h
         conn.execute(
-            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json) VALUES (?, ?, ?, NULL, NULL)",
+            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, NULL, NULL)",
             (p1, "info_html", 40),
         )
         # Delivery: email single recipient
@@ -418,7 +447,7 @@ def cmd_seed(_: argparse.Namespace) -> None:
             (p2,),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json) VALUES (?, ?, ?, NULL, NULL)",
+            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, NULL, NULL)",
             (p2, "wenhao_html", 24),
         )
         conn.execute(
@@ -436,7 +465,7 @@ def cmd_seed(_: argparse.Namespace) -> None:
             ),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json) VALUES (?, ?, ?, NULL, NULL)",
+            "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, NULL, NULL, 10, 3)",
             (p3, "feishu_md", 40),
         )
         # App credentials from environment.yml (as requested); set to_all_chat=1
