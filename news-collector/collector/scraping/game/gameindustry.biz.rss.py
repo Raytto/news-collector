@@ -2,6 +2,8 @@ import feedparser
 import re
 from typing import Optional
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -105,6 +107,30 @@ UA = (
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
 
+def _build_session() -> requests.Session:
+    """Build a Session with sensible retries for transient network failures."""
+    session = requests.Session()
+    retry = Retry(
+        total=3,
+        connect=3,
+        read=2,
+        backoff_factor=0.8,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=("GET",),
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update(
+        {
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.8,zh-CN;q=0.7,zh;q=0.6",
+        }
+    )
+    return session
+
 
 def _clean_text(text: str) -> str:
     s = re.sub(r"\r\n?", "\n", text)
@@ -133,9 +159,44 @@ def _pick_main(soup: BeautifulSoup):
 
 
 def fetch_article_detail(url: str) -> str:
-    resp = requests.get(url, headers={"User-Agent": UA}, timeout=30)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
+    session = _build_session()
+    # First attempt: fetch the article page with retry + sane timeouts
+    try:
+        resp = session.get(url, timeout=(5, 30))
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        html = ""
+
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+    else:
+        soup = None
+    if soup is None:
+        # Fallback: try to recover text from RSS feed entry when the page fetch fails
+        try:
+            d = fetch_feed(RSS_URL)
+            for e in getattr(d, "entries", []):
+                if (e.get("link") or "").strip() == url:
+                    # Prefer content field if present, else summary/description
+                    content = ""
+                    try:
+                        if e.get("content"):
+                            first = e.get("content")[0]
+                            content = (first.get("value") or "").strip()
+                    except Exception:
+                        pass
+                    if not content:
+                        content = (e.get("summary") or e.get("description") or "").strip()
+                    if content:
+                        soup = BeautifulSoup(content, "html.parser")
+                        break
+        except Exception:
+            pass
+
+    if soup is None:
+        return ""
+
     for tag in soup.find_all([
         "script",
         "style",

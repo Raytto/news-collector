@@ -1,0 +1,1 @@
+python news-collector/write-deliver-pipeline/pipeline_admin.py import --input data/pipelines/all_settings.json --mode replace

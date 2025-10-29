@@ -28,9 +28,17 @@ CATEGORY = "game"
 
 
 def fetch_feed(url: str):
-    d = feedparser.parse(url)
+    # Squarespace RSS sometimes includes HTML5 entities that sgmllib3k
+    # doesn't recognize, which triggers feedparser's sanitizer and raises
+    # "undefined entity" bozo warnings. Disable HTML sanitization so we
+    # can still parse entries without noisy warnings.
+    d = feedparser.parse(url, sanitize_html=False, resolve_relative_uris=False)
     if d.bozo:
-        print(f"解析 RSS 时可能有问题: {url} ({SOURCE}) ->", getattr(d, "bozo_exception", None))
+        # Keep visibility but make it clear it's non-fatal.
+        print(
+            f"解析 RSS 时可能有问题(已忽略): {url} ({SOURCE}) ->",
+            getattr(d, "bozo_exception", None),
+        )
     return d
 
 

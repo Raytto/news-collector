@@ -1,0 +1,1 @@
+python news-collector/write-deliver-pipeline/pipeline_admin.py export --all --output data/pipelines/export.json
