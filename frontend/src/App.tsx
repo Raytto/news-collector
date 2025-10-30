@@ -37,11 +37,6 @@ export default function App() {
           selectedKeys={[selectedKey]}
           items={[
             {
-              key: 'pipelines',
-              label: <Link to="/">投递列表</Link>,
-              icon: <UnorderedListOutlined />
-            },
-            {
               key: 'infos',
               label: <Link to="/infos">资讯管理</Link>,
               icon: <FileTextOutlined />
@@ -60,6 +55,11 @@ export default function App() {
               key: 'ai-metrics',
               label: <Link to="/ai-metrics">AI评估维度</Link>,
               icon: <ExperimentOutlined />
+            },
+            {
+              key: 'pipelines',
+              label: <Link to="/">投递管理</Link>,
+              icon: <UnorderedListOutlined />
             }
           ]}
         />

@@ -136,7 +136,7 @@ def deliver_email(html_file: Path, pipeline_id: int) -> None:
     subprocess.run(cmd, check=True, env=env)
 
 
-def deliver_feishu(md_file: Path, pipeline_id: int) -> None:
+def deliver_feishu(md_file: Path, pipeline_id: int, delivery: Dict[str, Any]) -> None:
     env = os.environ.copy()
     env["PIPELINE_ID"] = str(pipeline_id)
     base_cmd = [
@@ -146,8 +146,23 @@ def deliver_feishu(md_file: Path, pipeline_id: int) -> None:
         str(md_file),
         "--as-card",
     ]
-    print(f"[DELIVER] feishu via DB (pipeline={pipeline_id}): {' '.join(base_cmd)}")
-    subprocess.run(base_cmd, check=True, env=env)
+    delivery = delivery or {}
+    target_all = int(delivery.get("to_all_chat") or 0) == 1
+    cmd = list(base_cmd)
+    if target_all:
+        cmd.append("--to-all")
+    else:
+        chat_id = str(delivery.get("chat_id") or "").strip()
+        if not chat_id:
+            raise SystemExit(f"pipeline {pipeline_id} 缺少 Feishu chat_id 配置")
+        cmd.extend(["--chat-id", chat_id])
+    log_cmd = list(cmd)
+    if not target_all and "--chat-id" in log_cmd:
+        idx = log_cmd.index("--chat-id")
+        if idx >= 0 and idx + 1 < len(log_cmd):
+            log_cmd[idx + 1] = "<hidden>"
+    print(f"[DELIVER] feishu via DB (pipeline={pipeline_id}): {' '.join(log_cmd)}")
+    subprocess.run(cmd, check=True, env=env)
 
 
 def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
@@ -176,10 +191,17 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
     has_feishu = bool(
         cur.execute("SELECT 1 FROM pipeline_deliveries_feishu WHERE pipeline_id=?", (p.id,)).fetchone()
     )
+    feishu_delivery: Dict[str, Any] = {}
     if has_email and has_feishu:
         raise SystemExit(f"pipeline {p.name} 同时存在 email 与 feishu 投递，拒绝执行")
     if not (has_email or has_feishu):
         raise SystemExit(f"pipeline {p.name} 未配置投递")
+    if has_feishu:
+        feishu_delivery = _fetchone_dict(
+            cur,
+            "SELECT to_all_chat, chat_id FROM pipeline_deliveries_feishu WHERE pipeline_id=?",
+            (p.id,),
+        )
 
     # If writer depends on AI review table, ensure it exists before running
     writer_type = str(writer.get("type", "")).strip()
@@ -203,7 +225,7 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
         deliver_email(out_path, p.id)
     else:
         # If content_json is present, we could pass --text instead of --file, but current bot expects file for card.
-        deliver_feishu(out_path, p.id)
+        deliver_feishu(out_path, p.id, feishu_delivery)
 
 
 def parse_args() -> argparse.Namespace:

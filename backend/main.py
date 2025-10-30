@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from . import db
 
+FEISHU_CHAT_MAX_PAGE_SIZE = 100  # Per Feishu docs, current hard limit is 100
+
 
 class PipelineBase(BaseModel):
     name: str
@@ -334,11 +336,11 @@ def list_feishu_chats(payload: FeishuChatRequest) -> dict:
     if not access_token:
         raise HTTPException(status_code=400, detail="未获取到飞书租户凭证")
 
-    chats: list[dict[str, str | None]] = []
+    chats: list[dict[str, Any]] = []
     page_token: str | None = None
     headers = {"Authorization": f"Bearer {access_token}"}
     while True:
-        params = {"page_size": 200}
+        params = {"page_size": FEISHU_CHAT_MAX_PAGE_SIZE}
         if page_token:
             params["page_token"] = page_token
         try:
@@ -366,7 +368,20 @@ def list_feishu_chats(payload: FeishuChatRequest) -> dict:
             if not chat_id:
                 continue
             name = item.get("name") or item.get("chat_alias") or item.get("description") or chat_id
-            chats.append({"chat_id": chat_id, "name": name})
+            description = item.get("description")
+            member_count_raw = item.get("member_count")
+            try:
+                member_count: int | None = int(member_count_raw) if member_count_raw is not None else None
+            except (TypeError, ValueError):
+                member_count = None
+            chats.append(
+                {
+                    "chat_id": chat_id,
+                    "name": name,
+                    "description": description if isinstance(description, str) else None,
+                    "member_count": member_count,
+                }
+            )
 
         if not data.get("has_more"):
             break
@@ -374,7 +389,7 @@ def list_feishu_chats(payload: FeishuChatRequest) -> dict:
         if not page_token:
             break
 
-    unique: list[dict[str, str | None]] = []
+    unique: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for chat in chats:
         chat_id = chat.get("chat_id")

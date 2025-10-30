@@ -66,6 +66,8 @@ export type MetricOption = {
 export type FeishuChat = {
   chat_id: string
   name?: string | null
+  description?: string | null
+  member_count?: number | null
 }
 
 export type InfoDetail = {
@@ -145,10 +147,22 @@ export async function fetchFeishuChats(payload: { app_id: string; app_secret: st
   const { data } = await http.post('/feishu/chats', payload)
   const items = Array.isArray(data?.items) ? data.items : []
   return items
-    .map((item: any) => ({
-      chat_id: typeof item?.chat_id === 'string' ? item.chat_id : String(item?.chat_id || ''),
-      name: typeof item?.name === 'string' ? item.name : item?.chat_id
-    }))
+    .map((item: any) => {
+      const rawCount = item?.member_count
+      let memberCount: number | null = null
+      if (typeof rawCount === 'number' && Number.isFinite(rawCount)) {
+        memberCount = rawCount
+      } else {
+        const numeric = Number(rawCount)
+        memberCount = Number.isFinite(numeric) ? numeric : null
+      }
+      return {
+        chat_id: typeof item?.chat_id === 'string' ? item.chat_id : String(item?.chat_id || ''),
+        name: typeof item?.name === 'string' ? item.name : item?.chat_id,
+        description: typeof item?.description === 'string' ? item.description : null,
+        member_count: memberCount
+      }
+    })
     .filter((item) => !!item.chat_id)
 }
 

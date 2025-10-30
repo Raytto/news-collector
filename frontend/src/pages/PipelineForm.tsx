@@ -194,6 +194,7 @@ export default function PipelineForm() {
   const [optionsReady, setOptionsReady] = useState(false)
   const limitOverrides = Form.useWatch<LimitOverride[]>(["writer", "limit_per_category_overrides"], form)
   const toAllChatValue = Form.useWatch<number | undefined>(["delivery", "to_all_chat"], form)
+  const chatIdValue = Form.useWatch<string | undefined>(["delivery", "chat_id"], form)
   const metrics = options.metrics.length ? options.metrics : FALLBACK_METRICS
 
   const initialFormValues = useMemo(
@@ -230,13 +231,51 @@ export default function PipelineForm() {
       })),
     []
   )
-  const feishuChatOptions = useMemo(
-    () =>
-      feishuChats.map((chat) => ({
-        value: chat.chat_id,
-        label: chat.name && chat.name !== chat.chat_id ? `${chat.name} (${chat.chat_id})` : chat.chat_id
-      })),
-    [feishuChats]
+  const feishuChatColumns = useMemo<ColumnsType<FeishuChat>>(
+    () => [
+      {
+        title: '群名称',
+        dataIndex: 'name',
+        key: 'name',
+        render: (_value, record) => (
+          <Space direction="vertical" size={0}>
+            <Typography.Text strong>{record.name || record.chat_id}</Typography.Text>
+            {record.description ? (
+              <Typography.Text
+                type="secondary"
+                ellipsis={{ tooltip: record.description }}
+                style={{ maxWidth: 360 }}
+              >
+                {record.description}
+              </Typography.Text>
+            ) : null}
+          </Space>
+        )
+      },
+      {
+        title: 'Chat ID',
+        dataIndex: 'chat_id',
+        key: 'chat_id',
+        render: (value: string) => (
+          <Typography.Text code copyable>
+            {value}
+          </Typography.Text>
+        )
+      },
+      {
+        title: '成员数',
+        dataIndex: 'member_count',
+        key: 'member_count',
+        align: 'right',
+        width: 90,
+        render: (value: number | null | undefined) => (typeof value === 'number' ? value : '—')
+      }
+    ],
+    []
+  )
+  const selectedFeishuChat = useMemo(
+    () => feishuChats.find((chat) => chat.chat_id === chatIdValue),
+    [feishuChats, chatIdValue]
   )
 
   useEffect(() => {
@@ -321,12 +360,27 @@ export default function PipelineForm() {
         if (deliveryForForm?.kind === 'email') {
           deliveryForForm.subject_tpl = stripDateToken(deliveryForForm.subject_tpl)
         }
+        const patchedDelivery =
+          deliveryForForm?.kind === 'feishu'
+            ? {
+                ...deliveryForForm,
+                to_all_chat:
+                  typeof deliveryForForm.to_all_chat === 'number'
+                    ? deliveryForForm.to_all_chat
+                    : Number(deliveryForForm.to_all_chat ?? 0),
+                chat_id: deliveryForForm.chat_id || undefined
+              }
+            : deliveryForForm
         form.setFieldsValue({
           pipeline: data.pipeline,
           filters: data.filters || { all_categories: 1 },
           writer: writerPatched,
-          delivery: deliveryForForm
+          delivery: patchedDelivery
         })
+        if (deliveryForForm?.kind === 'feishu') {
+          form.setFieldValue(["delivery", "to_all_chat"], patchedDelivery?.to_all_chat ?? 0)
+          form.setFieldValue(["delivery", "chat_id"], patchedDelivery?.chat_id)
+        }
         if (deliveryForForm?.kind) setDeliveryKind(deliveryForForm.kind as DeliveryKind)
       })
       .finally(() => setLoading(false))
@@ -335,20 +389,8 @@ export default function PipelineForm() {
   useEffect(() => {
     if (deliveryKind !== 'feishu') {
       setFeishuChats([])
-      if (form.getFieldValue(["delivery", "chat_id"])) {
-        form.setFieldValue(["delivery", "chat_id"], undefined)
-      }
     }
-  }, [deliveryKind, form])
-
-  useEffect(() => {
-    if (deliveryKind !== 'feishu') return
-    const sendToAll = toAllChatValue === 1 || typeof toAllChatValue === 'undefined'
-    if (!sendToAll) return
-    if (form.getFieldValue(["delivery", "chat_id"])) {
-      form.setFieldValue(["delivery", "chat_id"], undefined)
-    }
-  }, [deliveryKind, form, toAllChatValue])
+  }, [deliveryKind])
 
   const handleFetchFeishuChats = useCallback(async () => {
     const appId = (form.getFieldValue(["delivery", "app_id"]) as string | undefined)?.trim() || ''
@@ -460,12 +502,8 @@ export default function PipelineForm() {
       )
     }
 
-    const sendToAll = toAllChatValue === 1 || typeof toAllChatValue === 'undefined'
-    const currentChatId = form.getFieldValue(["delivery", "chat_id"]) as string | undefined
-    const selectOptions =
-      currentChatId && !feishuChatOptions.some((item) => item.value === currentChatId)
-        ? [{ value: currentChatId, label: currentChatId }, ...feishuChatOptions]
-        : feishuChatOptions
+    const sendToAll = Number(toAllChatValue) === 1
+    const currentChatId = chatIdValue
 
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
@@ -483,29 +521,82 @@ export default function PipelineForm() {
         </Form.Item>
         {!sendToAll && (
           <Form.Item
-            label="Chat ID"
+            label="群聊"
             required
-            extra={feishuChats.length ? '仅投递到选中的群聊' : '点击右侧按钮拉取机器人所在群'}
+            extra={
+              feishuChats.length
+                ? '点击下方表格中的任意行即可选择目标群聊'
+                : '点击下方按钮拉取机器人所在群'
+            }
           >
-            <Space align="baseline" wrap>
+            <Space direction="vertical" style={{ width: '100%' }} size="small">
               <Form.Item
                 noStyle
                 name={["delivery", "chat_id"]}
                 rules={[{ required: true, message: '请选择群聊' }]}
               >
-                <Select
-                  showSearch
-                  allowClear
-                  placeholder="请选择群聊"
-                  options={selectOptions}
-                  optionFilterProp="label"
-                  loading={fetchingFeishuChats}
-                  style={{ minWidth: 260 }}
-                />
+                <Input readOnly placeholder="请从下方表格选择群聊" />
               </Form.Item>
-              <Button type="default" onClick={handleFetchFeishuChats} loading={fetchingFeishuChats}>
-                获取机器人所在群信息
-              </Button>
+              {currentChatId ? (
+                <Space size="small" wrap align="baseline">
+                  <Typography.Text>当前记录：</Typography.Text>
+                  <Typography.Text code copyable>
+                    {currentChatId}
+                  </Typography.Text>
+                  <Typography.Text type="secondary">
+                    {selectedFeishuChat?.name
+                      ? `（${selectedFeishuChat.name}）`
+                      : '（尚未加载群名称）'}
+                  </Typography.Text>
+                </Space>
+              ) : (
+                <Typography.Text type="secondary">暂无记录，请先选择群聊。</Typography.Text>
+              )}
+              <Space wrap>
+                <Button type="default" onClick={handleFetchFeishuChats} loading={fetchingFeishuChats}>
+                  获取机器人所在群信息
+                </Button>
+                {currentChatId ? (
+                  <Button
+                    type="link"
+                    onClick={() => {
+                      form.setFieldValue(["delivery", "chat_id"], undefined)
+                    }}
+                  >
+                    清除选择
+                  </Button>
+                ) : null}
+              </Space>
+              <Table
+                size="small"
+                bordered
+                rowKey="chat_id"
+                columns={feishuChatColumns}
+                dataSource={feishuChats}
+                loading={fetchingFeishuChats}
+                pagination={{ pageSize: 6, hideOnSinglePage: true }}
+                rowSelection={{
+                  type: 'radio',
+                  selectedRowKeys: currentChatId ? [currentChatId] : [],
+                  onChange: (selectedRowKeys) => {
+                    const [first] = selectedRowKeys
+                    const normalized =
+                      typeof first === 'string'
+                        ? first
+                        : typeof first === 'number'
+                        ? String(first)
+                        : first
+                        ? String(first)
+                        : undefined
+                    form.setFieldValue(["delivery", "chat_id"], normalized)
+                  }
+                }}
+                locale={{
+                  emptyText: fetchingFeishuChats
+                    ? '正在加载群信息...'
+                    : '尚无数据，请点击“获取机器人所在群信息”'
+                }}
+              />
             </Space>
           </Form.Item>
         )}
@@ -517,8 +608,8 @@ export default function PipelineForm() {
   }
 
   return (
-    <Card loading={loading}>
-      <Form form={form} layout="vertical" initialValues={initialFormValues}>
+    <Form form={form} layout="vertical" initialValues={initialFormValues}>
+      <Card loading={loading}>
         <Tabs
           items={[
             {
@@ -804,7 +895,7 @@ export default function PipelineForm() {
                   <Form.Item label="来源加权 (可选)">
                     <Space direction="vertical" style={{ width: '100%' }}>
                       <Typography.Text type="secondary">
-                        为特定来源加分，正数代表额外加权。
+                        为特定来源加分，正数代表额外加分。
                       </Typography.Text>
                       <Form.List name={["writer", "bonus_entries"]}>
                         {(fields, { add, remove }) => {
@@ -943,13 +1034,13 @@ export default function PipelineForm() {
             }
           ]}
         />
-        <Space>
-          <Button type="primary" onClick={onSubmit} loading={loading}>
-            {editing ? '保存' : '创建'}
-          </Button>
-          <Button onClick={() => navigate('/')}>取消</Button>
-        </Space>
-      </Form>
-    </Card>
+      </Card>
+      <Space style={{ marginTop: 16 }}>
+        <Button type="primary" onClick={onSubmit} loading={loading}>
+          {editing ? '保存' : '创建'}
+        </Button>
+        <Button onClick={() => navigate('/')}>取消</Button>
+      </Space>
+    </Form>
   )
 }

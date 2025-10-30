@@ -93,7 +93,7 @@ export default function PipelineList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>投递列表</div>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>投递管理</div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/new')}>
           新建投递
         </Button>

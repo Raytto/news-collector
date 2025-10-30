@@ -129,6 +129,12 @@ class EvaluationResult:
     final_score: float = 0.0
 
 
+DETAIL_MAX_LENGTH = 4000
+DETAIL_PREFIX_LENGTH = 1500
+DETAIL_SUFFIX_LENGTH = 1500
+DETAIL_OMIT_TEMPLATE = "---省略{count}字符内容---"
+
+
 @dataclass
 class AIConfig:
     base_url: str
@@ -208,6 +214,16 @@ def fill_prompt(template: str, mapping: Dict[str, str]) -> str:
     for key, value in mapping.items():
         result = result.replace(f"{{{{{key}}}}}", value)
     return result
+
+
+def trim_detail_for_prompt(detail: str) -> str:
+    if len(detail) <= DETAIL_MAX_LENGTH:
+        return detail
+    prefix = detail[:DETAIL_PREFIX_LENGTH] if DETAIL_PREFIX_LENGTH > 0 else ""
+    suffix = detail[-DETAIL_SUFFIX_LENGTH:] if DETAIL_SUFFIX_LENGTH > 0 else ""
+    omitted = len(detail) - (len(prefix) + len(suffix))
+    marker = DETAIL_OMIT_TEMPLATE.format(count=max(0, omitted))
+    return f"{prefix}\n{marker}\n{suffix}"
 
 
 def load_config() -> AIConfig:
@@ -691,11 +707,12 @@ def evaluate_articles(
     enable_legacy_backfill: bool,
 ) -> None:
     for article in articles:
+        detail_for_prompt = trim_detail_for_prompt(article.detail)
         mapping = {
             "title": article.title,
             "source": article.source,
             "publish": article.publish,
-            "detail": article.detail,
+            "detail": detail_for_prompt,
         }
         user_prompt = fill_prompt(user_template, mapping)
         try:
