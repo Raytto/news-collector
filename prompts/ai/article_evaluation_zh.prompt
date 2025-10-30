@@ -6,8 +6,10 @@
 文章标题：{{title}}
 文章来源：{{source}}
 发布时间：{{publish}}
-正文内容：
+正文内容（仅分析下列标记之间的文本；若包含 HTML，请聚焦正文语义）：
+<<<ARTICLE_START>>>
 {{detail}}
+<<<ARTICLE_END>>>
 
 维度列表（仅按以下 key 给分 1-5）：
 {{metrics_block}}
@@ -16,9 +18,10 @@
 {{schema_example}}
 
 响应要求：
-1. 不要输出除 JSON 以外的任何文字或注释。
-2. `dimension_scores` 必须覆盖所有给定的 key，且数值皆为 1-5 的整数。
-3. 若信息不足，请结合常识给出最保守的评估并在 `comment` 中说明原因。
-4. `comment` 与 `summary` 必须各为一句简洁的中文文本。
-5. `key_concepts` 请按重要性列出 0-5 个核心名词或短语（6 字以内），无法提炼则返回空数组。
-6. `summary_long` 需为约 50 字的中文摘要，覆盖文章核心事实与观点；若素材不足可适当缩短。
+1. 不要输出除 JSON 以外的任何文字或注释（不得包含 Markdown、解释或前后缀）。
+2. 仅依据 ARTICLE_START/ARTICLE_END 标记内的内容进行评估；若信息不足，做最保守判断并在 `comment` 中说明。
+3. `dimension_scores` 必须覆盖所有给定的 key，且数值皆为 1-5 的整数。
+4. `comment` 与 `summary` 各为一句简洁中文。
+5. `key_concepts` 按重要性列出 0-5 个核心名词或短语（每项不超过 6 个中文字符）；无法提炼返回空数组。
+6. `summary_long` 约 50 字，覆盖核心事实与观点；素材不足可适当缩短。
+7. 输出必须是严格合法的 JSON（双引号、无多余逗号、字段名与示例一致）。
