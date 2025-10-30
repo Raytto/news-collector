@@ -3,6 +3,7 @@ import { Button, Form, Input, Modal, Popconfirm, Space, Switch, Table, message }
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { createCategory, deleteCategory, fetchCategories, updateCategory, type CategoryItem } from '../api'
+import { useAuth } from '../auth'
 
 type CategoryFormValues = {
   key: string
@@ -28,6 +29,8 @@ export default function CategoryList() {
   const [modalVisible, setModalVisible] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState<CategoryItem | null>(null)
+  const { user } = useAuth()
+  const isAdmin = (user?.is_admin || 0) === 1
   const [form] = Form.useForm<CategoryFormValues>()
 
   const load = async () => {
@@ -122,7 +125,7 @@ export default function CategoryList() {
       dataIndex: 'enabled',
       width: 120,
       render: (value, record) => (
-        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} />
+        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} disabled={!isAdmin} />
       )
     },
     { title: '更新时间', dataIndex: 'updated_at' },
@@ -131,11 +134,11 @@ export default function CategoryList() {
       width: 200,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEdit(record)}>
+          <Button type="link" onClick={() => openEdit(record)} disabled={!isAdmin}>
             编辑
           </Button>
-          <Popconfirm title="确定删除该类别？" onConfirm={() => handleDelete(record)}>
-            <Button type="link" danger>
+          <Popconfirm title="确定删除该类别？" onConfirm={() => handleDelete(record)} disabled={!isAdmin}>
+            <Button type="link" danger disabled={!isAdmin}>
               删除
             </Button>
           </Popconfirm>
@@ -147,8 +150,8 @@ export default function CategoryList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>类别管理</div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>所有类别</div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} disabled={!isAdmin}>
           新增类别
         </Button>
       </div>

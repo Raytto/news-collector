@@ -20,6 +20,7 @@ import {
   updateAiMetric,
   type AiMetric
 } from '../api'
+import { useAuth } from '../auth'
 
 type MetricFormValues = {
   key: string
@@ -47,6 +48,8 @@ export default function AiMetrics() {
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState<AiMetric | null>(null)
   const [form] = Form.useForm<MetricFormValues>()
+  const { user } = useAuth()
+  const isAdmin = (user?.is_admin || 0) === 1
 
   const load = async () => {
     setLoading(true)
@@ -189,7 +192,7 @@ export default function AiMetrics() {
       dataIndex: 'active',
       width: 120,
       render: (value: number, record) => (
-        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} />
+        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} disabled={!isAdmin} />
       )
     },
     {
@@ -197,11 +200,11 @@ export default function AiMetrics() {
       width: 200,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEdit(record)}>
+          <Button type="link" onClick={() => openEdit(record)} disabled={!isAdmin}>
             编辑
           </Button>
-          <Popconfirm title="确定删除该指标？" onConfirm={() => handleDelete(record)}>
-            <Button type="link" danger>
+          <Popconfirm title="确定删除该指标？" onConfirm={() => handleDelete(record)} disabled={!isAdmin}>
+            <Button type="link" danger disabled={!isAdmin}>
               删除
             </Button>
           </Popconfirm>
@@ -213,8 +216,8 @@ export default function AiMetrics() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>AI评估维度</div>
-        <Button type="primary" onClick={openCreate}>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>AI评估</div>
+        <Button type="primary" onClick={openCreate} disabled={!isAdmin}>
           新增维度
         </Button>
       </div>

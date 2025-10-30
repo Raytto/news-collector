@@ -11,6 +11,7 @@ import {
   type CategoryItem,
   type SourceItem
 } from '../api'
+import { useAuth } from '../auth'
 
 type SourceFormValues = {
   key: string
@@ -41,6 +42,8 @@ export default function SourceList() {
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState<SourceItem | null>(null)
   const [form] = Form.useForm<SourceFormValues>()
+  const { user } = useAuth()
+  const isAdmin = (user?.is_admin || 0) === 1
 
   const categoryOptions = useMemo(
     () =>
@@ -199,7 +202,7 @@ export default function SourceList() {
       dataIndex: 'enabled',
       width: 120,
       render: (value, record) => (
-        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} />
+        <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} disabled={!isAdmin} />
       )
     },
     { title: '更新时间', dataIndex: 'updated_at' },
@@ -208,11 +211,11 @@ export default function SourceList() {
       width: 220,
       render: (_, record) => (
         <Space>
-          <Button type="link" onClick={() => openEdit(record)}>
+          <Button type="link" onClick={() => openEdit(record)} disabled={!isAdmin}>
             编辑
           </Button>
-          <Popconfirm title="确定删除该来源？" onConfirm={() => handleDelete(record)}>
-            <Button type="link" danger>
+          <Popconfirm title="确定删除该来源？" onConfirm={() => handleDelete(record)} disabled={!isAdmin}>
+            <Button type="link" danger disabled={!isAdmin}>
               删除
             </Button>
           </Popconfirm>
@@ -224,8 +227,8 @@ export default function SourceList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>来源管理</div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>所有来源</div>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate} disabled={!isAdmin}>
           新增来源
         </Button>
       </div>

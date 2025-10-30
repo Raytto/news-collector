@@ -1,10 +1,20 @@
 # AgentDuck frontend nginx guide
 
-This note walks through publishing the Vite frontend that lives in `frontend/`
-behind `https://us.pangruitao.com/agentduck/` without touching the existing
-React routing code.
+This guide publishes only the user‑facing frontend (Vite build in `frontend/`)
+behind `https://us.pangruitao.com/agentduck/`. All externally reachable paths
+live under `/agentduck` (including assets). Backend services remain bound to
+`127.0.0.1` and are not reverse‑proxied.
 
 ## 1. Build the production bundle
+
+Ensure the build emits assets and links under the `/agentduck/` prefix:
+
+- Option A (one‑off build): `npm run build -- --base=/agentduck/`
+- Option B (persistent): set `base: '/agentduck/'` in `frontend/vite.config.ts`
+  under `defineConfig({ base: '/agentduck/', ... })`
+  
+If using React Router, also set `basename="/agentduck"` on `BrowserRouter` so
+links resolve under the prefix.
 
 ```
 cd /home/pp/mp/news-collector/frontend
@@ -40,15 +50,23 @@ sudo cp /etc/nginx/sites-available/ganghaofan \
 ```
 
 Add the new locations inside the TLS (`listen 443`) server block. Place the
-snippet before any more specific `/menstrual` locations so the SPA fallback is
-checked first.
+snippet before any more specific locations so the SPA fallback is checked first.
 
 ```nginx
-    # AgentDuck admin frontend (static build served from /agentduck/)
+    # AgentDuck frontend (all public paths live under /agentduck)
     location = /agentduck {
         return 301 /agentduck/;
     }
 
+    # Cache immutable assets aggressively
+    location ^~ /agentduck/assets/ {
+        alias /var/www/agentduck/assets/;
+        try_files $uri $uri/ =404;
+        access_log off;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+
+    # HTML + SPA routes (no-store to avoid stale shell)
     location ^~ /agentduck/ {
         alias /var/www/agentduck/;
         index index.html;
@@ -56,32 +74,17 @@ checked first.
         add_header Cache-Control "no-store";
     }
 
-    # Hashed assets referenced with absolute `/assets/...` URLs
-    location ^~ /assets/ {
-        alias /var/www/agentduck/assets/;
-        try_files $uri $uri/ =404;
-        access_log off;
-        add_header Cache-Control "public, max-age=31536000, immutable";
-    }
-
-    # Backend API used by the React app (`axios` defaults to /api)
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 10s;
-        proxy_read_timeout 60s;
-    }
-
-    # Optional: keep the health-probe discoverable behind the new prefix
+    # Optional: health probe behind the prefix
     location = /agentduck/healthz {
         return 200 "ok\n";
         add_header Content-Type text/plain;
     }
 ```
+
+Note: This guide intentionally does not expose any backend (`/api`, etc.).
+Keep backend services bound to `127.0.0.1` only. If the frontend issues API
+requests, update it to use the same `/agentduck` prefix and add a dedicated
+proxy later (e.g. `location ^~ /agentduck/api/ { ... }`).
 
 If you are keeping a Vite dev server online for debugging, add a temporary
 block before the static one that proxies to `http://127.0.0.1:5180`. Comment it
@@ -114,10 +117,12 @@ If `nginx -t` fails, revert to the backup and investigate the syntax error.
 ## 5. Smoke test
 
 1. Open `https://us.pangruitao.com/agentduck/` in a private tab.
-2. Load DevTools → Network to confirm `/assets/...` responds with `200` and has
-   the immutable cache headers.
-3. Exercise an API call (e.g. the dashboard list) and watch the `/api/...`
-   requests proxy to `127.0.0.1:8000` and return `200`.
+2. Load DevTools → Network to confirm `/agentduck/assets/...` responds with `200`
+   and has the immutable cache headers.
+3. Navigate the app: deep links like
+   `https://us.pangruitao.com/agentduck/<route>` should render via the SPA
+   fallback.
+4. Confirm no backend endpoints are reachable externally (e.g. `/api` 404).
 
 ## Rollback
 

@@ -617,8 +617,8 @@ export default function PipelineForm() {
               label: '基础',
               children: (
                 <Space direction="vertical" style={{ width: '100%' }}>
-                  <Form.Item name={["pipeline", "name"]} label="名称" rules={[{ required: true }]}>
-                    <Input />
+                  <Form.Item name={["pipeline", "name"]} label="名称">
+                    <Input placeholder="可留空，名称仅用于展示" />
                   </Form.Item>
                   <Form.Item name={["pipeline", "enabled"]} label="启用">
                     <Radio.Group>

@@ -5,6 +5,49 @@ export const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 export const http = axios.create({ baseURL: API_BASE })
 
+// 401 handler: emit a global event for login modal
+http.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    const status = error?.response?.status
+    if (status === 401) {
+      try {
+        window.dispatchEvent(new CustomEvent('auth:required'))
+      } catch {}
+    }
+    return Promise.reject(error)
+  }
+)
+
+export type Me = { id: number; email: string; name: string; is_admin: number }
+
+export async function getMe(): Promise<Me> {
+  const { data } = await http.get('/me')
+  return data
+}
+
+export async function logout(): Promise<void> {
+  await http.post('/auth/logout')
+}
+
+export async function requestLoginCode(email: string): Promise<void> {
+  await http.post('/auth/login/code', { email })
+}
+
+export async function verifyLogin(email: string, code: string): Promise<Me> {
+  const { data } = await http.post('/auth/login/verify', { email, code })
+  return data
+}
+
+export async function requestSignupCode(email: string, name: string): Promise<void> {
+  await http.post('/auth/signup/code', { email, name })
+}
+
+export async function verifySignup(email: string, code: string, name: string): Promise<Me> {
+  const { data } = await http.post('/auth/signup/verify', { email, code, name })
+  return data
+}
+
 export type PipelineListItem = {
   id: number
   name: string
@@ -14,6 +57,26 @@ export type PipelineListItem = {
   writer_type?: string
   writer_hours?: number
   delivery_kind?: 'email' | 'feishu' | null
+  owner_user_id?: number | null
+  owner_user_name?: string | null
+}
+
+// --- Users (admin) ---
+export type UserItem = {
+  id: number
+  email: string
+  name: string
+  is_admin: number
+  enabled: number
+  avatar_url?: string | null
+  created_at?: string | null
+  verified_at?: string | null
+  last_login_at?: string | null
+}
+
+export type UserListResponse = {
+  items: UserItem[]
+  total: number
 }
 
 export type InfoListItem = {
@@ -115,6 +178,34 @@ export type AiMetric = {
 
 export async function fetchPipelines(): Promise<PipelineListItem[]> {
   const { data } = await http.get('/pipelines')
+  return data
+}
+
+export async function fetchUsers(params: {
+  page?: number
+  pageSize?: number
+  q?: string | null
+}): Promise<UserListResponse> {
+  const { data } = await http.get('/admin/users', {
+    params: {
+      page: params.page,
+      page_size: params.pageSize,
+      q: params.q || undefined
+    }
+  })
+  return data
+}
+
+export async function fetchUserDetail(id: number): Promise<{ user: UserItem; pipelines: PipelineListItem[] }> {
+  const { data } = await http.get(`/admin/users/${id}`)
+  return data
+}
+
+export async function updateUser(
+  id: number,
+  payload: Partial<{ name: string; is_admin: number; enabled: number }>
+): Promise<UserItem> {
+  const { data } = await http.patch(`/admin/users/${id}`, payload)
   return data
 }
 

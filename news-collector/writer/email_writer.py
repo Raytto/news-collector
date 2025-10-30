@@ -342,6 +342,8 @@ def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
                 i.link,
                 r.ai_comment,
                 r.ai_summary,
+                r.ai_key_concepts,
+                r.ai_summary_long,
                 m.key,
                 s.score
             FROM info AS i
@@ -350,8 +352,32 @@ def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
             LEFT JOIN info_ai_review AS r ON r.info_id = i.id
             """
         ).fetchall()
-    except sqlite3.OperationalError as exc:
-        raise SystemExit("缺少 AI 评分数据表 (info_ai_scores)，请先运行 evaluator 生成评分。") from exc
+        extended = True
+    except sqlite3.OperationalError:
+        # 兼容旧库（缺少 ai_key_concepts/ai_summary_long 列）
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    i.id,
+                    i.category,
+                    i.source,
+                    i.publish,
+                    i.title,
+                    i.link,
+                    r.ai_comment,
+                    r.ai_summary,
+                    m.key,
+                    s.score
+                FROM info AS i
+                JOIN info_ai_scores AS s ON s.info_id = i.id
+                JOIN ai_metrics AS m ON m.id = s.metric_id AND m.active = 1
+                LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+                """
+            ).fetchall()
+            extended = False
+        except sqlite3.OperationalError as exc:
+            raise SystemExit("缺少 AI 评分数据表 (info_ai_scores)，请先运行 evaluator 生成评分。") from exc
     articles: Dict[int, Dict[str, Any]] = {}
     for row in rows:
         info_id = int(row[0])
@@ -366,11 +392,13 @@ def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
                 "link": str(row[5] or ""),
                 "ai_comment": str(row[6] or ""),
                 "ai_summary": str(row[7] or ""),
+                "ai_key_concepts": (row[8] if extended else None),
+                "ai_summary_long": (str(row[9] or "") if extended else ""),
                 "scores": {},
             },
         )
-        metric_key = str(row[8])
-        score = int(row[9])
+        metric_key = str(row[10] if extended else row[8])
+        score = int(row[11] if extended else row[9])
         article["scores"][metric_key] = score
     return list(articles.values())
 
@@ -437,23 +465,25 @@ def render_html(
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>最近 {hours} 小时资讯汇总</title>
   <style>
-    body {{ font: 16px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 24px; color: #222; }}
+    body {{ font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 24px auto; padding: 0 12px; color: #1f2937; max-width: 880px; background: #f6f7fb; }}
     h1 {{ font-size: 22px; margin: 0 0 4px; }}
-    .meta {{ color: #666; margin: 0 0 16px; }}
-    h2 {{ font-size: 19px; margin: 24px 0 10px; padding-top: 8px; border-top: 2px solid #eee; }}
-    .article-card {{ border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; background: #fff; box-shadow: 0 2px 4px rgba(15, 23, 42, 0.05); }}
+    .meta {{ color: #6b7280; margin: 0 0 18px; }}
+    h2 {{ font-size: 18px; margin: 26px 0 12px; padding-top: 8px; border-top: 2px solid #eef2f7; color: #334155; }}
+    .article-card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; background: #fff; box-shadow: 0 1px 3px rgba(2, 6, 23, 0.06); }}
     .article-title {{ font-size: 17px; font-weight: 600; color: #0b5ed7; text-decoration: none; display: inline-block; margin-bottom: 6px; }}
     .article-title:hover {{ text-decoration: underline; }}
-    .article-meta {{ color: #5f6368; font-size: 13px; margin-bottom: 10px; }}
-    .ai-summary {{ background: #f8fafc; border-radius: 8px; padding: 12px 14px; line-height: 1.6; color: #1f2937; }}
+    .article-meta {{ color: #6b7280; font-size: 13px; margin-bottom: 10px; }}
+    .ai-summary {{ background: #f8fafc; border-radius: 8px; padding: 12px 14px; line-height: 1.55; color: #1f2937; }}
     .ai-summary + .ai-summary {{ margin-top: 8px; }}
     .ai-missing {{ background: #fff4e6; border: 1px dashed #f59e0b; color: #b45309; }}
-    .ai-rating {{ display: flex; align-items: baseline; gap: 8px; font-size: 16px; font-weight: 600; margin-bottom: 6px; color: #b45309; }}
-    .stars {{ font-size: 18px; letter-spacing: 2px; color: #f97316; }}
-    .score-number {{ color: #b45309; font-size: 15px; }}
-    .ai-dimensions {{ font-size: 14px; color: #334155; margin-bottom: 6px; }}
-    .ai-comment, .ai-summary-text {{ font-size: 14px; color: #1f2937; }}
-    time {{ color: #555; }}
+    .subsec-title {{ font-size: 12px; color: #6b7280; margin: 8px 0 6px; font-weight: 600; }}
+    .ai-rating {{ display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; margin: 0 0 6px; color: #b45309; }}
+    .stars {{ font-size: 14px; letter-spacing: 1px; color: #f59e0b; }}
+    .score-number {{ color: #b45309; font-size: 12px; }}
+    .chips {{ margin: 2px 0 2px; }}
+    .chip {{ display: inline-block; padding: 3px 8px; margin: 2px 6px 2px 0; font-size: 12px; color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 999px; }}
+    .brief {{ margin-top: 6px; background: #f8fafc; border-radius: 8px; padding: 10px 12px; color: #334155; font-size: 12px; line-height: 1.6; }}
+    time {{ color: #6b7280; font-size: 12px; }}
   </style>
   </head>
 <body>
@@ -483,29 +513,67 @@ def render_html(
         raw_title = entry.get("title", "") or ""
         title = escape(f"{source}:{raw_title}")
         scores = entry.get("scores") or {}
+        # Retain fields for later use if present
         comment = entry.get("ai_comment", "")
         summary = entry.get("ai_summary", "")
+        concepts_raw = entry.get("ai_key_concepts")
+        summary_long = entry.get("ai_summary_long", "")
         final_score = float(entry.get("final_score") or 0.0)
         if scores:
             rounded = int(final_score + 0.5)
             rounded = max(1, min(5, rounded))
             stars = "★" * rounded + "☆" * (5 - rounded)
-            dims = " · ".join(
-                f"{m.label_zh}：{scores.get(m.key, '-')}"
-                for m in active_metrics
-            )
             bonus = entry.get("bonus")
             bonus_note = ""
             if bonus:
                 sign = "+" if bonus > 0 else ""
                 bonus_note = f"（手动加成 {sign}{bonus:g}）"
+            # Normalize concepts
+            concept_items: List[str] = []
+            if concepts_raw:
+                try:
+                    if isinstance(concepts_raw, (bytes, bytearray)):
+                        concepts_raw = concepts_raw.decode("utf-8", errors="ignore")
+                    if isinstance(concepts_raw, str):
+                        txt = concepts_raw.strip()
+                        if txt.startswith("[") and txt.endswith("]"):
+                            parsed = json.loads(txt)
+                            if isinstance(parsed, list):
+                                concept_items = [str(x).strip() for x in parsed if str(x).strip()]
+                        else:
+                            normalized = txt.replace("，", ",").replace("、", ",").replace(";", ",")
+                            concept_items = [p.strip() for p in normalized.split(",") if p.strip()]
+                    elif isinstance(concepts_raw, (list, tuple)):
+                        concept_items = [str(x).strip() for x in concepts_raw if str(x).strip()]
+                except Exception:
+                    concept_items = []
+            if len(concept_items) > 5:
+                concept_items = concept_items[:5]
+
+            concepts_html = ""
+            if concept_items:
+                chips = "".join(f"<span class=\"chip\">{escape(it)}</span>" for it in concept_items)
+                concepts_html = f"<div class=\"subsec-title\">AI关键概念提取</div><div class=\"chips\">{chips}</div>"
+
+            brief_html = ""
+            if summary_long.strip():
+                brief_html = f"<div class=\"subsec-title\">AI摘要</div><div class=\"brief\">{escape(summary_long.strip())}</div>"
+
+            # Build metric chips "label score" without colon
+            metric_chip_items = []
+            for m in active_metrics:
+                sc = scores.get(m.key)
+                if sc is None:
+                    continue
+                metric_chip_items.append(f"<span class=\\"chip\\">{escape(m.label_zh)} {int(sc)}</span>")
+            metric_chips_html = "".join(metric_chip_items)
+
             rating_html = (
                 "<div class=\"ai-summary\">"
-                f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
-                f"<span class=\"score-number\">{final_score:.2f}/5</span></div>"
-                f"<div class=\"ai-dimensions\">{escape(dims)}{escape(bonus_note)}</div>"
-                f"<div class=\"ai-comment\">评价：{escape(comment)}</div>"
-                f"<div class=\"ai-summary-text\">概要：{escape(summary)}</div>"
+                f"<div class=\"subsec-title\">AI评分</div>"
+                f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span><span class=\"score-number\">{final_score:.2f}/5</span><span class=\"score-number\">{escape(bonus_note)}</span></div>"
+                f"<div class=\"chips\">{metric_chips_html}</div>"
+                f"{concepts_html}{brief_html}"
                 "</div>"
             )
         else:
@@ -646,7 +714,8 @@ def main() -> None:
         link = article.get("link", "").strip()
         if not link:
             continue
-        title = article.get("ai_summary", "").strip() or article.get("title", "").strip()
+        # 使用原始标题，去除“一句话总结”作为标题的回退
+        title = article.get("title", "").strip()
         if not title:
             continue
         if link in seen_links:
@@ -669,6 +738,8 @@ def main() -> None:
             "scores": scores,
             "ai_comment": article.get("ai_comment", ""),
             "ai_summary": article.get("ai_summary", ""),
+            "ai_key_concepts": article.get("ai_key_concepts"),
+            "ai_summary_long": article.get("ai_summary_long", ""),
             "final_score": weighted,
             "bonus": bonus if bonus else None,
         }

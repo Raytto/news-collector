@@ -57,7 +57,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_source_address_unique
 
 CREATE TABLE IF NOT EXISTS pipelines (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  name         TEXT NOT NULL UNIQUE,
+  name         TEXT NOT NULL,
   enabled      INTEGER NOT NULL DEFAULT 1,
   description  TEXT,
   created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -133,6 +133,62 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   summary      TEXT,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+-- Users and Auth
+CREATE TABLE IF NOT EXISTS users (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  email          TEXT NOT NULL UNIQUE,
+  name           TEXT NOT NULL,
+  is_admin       INTEGER NOT NULL DEFAULT 0,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  avatar_url     TEXT,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  verified_at    TEXT,
+  last_login_at  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id            TEXT PRIMARY KEY,
+  user_id       INTEGER NOT NULL,
+  token_hash    TEXT NOT NULL,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at  TEXT,
+  expires_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  ip            TEXT,
+  user_agent    TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_token_hash
+  ON user_sessions (token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user
+  ON user_sessions (user_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS auth_email_codes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL,
+  user_id       INTEGER,
+  purpose       TEXT NOT NULL,
+  code_hash     TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  consumed_at   TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts  INTEGER NOT NULL DEFAULT 5,
+  resent_count  INTEGER NOT NULL DEFAULT 0,
+  created_ip    TEXT,
+  user_agent    TEXT,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_codes_active_unique
+ON auth_email_codes (email, purpose)
+WHERE consumed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup
+  ON auth_email_codes (email, purpose, expires_at);
 """
 
 # Defaults aligned with writers (email_writer.py / feishu_writer.py)
@@ -172,6 +228,56 @@ def ensure_db() -> None:
             cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category TEXT")
         if "per_source_cap" not in existing_cols:
             cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
+        # Add owner_user_id to pipelines if missing
+        cur.execute("PRAGMA table_info(pipelines)")
+        p_cols = {row[1] for row in cur.fetchall()}
+        if "owner_user_id" not in p_cols:
+            cur.execute("ALTER TABLE pipelines ADD COLUMN owner_user_id INTEGER")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pipelines_owner ON pipelines (owner_user_id)")
+        # Add enabled column to users if missing
+        cur.execute("PRAGMA table_info(users)")
+        u_cols = {row[1] for row in cur.fetchall()}
+        if "enabled" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        # Migrate pipelines table to drop UNIQUE constraint on name if present
+        row = cur.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='pipelines'"
+        ).fetchone()
+        table_sql = row[0] if row and row[0] else ""
+        # If the original table was created with a UNIQUE constraint on name, rebuild table
+        if "UNIQUE" in table_sql.upper():
+            # Disable foreign key checks during migration
+            conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                cur.execute("ALTER TABLE pipelines RENAME TO pipelines_old")
+                # Recreate without UNIQUE constraint on name (keep NOT NULL to avoid None values)
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS pipelines (
+                      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name         TEXT NOT NULL,
+                      enabled      INTEGER NOT NULL DEFAULT 1,
+                      description  TEXT,
+                      created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                      updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                      owner_user_id INTEGER
+                    )
+                    """
+                )
+                # Copy data across
+                cur.execute(
+                    """
+                    INSERT INTO pipelines (id, name, enabled, description, created_at, updated_at, owner_user_id)
+                    SELECT id, name, enabled, description, created_at, updated_at, owner_user_id
+                    FROM pipelines_old
+                    """
+                )
+                # Drop old table
+                cur.execute("DROP TABLE pipelines_old")
+                # Recreate index for owner if missing
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_pipelines_owner ON pipelines (owner_user_id)")
+            finally:
+                conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
 
 
@@ -362,12 +468,14 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
           FROM pipeline_writers
           GROUP BY pipeline_id
         )
-        SELECT p.id, p.name, p.enabled, p.description, p.updated_at,
+        SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id,
+               u.name AS owner_user_name, u.email AS owner_user_email,
                w.type AS writer_type, w.hours AS writer_hours,
                CASE WHEN e.pipeline_id IS NOT NULL THEN 'email'
                     WHEN f.pipeline_id IS NOT NULL THEN 'feishu'
                     ELSE NULL END AS delivery_kind
         FROM pipelines AS p
+        LEFT JOIN users AS u ON u.id = p.owner_user_id
         LEFT JOIN latest_writer lw ON lw.pipeline_id = p.id
         LEFT JOIN pipeline_writers AS w ON w.rowid = lw.rid
         LEFT JOIN pipeline_deliveries_email AS e ON e.pipeline_id = p.id
@@ -384,6 +492,9 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
             "enabled": int(r["enabled"]),
             "description": r["description"],
             "updated_at": r["updated_at"],
+            "owner_user_id": int(r["owner_user_id"]) if r["owner_user_id"] is not None else None,
+            "owner_user_name": r["owner_user_name"],
+            "owner_user_email": r["owner_user_email"],
             "writer_type": r["writer_type"],
             "writer_hours": r["writer_hours"],
             "delivery_kind": r["delivery_kind"],
@@ -394,7 +505,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
 def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
     cur = conn.cursor()
     p = cur.execute(
-        "SELECT id, name, enabled, COALESCE(description,'') AS description FROM pipelines WHERE id=?",
+        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id FROM pipelines WHERE id=?",
         (pid,),
     ).fetchone()
     if not p:
@@ -484,6 +595,7 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             "name": p["name"],
             "enabled": int(p["enabled"]),
             "description": p["description"],
+            "owner_user_id": int(p["owner_user_id"]) if p["owner_user_id"] is not None else None,
         },
         "filters": filters,
         "writer": writer,
@@ -501,25 +613,40 @@ def _to_json_text(val: Any) -> Optional[str]:
     return None
 
 
-def create_or_update_pipeline(conn: sqlite3.Connection, payload: dict, pid: Optional[int] = None) -> int:
+def create_or_update_pipeline(
+    conn: sqlite3.Connection,
+    payload: dict,
+    pid: Optional[int] = None,
+    *,
+    owner_user_id: Optional[int] = None,
+) -> int:
     cur = conn.cursor()
     base = payload.get("pipeline") or {}
+    # Name is optional and can be duplicated; store empty string if omitted
     name = str(base.get("name") or "").strip()
-    if not name:
-        raise ValueError("pipeline.name is required")
     enabled = 1 if base.get("enabled", 1) else 0
     description = str(base.get("description") or "")
+    # Prefer explicit owner in payload, fallback to parameter
+    raw_owner = base.get("owner_user_id")
+    owner_id: Optional[int] = None
+    if raw_owner is not None and str(raw_owner).strip() != "":
+        try:
+            owner_id = int(raw_owner)
+        except (TypeError, ValueError):
+            owner_id = None
+    if owner_id is None:
+        owner_id = owner_user_id
 
     if pid is None:
         cur.execute(
-            "INSERT INTO pipelines (name, enabled, description) VALUES (?, ?, ?)",
-            (name, enabled, description),
+            "INSERT INTO pipelines (name, enabled, description, owner_user_id) VALUES (?, ?, ?, ?)",
+            (name, enabled, description, owner_id),
         )
         pid = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
     else:
         cur.execute(
-            "UPDATE pipelines SET name=?, enabled=?, description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (name, enabled, description, pid),
+            "UPDATE pipelines SET name=?, enabled=?, description=?, owner_user_id=COALESCE(?, owner_user_id), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (name, enabled, description, owner_id, pid),
         )
 
     # filters
@@ -615,6 +742,444 @@ def create_or_update_pipeline(conn: sqlite3.Connection, payload: dict, pid: Opti
 
     conn.commit()
     return int(pid)
+
+
+# -------------------- Auth Helpers --------------------
+
+def _normalize_email(email: str | bytes | None) -> str:
+    if email is None:
+        return ""
+    if isinstance(email, (bytes, bytearray)):
+        email = email.decode("utf-8", errors="ignore")
+    return str(email).strip().lower()
+
+
+def get_user_by_email(conn: sqlite3.Connection, email: str) -> Optional[dict]:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        "SELECT id, email, name, is_admin, enabled, avatar_url, created_at, verified_at, last_login_at FROM users WHERE email=?",
+        (norm,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "email": row["email"],
+        "name": row["name"],
+        "is_admin": int(row["is_admin"] or 0),
+        "enabled": int(row["enabled"] or 0),
+        "avatar_url": row["avatar_url"],
+        "created_at": row["created_at"],
+        "verified_at": row["verified_at"],
+        "last_login_at": row["last_login_at"],
+    }
+
+
+def get_user_by_id(conn: sqlite3.Connection, uid: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT id, email, name, is_admin, enabled, avatar_url, created_at, verified_at, last_login_at FROM users WHERE id=?",
+        (uid,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "email": row["email"],
+        "name": row["name"],
+        "is_admin": int(row["is_admin"] or 0),
+        "enabled": int(row["enabled"] or 0),
+        "avatar_url": row["avatar_url"],
+        "created_at": row["created_at"],
+        "verified_at": row["verified_at"],
+        "last_login_at": row["last_login_at"],
+    }
+
+
+def list_users(
+    conn: sqlite3.Connection,
+    *,
+    offset: int = 0,
+    limit: int = 20,
+    q: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> list[dict]:
+    sql = (
+        "SELECT id, email, name, is_admin, enabled, avatar_url, created_at, verified_at, last_login_at "
+        "FROM users WHERE 1=1"
+    )
+    params: list[object] = []
+    if q:
+        like = f"%{str(q).strip().lower()}%"
+        sql += " AND (lower(email) LIKE ? OR lower(name) LIKE ?)"
+        params.extend([like, like])
+    if start:
+        sql += " AND created_at >= ?"
+        params.append(start)
+    if end:
+        sql += " AND created_at <= ?"
+        params.append(end)
+    sql += " ORDER BY id LIMIT ? OFFSET ?"
+    params.extend([int(limit), int(offset)])
+    rows = conn.execute(sql, params).fetchall()
+    items: list[dict] = []
+    for r in rows:
+        items.append(
+            {
+                "id": int(r["id"]),
+                "email": r["email"],
+                "name": r["name"],
+                "is_admin": int(r["is_admin"] or 0),
+                "enabled": int(r["enabled"] or 0),
+                "avatar_url": r["avatar_url"],
+                "created_at": r["created_at"],
+                "verified_at": r["verified_at"],
+                "last_login_at": r["last_login_at"],
+            }
+        )
+    return items
+
+
+def count_users(
+    conn: sqlite3.Connection,
+    *,
+    q: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> int:
+    sql = "SELECT COUNT(1) FROM users WHERE 1=1"
+    params: list[object] = []
+    if q:
+        like = f"%{str(q).strip().lower()}%"
+        sql += " AND (lower(email) LIKE ? OR lower(name) LIKE ?)"
+        params.extend([like, like])
+    if start:
+        sql += " AND created_at >= ?"
+        params.append(start)
+    if end:
+        sql += " AND created_at <= ?"
+        params.append(end)
+    return int(conn.execute(sql, params).fetchone()[0])
+
+
+def update_user(
+    conn: sqlite3.Connection,
+    uid: int,
+    *,
+    name: Optional[str] = None,
+    is_admin: Optional[int] = None,
+    enabled: Optional[int] = None,
+) -> None:
+    sets: list[str] = []
+    params: list[object] = []
+    if name is not None:
+        sets.append("name=?")
+        params.append(str(name))
+    if is_admin is not None:
+        try:
+            flag = 1 if int(is_admin) else 0
+        except (TypeError, ValueError):
+            flag = 0
+        sets.append("is_admin=?")
+        params.append(flag)
+    if enabled is not None:
+        try:
+            eflag = 1 if int(enabled) else 0
+        except (TypeError, ValueError):
+            eflag = 0
+        sets.append("enabled=?")
+        params.append(eflag)
+    if not sets:
+        return
+    sql = f"UPDATE users SET {' ,'.join(sets)} WHERE id=?"
+    params.append(int(uid))
+    conn.execute(sql, params)
+    conn.commit()
+
+
+def fetch_pipeline_list_by_owner(conn: sqlite3.Connection, owner_user_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        WITH lw AS (
+            SELECT pipeline_id AS pid, rowid AS rid
+            FROM pipeline_writers
+        )
+        SELECT
+            p.id, p.name, p.enabled, p.updated_at, p.owner_user_id,
+            w.type AS writer_type, w.hours AS writer_hours,
+            CASE WHEN e.id IS NOT NULL THEN 'email'
+                 WHEN f.id IS NOT NULL THEN 'feishu'
+                 ELSE NULL END AS delivery_kind
+        FROM pipelines AS p
+        LEFT JOIN lw ON lw.pid = p.id
+        LEFT JOIN pipeline_writers AS w ON w.rowid = lw.rid
+        LEFT JOIN pipeline_deliveries_email AS e ON e.pipeline_id = p.id
+        LEFT JOIN pipeline_deliveries_feishu AS f ON f.pipeline_id = p.id
+        WHERE p.owner_user_id = ?
+        GROUP BY p.id
+        ORDER BY p.id
+        """,
+        (int(owner_user_id),),
+    ).fetchall()
+    result: list[dict] = []
+    for r in rows:
+        result.append(
+            {
+                "id": int(r["id"]),
+                "name": r["name"],
+                "enabled": int(r["enabled"]),
+                "description": None,
+                "updated_at": r["updated_at"],
+                "owner_user_id": int(r["owner_user_id"]) if r["owner_user_id"] is not None else None,
+                "writer_type": r["writer_type"],
+                "writer_hours": r["writer_hours"],
+                "delivery_kind": r["delivery_kind"],
+            }
+        )
+    return result
+
+
+def create_user(conn: sqlite3.Connection, *, email: str, name: str, is_admin: int = 0, verified: bool = True) -> int:
+    norm = _normalize_email(email)
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (email, name, is_admin, enabled, verified_at) VALUES (?, ?, ?, 1, CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END)",
+        (norm, name.strip() or norm, 1 if is_admin else 0, 1 if verified else 0),
+    )
+    conn.commit()
+    return int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def create_session(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    user_id: int,
+    token_hash: str,
+    expires_at: str,
+    ip: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO user_sessions (id, user_id, token_hash, expires_at, ip, user_agent)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, user_id, token_hash, expires_at, ip, user_agent),
+    )
+    conn.commit()
+
+
+def get_session_with_user(conn: sqlite3.Connection, token_hash: str) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.revoked_at,
+               u.email, u.name, u.is_admin, u.enabled
+        FROM user_sessions AS s
+        JOIN users AS u ON u.id = s.user_id
+        WHERE s.token_hash=?
+        """,
+        (token_hash,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": row["id"],
+        "user_id": int(row["user_id"]),
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "expires_at": row["expires_at"],
+        "revoked_at": row["revoked_at"],
+        "user": {
+            "id": int(row["user_id"]),
+            "email": row["email"],
+            "name": row["name"],
+            "is_admin": int(row["is_admin"] or 0),
+            "enabled": int(row["enabled"] or 0),
+        },
+    }
+
+
+def touch_session(conn: sqlite3.Connection, session_id: str) -> None:
+    conn.execute(
+        "UPDATE user_sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?",
+        (session_id,),
+    )
+    conn.commit()
+
+
+def revoke_session(conn: sqlite3.Connection, session_id: str) -> None:
+    conn.execute(
+        "UPDATE user_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE id=?",
+        (session_id,),
+    )
+    conn.commit()
+
+
+def revoke_sessions_for_user(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute(
+        "UPDATE user_sessions SET revoked_at=CURRENT_TIMESTAMP WHERE user_id=? AND revoked_at IS NULL",
+        (int(user_id),),
+    )
+    conn.commit()
+
+
+def set_user_last_login(conn: sqlite3.Connection, uid: int) -> None:
+    conn.execute(
+        "UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?",
+        (uid,),
+    )
+    conn.commit()
+
+
+def get_active_code(conn: sqlite3.Connection, email: str, purpose: str) -> Optional[sqlite3.Row]:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        """
+        SELECT * FROM auth_email_codes
+        WHERE email=? AND purpose=? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (norm, purpose),
+    ).fetchone()
+    return row
+
+
+def _get_unconsumed_code(conn: sqlite3.Connection, email: str, purpose: str) -> Optional[sqlite3.Row]:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        """
+        SELECT * FROM auth_email_codes
+        WHERE email=? AND purpose=? AND consumed_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (norm, purpose),
+    ).fetchone()
+    return row
+
+
+def upsert_email_code(
+    conn: sqlite3.Connection,
+    *,
+    email: str,
+    purpose: str,
+    code_hash: str,
+    ttl_seconds: int,
+    max_attempts: int,
+    ip: str | None,
+    user_agent: str | None,
+    user_id: Optional[int] = None,
+) -> None:
+    norm = _normalize_email(email)
+    existing = get_active_code(conn, norm, purpose)
+    if existing is not None:
+        conn.execute(
+            """
+            UPDATE auth_email_codes
+            SET code_hash=?, expires_at=datetime('now', ?||' seconds'), resent_count=resent_count+1, user_id=COALESCE(?, user_id)
+            WHERE id=?
+            """,
+            (code_hash, ttl_seconds, user_id, int(existing["id"])),
+        )
+    else:
+        # If there is any unconsumed (even expired) record, reuse it to avoid partial index unique conflicts.
+        pending = _get_unconsumed_code(conn, norm, purpose)
+        if pending is not None:
+            conn.execute(
+                """
+                UPDATE auth_email_codes
+                SET code_hash=?, expires_at=datetime('now', ?||' seconds'), attempt_count=0,
+                    resent_count=resent_count+1, user_id=COALESCE(?, user_id)
+                WHERE id=?
+                """,
+                (code_hash, ttl_seconds, user_id, int(pending["id"]))
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO auth_email_codes (email, user_id, purpose, code_hash, expires_at, max_attempts, created_ip, user_agent)
+                VALUES (?, ?, ?, ?, datetime('now', ?||' seconds'), ?, ?, ?)
+                """,
+                (norm, user_id, purpose, code_hash, ttl_seconds, max_attempts, ip, user_agent),
+            )
+    conn.commit()
+
+
+def count_email_requests(conn: sqlite3.Connection, *, email: str, hours: int) -> int:
+    norm = _normalize_email(email)
+    return int(
+        conn.execute(
+            """
+            SELECT COUNT(1)
+            FROM auth_email_codes
+            WHERE email=? AND created_at > datetime('now', ?||' hours')
+            """,
+            (norm, -abs(hours)),
+        ).fetchone()[0]
+    )
+
+
+def count_ip_requests(conn: sqlite3.Connection, *, ip: str | None, hours: int) -> int:
+    if not ip:
+        return 0
+    return int(
+        conn.execute(
+            """
+            SELECT COUNT(1)
+            FROM auth_email_codes
+            WHERE created_ip=? AND created_at > datetime('now', ?||' hours')
+            """,
+            (ip, -abs(hours)),
+        ).fetchone()[0]
+    )
+
+
+def verify_email_code(
+    conn: sqlite3.Connection,
+    *,
+    email: str,
+    purpose: str,
+    input_hash: str,
+) -> tuple[bool, Optional[int]]:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        """
+        SELECT * FROM auth_email_codes
+        WHERE email=? AND purpose=? AND consumed_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (norm, purpose),
+    ).fetchone()
+    if not row:
+        return False, None
+    # Check expiry (if expired, consider invalid)
+    exp = row["expires_at"]
+    expired = conn.execute("SELECT CASE WHEN ? <= CURRENT_TIMESTAMP THEN 1 ELSE 0 END", (str(exp),)).fetchone()[0]
+    if int(expired):
+        return False, None
+    if row["code_hash"] != input_hash:
+        attempts = int(row["attempt_count"] or 0) + 1
+        conn.execute("UPDATE auth_email_codes SET attempt_count=? WHERE id=?", (attempts, int(row["id"])))
+        try:
+            max_attempts = int(row["max_attempts"] or 5)
+        except (TypeError, ValueError):
+            max_attempts = 5
+        if attempts >= max_attempts:
+            conn.execute("UPDATE auth_email_codes SET consumed_at=CURRENT_TIMESTAMP WHERE id=?", (int(row["id"]),))
+        conn.commit()
+        return False, None
+    # Success: consume this and invalidate others of same (email,purpose)
+    conn.execute("UPDATE auth_email_codes SET consumed_at=CURRENT_TIMESTAMP WHERE id=?", (int(row["id"]),))
+    conn.execute(
+        "UPDATE auth_email_codes SET consumed_at=CURRENT_TIMESTAMP WHERE email=? AND purpose=? AND consumed_at IS NULL AND id<>?",
+        (norm, purpose, int(row["id"]))
+    )
+    conn.commit()
+    uid = row["user_id"]
+    return True, (int(uid) if uid is not None else None)
 
 
 def delete_pipeline(conn: sqlite3.Connection, pid: int) -> None:

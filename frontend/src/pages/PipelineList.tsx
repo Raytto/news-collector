@@ -4,8 +4,11 @@ import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { deletePipeline, fetchPipelines, updatePipeline, type PipelineListItem } from '../api'
+import { useAuth } from '../auth'
 
 export default function PipelineList() {
+  const { user } = useAuth()
+  const isAdmin = (user?.is_admin || 0) === 1
   const [list, setList] = useState<PipelineListItem[]>([])
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -49,6 +52,23 @@ export default function PipelineList() {
   const columns: ColumnsType<PipelineListItem> = [
     { title: 'ID', dataIndex: 'id', width: 80 },
     { title: '名称', dataIndex: 'name' },
+    ...(isAdmin
+      ? ([
+          {
+            title: '创建者',
+            dataIndex: 'owner_user_name',
+            width: 160,
+            render: (v, r) =>
+              r.owner_user_id ? (
+                <Button type="link" onClick={() => navigate(`/users?id=${r.owner_user_id}`)}>
+                  {v || `用户#${r.owner_user_id}`}
+                </Button>
+              ) : (
+                <span>-</span>
+              )
+          }
+        ] as ColumnsType<PipelineListItem>)
+      : ([] as ColumnsType<PipelineListItem>)),
     {
       title: '启用',
       dataIndex: 'enabled',
@@ -68,7 +88,7 @@ export default function PipelineList() {
       }
     },
     {
-      title: '投递方式',
+      title: '推送方式',
       dataIndex: 'delivery_kind',
       render: (v) => (v ? <Tag color={v === 'email' ? 'blue' : 'green'}>{v}</Tag> : <Tag>未配置</Tag>)
     },
@@ -93,9 +113,9 @@ export default function PipelineList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>投递管理</div>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>我的推送</div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/new')}>
-          新建投递
+          新建推送
         </Button>
       </div>
       <Table
@@ -104,6 +124,15 @@ export default function PipelineList() {
         dataSource={list}
         loading={loading}
         pagination={{ pageSize: 10 }}
+        locale={{
+          emptyText: (
+            <div style={{ textAlign: 'center', padding: '48px 0' }}>
+              <Button type="primary" size="large" icon={<PlusOutlined />} onClick={() => navigate('/new')}>
+                创建你的第一个信息推送
+              </Button>
+            </div>
+          )
+        }}
       />
     </div>
   )
