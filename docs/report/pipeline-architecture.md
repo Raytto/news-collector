@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS pipeline_deliveries_email (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   pipeline_id  INTEGER NOT NULL,
   email        TEXT NOT NULL,         -- 单一收件人邮箱地址
-  subject_tpl  TEXT NOT NULL,         -- 标题模板，例如 "${date_zh} 整合"
+  subject_tpl  TEXT NOT NULL,         -- 卡片标题，例如 "${date_zh} 整合"
   deliver_type TEXT NOT NULL DEFAULT 'email', -- 投递类型：email | feishu（此表固定为 email）
   UNIQUE(pipeline_id),                -- 每条管线仅一条 email 投递
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS pipeline_deliveries_feishu (
   app_secret   TEXT NOT NULL,         -- 机器人 App Secret（敏感信息）
   to_all_chat  INTEGER NOT NULL DEFAULT 0,  -- 1=推送所有所在群；0=仅推送到指定 chat_id
   chat_id      TEXT,                  -- 目标群聊 ID（to_all_chat=0 时必填）
-  title_tpl    TEXT,                  -- 标题模板（card/post 可用）
+  title_tpl    TEXT,                  -- 卡片标题（card/post 可用）
   to_all       INTEGER DEFAULT 0,     -- 是否全员通知（card 可用）
   UNIQUE(pipeline_id),                -- 每条管线仅一条 feishu 投递
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   - DB 优先：当存在 `PIPELINE_ID` 时，writer 默认从 DB 读取 `pipeline_writers` 与 `pipeline_filters`（hours/categories/weights/bonus）；仍保留 CLI 覆盖能力用于单次调试。
 - Deliver（按管线）
   - 渠道：email 与 feishu 分表管理；Feishu 统一使用 feishu_card。
-  - DB 优先：当存在 `PIPELINE_ID` 时，`mail_deliver.py` 默认自 DB 读取收件人与标题模板；`feishu_deliver.py` 默认自 DB 读取 App 凭证、发送范围（to_all_chat/chat_id）与标题模板。Runner 仅传入待发送文件路径（`--html` 或 `--file`）与展示形式（如 `--as-card`）。
+  - DB 优先：当存在 `PIPELINE_ID` 时，`mail_deliver.py` 默认自 DB 读取收件人与卡片标题；`feishu_deliver.py` 默认自 DB 读取 App 凭证、发送范围（to_all_chat/chat_id）与卡片标题。Runner 仅传入待发送文件路径（`--html` 或 `--file`）与展示形式（如 `--as-card`）。
   - 仍支持通过 CLI 与环境变量手动覆盖，便于独立调试。
 
 ## 5. 过滤与排序策略

@@ -101,6 +101,31 @@ Semantics:
   - `info.category` = `sources.category_key`
 - If a `script_path` is missing or import fails, the collector logs an error for that source and continues (non-zero exit optional). The failure is visible in the run log.
 
+#### Table: `source_address`
+
+Maintains the set of upstream URLs (RSS feeds, JSON APIs, etc.) associated with each logical source. The admin UI surfaces these addresses for quick inspection and editing.
+
+```sql
+CREATE TABLE IF NOT EXISTS source_address (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id INTEGER NOT NULL,
+  address   TEXT NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_address_source
+  ON source_address (source_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_address_unique
+  ON source_address (source_id, address);
+```
+
+Semantics:
+
+- `address` records the concrete fetch endpoint used by the scraper (RSS feed URL, REST endpoint, etc.).
+- `source_id` references `sources.id`; cascade delete keeps the table in sync when a source is removed.
+- UI validation requires at least one address per source; duplicates are deduplicated before insert.
+
 #### Table: `ai_metrics`
 
 Defines the available evaluation metrics (clean rebuild; no migration of old columns).
@@ -154,6 +179,8 @@ CREATE TABLE IF NOT EXISTS info_ai_review (
   final_score REAL    NOT NULL DEFAULT 0.0,
   ai_comment  TEXT    NOT NULL,
   ai_summary  TEXT    NOT NULL,
+  ai_key_concepts TEXT,
+  ai_summary_long TEXT,
   raw_response TEXT,
   created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -164,6 +191,7 @@ CREATE TABLE IF NOT EXISTS info_ai_review (
 Notes:
 
 - Metric scores live in `info_ai_scores`. Writers compute the final weighted score dynamically based on `ai_metrics` and pipeline weights.
+- `ai_key_concepts` stores a JSON 数组（或空值）描述文章的关键词；`ai_summary_long` 为约 50 字的拓展摘要。
 
 ### DB‑Backed Pipelines (Write + Deliver)
 

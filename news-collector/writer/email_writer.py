@@ -4,48 +4,20 @@ import argparse
 import json
 import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 DEFAULT_HOURS = 24
-
-DIMENSION_LABELS: Dict[str, str] = {
-    "timeliness": "时效性",
-    "game_relevance": "游戏相关性",
-    "mobile_game_relevance": "手游相关性",
-    "ai_relevance": "AI相关性",
-    "tech_relevance": "科技相关性",
-    "quality": "文章质量",
-    "insight": "洞察力",
-    "depth": "深度",
-    "novelty": "新颖度",
-}
-DIMENSION_ORDER: Tuple[str, ...] = tuple(DIMENSION_LABELS.keys())
-
-DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.20,
-    "game_relevance": 0.40,
-    "mobile_game_relevance": 0.20,
-    "ai_relevance": 0.10,
-    "tech_relevance": 0.05,
-    "quality": 0.25,
-    "insight": 0.35,
-    "depth": 0.25,
-    "novelty": 0.20,
-}
-
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "openai.research": 3.0,
     "deepmind": 1.0,
     "qbitai-zhiku": 2.0,
 }
-
-DEFAULT_LIMIT_PER_CATEGORY = 10  # 默认每个分类展示 10 条
-DEFAULT_PER_SOURCE_CAP = 0       # <=0 means unlimited
-
+DEFAULT_LIMIT_PER_CATEGORY = 10
+DEFAULT_PER_SOURCE_CAP = 0  # <=0 表示不限制
 
 WRITER_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = WRITER_DIR.parent
@@ -54,13 +26,21 @@ DB_PATH = DATA_DIR / "info.db"
 OUTPUT_BASE = DATA_DIR / "output" / "email"
 
 
+@dataclass(frozen=True)
+class MetricDefinition:
+    id: int
+    key: str
+    label_zh: str
+    default_weight: Optional[float]
+
+
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate Email HTML digest from SQLite (unified)")
+    p = argparse.ArgumentParser(description="Generate Email HTML digest from SQLite (AI scored)")
     p.add_argument("--hours", type=int, default=DEFAULT_HOURS, help="时间窗口（小时，默认 24）")
     p.add_argument("--output", type=str, default="", help="输出 HTML 路径；留空自动生成")
     p.add_argument("--db", type=str, default=str(DB_PATH), help="SQLite 数据库路径 (默认 data/info.db)")
     p.add_argument("--categories", default="", help="分类白名单，逗号分隔（为空表示全部）")
-    p.add_argument("--weights", default="", help="覆盖默认权重的 JSON，例如 {\"timeliness\":0.2,...}")
+    p.add_argument("--weights", default="", help="覆盖权重的 JSON，例如 {\"timeliness\":0.2,...}")
     p.add_argument("--source-bonus", default="", help="来源加成 JSON，例如 '{\"openai.research\": 2}'")
     p.add_argument(
         "--limit-per-cat",
@@ -91,7 +71,6 @@ def _env_pipeline_id() -> Optional[int]:
 
 
 def parse_limit_config(raw: Any) -> Tuple[Dict[str, int], int]:
-    """Interpret DB/CLI limit config into (per-category map, default)."""
     limit_map: Dict[str, int] = {}
     default_limit = DEFAULT_LIMIT_PER_CATEGORY
     value: Any = raw
@@ -107,7 +86,7 @@ def parse_limit_config(raw: Any) -> Tuple[Dict[str, int], int]:
             parsed = json.loads(s)
         except json.JSONDecodeError:
             try:
-                default_limit = int(s)
+                default_limit = int(float(s))
             except (TypeError, ValueError):
                 return limit_map, default_limit
             return limit_map, default_limit
@@ -140,6 +119,34 @@ def limit_for_category(limit_map: Dict[str, int], default_limit: int, category: 
     return int(limit_map.get(category, default_limit))
 
 
+def parse_weight_overrides(
+    raw: str,
+    valid_keys: Optional[Set[str]] = None,
+    *,
+    allow_negative: bool = False,
+) -> Dict[str, float]:
+    overrides: Dict[str, float] = {}
+    data = raw.strip()
+    if not data:
+        return overrides
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return overrides
+    if not isinstance(parsed, dict):
+        return overrides
+    for key, value in parsed.items():
+        key_str = str(key)
+        if valid_keys is not None and key_str not in valid_keys:
+            continue
+        if isinstance(value, (int, float)):
+            value_f = float(value)
+            if not allow_negative and value_f < 0:
+                continue
+            overrides[key_str] = value_f
+    return overrides
+
+
 def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(pipeline_writers)")
@@ -147,19 +154,41 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
     has_limit_cols = {"limit_per_category", "per_source_cap"} <= writer_cols
     if has_limit_cols:
         w = cur.execute(
-            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,''), limit_per_category, per_source_cap FROM pipeline_writers WHERE pipeline_id=?",
+            """
+            SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,''),
+                   limit_per_category, per_source_cap
+            FROM pipeline_writers
+            WHERE pipeline_id=?
+            """,
             (pipeline_id,),
         ).fetchone()
     else:
         w = cur.execute(
-            "SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'') FROM pipeline_writers WHERE pipeline_id=?",
+            """
+            SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'')
+            FROM pipeline_writers
+            WHERE pipeline_id=?
+            """,
             (pipeline_id,),
         ).fetchone()
-    # filters
     f = cur.execute(
-        "SELECT all_categories, COALESCE(categories_json,'') FROM pipeline_filters WHERE pipeline_id=?",
+        """
+        SELECT all_categories, COALESCE(categories_json,'')
+        FROM pipeline_filters
+        WHERE pipeline_id=?
+        """,
         (pipeline_id,),
     ).fetchone()
+    metric_rows = cur.execute(
+        """
+        SELECT m.key, w.weight, w.enabled
+        FROM pipeline_writer_metric_weights AS w
+        JOIN ai_metrics AS m ON m.id = w.metric_id
+        WHERE w.pipeline_id=?
+        """,
+        (pipeline_id,),
+    ).fetchall()
+
     out: Dict[str, Any] = {}
     if w:
         out["hours"] = int(w[0]) if w[0] is not None else None
@@ -171,6 +200,11 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
         out["categories_json"] = str(f[1] or "")
+    if metric_rows:
+        out["metric_weight_rows"] = [
+            {"key": row[0], "weight": float(row[1]), "enabled": int(row[2] or 0)}
+            for row in metric_rows
+        ]
     return out
 
 
@@ -203,21 +237,6 @@ def try_parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
-def compute_weighted_score(eva: Dict[str, Any], weights: Dict[str, float]) -> float:
-    total = 0.0
-    wsum = 0.0
-    for dim in DIMENSION_ORDER:
-        w = float(weights.get(dim, 0.0))
-        if w <= 0:
-            continue
-        v = float(eva.get(dim, 0) or 0)
-        total += v * w
-        wsum += w
-    if wsum <= 0:
-        return 0.0
-    return round(max(1.0, min(5.0, total / wsum)), 2)
-
-
 def human_time(publish: str) -> str:
     dt = try_parse_dt(publish)
     if not dt:
@@ -225,66 +244,135 @@ def human_time(publish: str) -> str:
     return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 北京时间")
 
 
-def fetch_recent(conn: sqlite3.Connection, cutoff: datetime) -> List[Dict[str, Any]]:
-    has_review = bool(
-        conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'").fetchone()
-    )
-    if has_review:
-        sql = """
-            SELECT i.id, i.category, i.source, i.publish, i.title, i.link,
-                   r.timeliness_score,
-                   r.game_relevance_score,
-                   r.mobile_game_relevance_score,
-                   r.ai_relevance_score,
-                   r.tech_relevance_score,
-                   r.quality_score,
-                   r.insight_score,
-                   r.depth_score,
-                   r.novelty_score,
-                   r.ai_comment,
-                   r.ai_summary
-            FROM info AS i
-            LEFT JOIN info_ai_review AS r ON r.info_id = i.id
-        """
+def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, key, label_zh, default_weight
+            FROM ai_metrics
+            WHERE active = 1
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit("缺少 AI 指标定义表 (ai_metrics)，请先运行 evaluator 初始化。") from exc
+    if not rows:
+        raise SystemExit("ai_metrics 表为空，无法生成邮件摘要")
+    return [
+        MetricDefinition(
+            id=row[0],
+            key=row[1],
+            label_zh=row[2],
+            default_weight=row[3],
+        )
+        for row in rows
+    ]
+
+
+def resolve_weights(
+    metrics: Sequence[MetricDefinition],
+    metric_weight_rows: Optional[List[Dict[str, Any]]],
+    weights_json: str,
+    cli_override: str,
+) -> Dict[str, float]:
+    valid_keys = {m.key for m in metrics}
+    weights = {m.key: float(m.default_weight or 0.0) for m in metrics}
+    active_keys = set(valid_keys)
+
+    if metric_weight_rows:
+        active_keys = {
+            str(row.get("key"))
+            for row in metric_weight_rows
+            if row.get("enabled")
+        }
+        for row in metric_weight_rows:
+            key = str(row.get("key") or "")
+            if key not in valid_keys:
+                continue
+            weight = float(row.get("weight") or 0.0)
+            weights[key] = max(0.0, weight)
+        for key in valid_keys - active_keys:
+            weights[key] = 0.0
+        if not active_keys:
+            for key in list(weights.keys()):
+                weights[key] = 0.0
     else:
-        sql = """
-            SELECT i.id, i.category, i.source, i.publish, i.title, i.link
-            FROM info AS i
-        """
-    rows = conn.execute(sql).fetchall()
-    items: List[Dict[str, Any]] = []
-    for row in rows:
-        publish = str(row[3] or "")
-        dt = try_parse_dt(publish)
-        if not dt or dt < cutoff:
+        for key, value in parse_weight_overrides(weights_json, valid_keys).items():
+            weights[key] = max(0.0, value)
+        active_keys = {key for key, value in weights.items() if value > 0}
+
+    for key, value in parse_weight_overrides(cli_override, valid_keys).items():
+        weights[key] = max(0.0, value)
+        if value > 0:
+            active_keys.add(key)
+        elif key in active_keys and value == 0:
+            active_keys.remove(key)
+
+    if active_keys:
+        for key in list(weights.keys()):
+            if key not in active_keys:
+                weights[key] = 0.0
+    return weights
+
+
+def compute_weighted_score(scores: Dict[str, int], weights: Dict[str, float]) -> float:
+    total = 0.0
+    wsum = 0.0
+    for key, weight in weights.items():
+        if weight <= 0:
             continue
-        evaluation: Optional[Dict[str, Any]] = None
-        if len(row) >= 17:  # joined with review table
-            evaluation = {
-                "timeliness": int(row[6]) if row[6] is not None else 0,
-                "game_relevance": int(row[7]) if row[7] is not None else 0,
-                "mobile_game_relevance": int(row[8]) if row[8] is not None else 0,
-                "ai_relevance": int(row[9]) if row[9] is not None else 0,
-                "tech_relevance": int(row[10]) if row[10] is not None else 0,
-                "quality": int(row[11]) if row[11] is not None else 0,
-                "insight": int(row[12]) if row[12] is not None else 0,
-                "depth": int(row[13]) if row[13] is not None else 0,
-                "novelty": int(row[14]) if row[14] is not None else 0,
-                "comment": str(row[15] or ""),
-                "summary": str(row[16] or ""),
-            }
-        items.append(
+        total += float(scores.get(key, 0)) * weight
+        wsum += weight
+    if wsum <= 0:
+        return 0.0
+    score = total / wsum
+    return round(max(1.0, min(5.0, score)), 2)
+
+
+def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                i.id,
+                i.category,
+                i.source,
+                i.publish,
+                i.title,
+                i.link,
+                r.ai_comment,
+                r.ai_summary,
+                m.key,
+                s.score
+            FROM info AS i
+            JOIN info_ai_scores AS s ON s.info_id = i.id
+            JOIN ai_metrics AS m ON m.id = s.metric_id AND m.active = 1
+            LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit("缺少 AI 评分数据表 (info_ai_scores)，请先运行 evaluator 生成评分。") from exc
+    articles: Dict[int, Dict[str, Any]] = {}
+    for row in rows:
+        info_id = int(row[0])
+        article = articles.setdefault(
+            info_id,
             {
-                "id": int(row[0]),
+                "id": info_id,
                 "category": str(row[1] or ""),
                 "source": str(row[2] or ""),
-                "publish": publish,
+                "publish": str(row[3] or ""),
                 "title": str(row[4] or ""),
                 "link": str(row[5] or ""),
-                "evaluation": evaluation,
-            }
+                "ai_comment": str(row[6] or ""),
+                "ai_summary": str(row[7] or ""),
+                "scores": {},
+            },
         )
-    return items
+        metric_key = str(row[8])
+        score = int(row[9])
+        article["scores"][metric_key] = score
+    return list(articles.values())
 
 
 def apply_limits(
@@ -293,10 +381,8 @@ def apply_limits(
     limit_default: int,
     per_source_cap: int,
 ) -> List[Dict[str, Any]]:
-    """Trim entries according to per-category/per-source caps."""
     if (not limit_map and limit_default <= 0) and (per_source_cap is None or per_source_cap <= 0):
         return entries
-
     by_cat: Dict[str, List[Dict[str, Any]]] = {}
     for entry in entries:
         cat = str(entry.get("category") or "")
@@ -329,14 +415,17 @@ def apply_limits(
     return trimmed
 
 
-def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, float]) -> str:
+def render_html(
+    entries: List[Dict[str, Any]],
+    hours: int,
+    weights: Dict[str, float],
+    metrics: Sequence[MetricDefinition],
+) -> str:
     from collections import defaultdict
+
     by_cat: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     count = 0
     for e in entries:
-        eva = e.get("evaluation") or {}
-        if eva:
-            e["final_score"] = compute_weighted_score(eva, weights)
         by_cat[e.get("category", "")].append(e)
         count += 1
 
@@ -375,6 +464,10 @@ def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, fl
 <p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计：{count} 条</p>
 """
 
+    active_metrics = [m for m in metrics if weights.get(m.key, 0.0) > 0]
+    if not active_metrics:
+        active_metrics = list(metrics)
+
     def _render_article_card(entry: Dict[str, Any]) -> str:
         publish = entry.get("publish", "")
         dt = try_parse_dt(publish)
@@ -389,32 +482,30 @@ def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, fl
         source = entry.get("source", "") or ""
         raw_title = entry.get("title", "") or ""
         title = escape(f"{source}:{raw_title}")
-        evaluation = entry.get("evaluation")
-        if evaluation:
-            final_score = float(entry.get("final_score") or 0.0)
+        scores = entry.get("scores") or {}
+        comment = entry.get("ai_comment", "")
+        summary = entry.get("ai_summary", "")
+        final_score = float(entry.get("final_score") or 0.0)
+        if scores:
             rounded = int(final_score + 0.5)
             rounded = max(1, min(5, rounded))
             stars = "★" * rounded + "☆" * (5 - rounded)
-            # 仅显示当前权重配置中启用（权重大于 0）的维度；
-            # 若全部为 0，则回退到显示全部维度。
-            active_dims = [k for k in DIMENSION_ORDER if float(weights.get(k, 0.0)) > 0.0]
-            if not active_dims:
-                active_dims = list(DIMENSION_ORDER)
             dims = " · ".join(
-                f"{DIMENSION_LABELS[key]}：{evaluation.get(key, '-')}" for key in active_dims
+                f"{m.label_zh}：{scores.get(m.key, '-')}"
+                for m in active_metrics
             )
+            bonus = entry.get("bonus")
             bonus_note = ""
-            bonus_val = evaluation.get("bonus")
-            if bonus_val:
-                sign = "+" if bonus_val > 0 else ""
-                bonus_note = f"（手动加成 {sign}{bonus_val:g}）"
+            if bonus:
+                sign = "+" if bonus > 0 else ""
+                bonus_note = f"（手动加成 {sign}{bonus:g}）"
             rating_html = (
                 "<div class=\"ai-summary\">"
                 f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
                 f"<span class=\"score-number\">{final_score:.2f}/5</span></div>"
                 f"<div class=\"ai-dimensions\">{escape(dims)}{escape(bonus_note)}</div>"
-                f"<div class=\"ai-comment\">评价：{escape(evaluation.get('comment', ''))}</div>"
-                f"<div class=\"ai-summary-text\">概要：{escape(evaluation.get('summary', ''))}</div>"
+                f"<div class=\"ai-comment\">评价：{escape(comment)}</div>"
+                f"<div class=\"ai-summary-text\">概要：{escape(summary)}</div>"
                 "</div>"
             )
         else:
@@ -427,26 +518,29 @@ def render_html(entries: List[Dict[str, Any]], hours: int, weights: Dict[str, fl
             "</article>"
         )
 
-    # Order categories: 'game' first, then others alphabetically, then empty
     categories = list(by_cat.keys())
-    def cat_key(c: str):
+
+    def cat_key(c: str) -> Tuple[int, str]:
         if c == "game":
             return (0, "")
         if c:
             return (1, c.lower())
         return (2, "")
+
     categories.sort(key=cat_key)
 
     sections: List[str] = []
     for cat in categories:
         label = cat or "(未分类)"
         sections.append(f"<h2>{escape(label)}</h2>")
-        # Sort entries by final_score then time
-        def key_fn(e: Dict[str, Any]):
-            score = float(e.get("final_score") or 0.0)
-            dt = try_parse_dt(e.get("publish", "") or "") or datetime.min.replace(tzinfo=timezone.utc)
-            return (score, dt)
-        cat_entries = sorted(by_cat[cat], key=key_fn, reverse=True)
+        cat_entries = sorted(
+            by_cat[cat],
+            key=lambda e: (
+                float(e.get("final_score") or 0.0),
+                try_parse_dt(e.get("publish", "") or "") or datetime.min.replace(tzinfo=timezone.utc),
+            ),
+            reverse=True,
+        )
         for entry in cat_entries:
             sections.append(_render_article_card(entry))
 
@@ -468,45 +562,40 @@ def main() -> None:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         out_path = OUTPUT_BASE / f"{ts}-email.html"
 
-    # Base config from CLI defaults
-    weights = DEFAULT_WEIGHTS.copy()
-    source_bonus = DEFAULT_SOURCE_BONUS.copy()
-    effective_hours = max(1, int(args.hours))
-    categories_filter: list[str] = []
+    weights_cli_override = args.weights
+    bonus_cli_override = args.source_bonus
+    categories_filter: List[str] = []
     limit_map: Dict[str, int] = {}
     limit_default = DEFAULT_LIMIT_PER_CATEGORY
     per_source_cap = DEFAULT_PER_SOURCE_CAP
+    effective_hours = max(1, int(args.hours))
 
-    # If running under pipeline, load config from DB by default (no extra flags)
     pid = _env_pipeline_id()
+
     with sqlite3.connect(str(db_path)) as conn:
+        metrics = load_active_metrics(conn)
+        metric_keys = {m.key for m in metrics}
+
+        metric_weight_rows: Optional[List[Dict[str, Any]]] = None
+        pipeline_weights_json = ""
+        source_bonus = DEFAULT_SOURCE_BONUS.copy()
+
         if pid is not None:
             cfg = _load_pipeline_cfg(conn, pid)
             if isinstance(cfg.get("hours"), int) and int(cfg["hours"]) > 0:
-                effective_hours = int(cfg["hours"])  # DB overrides CLI default
-            # weights_json
-            wj = (cfg.get("weights_json") or "").strip()
-            if wj:
-                try:
-                    w_map = json.loads(wj)
-                    if isinstance(w_map, dict):
-                        for k, v in w_map.items():
-                            if k in DIMENSION_LABELS and isinstance(v, (int, float)):
-                                weights[k] = float(v)
-                except json.JSONDecodeError:
-                    pass
-            # bonus_json
-            bj = (cfg.get("bonus_json") or "").strip()
-            if bj:
-                try:
-                    b_map = json.loads(bj)
-                    if isinstance(b_map, dict):
-                        for k, v in b_map.items():
-                            if isinstance(v, (int, float)):
-                                source_bonus[str(k)] = float(v)
-                except json.JSONDecodeError:
-                    pass
-            # categories from filters when all_categories=0
+                effective_hours = int(cfg["hours"])
+            pipeline_weights_json = cfg.get("weights_json", "")
+            metric_weight_rows = cfg.get("metric_weight_rows")
+
+            bonus_json = cfg.get("bonus_json", "")
+            if bonus_json:
+                for key, value in parse_weight_overrides(
+                    bonus_json,
+                    None,
+                    allow_negative=True,
+                ).items():
+                    source_bonus[str(key)] = value
+
             all_cats = int(cfg.get("all_categories", 1) or 1)
             if all_cats == 0:
                 try:
@@ -515,6 +604,7 @@ def main() -> None:
                         categories_filter = [str(c).strip() for c in cats if str(c).strip()]
                 except json.JSONDecodeError:
                     pass
+
             limit_raw = cfg.get("limit_per_category")
             if limit_raw not in (None, ""):
                 limit_map, limit_default = parse_limit_config(limit_raw)
@@ -524,26 +614,15 @@ def main() -> None:
                 except (TypeError, ValueError):
                     pass
 
-        # CLI overrides remain supported for ad-hoc runs
-        if args.weights.strip():
-            try:
-                overrides = json.loads(args.weights)
-                if isinstance(overrides, dict):
-                    for k, v in overrides.items():
-                        if k in DIMENSION_LABELS and isinstance(v, (int, float)):
-                            weights[k] = float(v)
-            except json.JSONDecodeError:
-                pass
-        if args.source_bonus.strip():
-            try:
-                overrides = json.loads(args.source_bonus)
-                if isinstance(overrides, dict):
-                    for k, v in overrides.items():
-                        if isinstance(v, (int, float)):
-                            source_bonus[str(k)] = float(v)
-            except json.JSONDecodeError:
-                pass
-        # explicit CLI categories (highest precedence)
+        weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, weights_cli_override)
+
+        if bonus_cli_override.strip():
+            for key, value in parse_weight_overrides(
+                bonus_cli_override,
+                None,
+                allow_negative=True,
+            ).items():
+                source_bonus[str(key)] = value
         if args.categories.strip():
             categories_filter = [c.strip() for c in args.categories.split(",") if c.strip()]
         if args.limit_per_cat and args.limit_per_cat.strip():
@@ -551,31 +630,60 @@ def main() -> None:
         if args.per_source_cap is not None:
             per_source_cap = int(args.per_source_cap)
 
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, effective_hours))
-        entries = fetch_recent(conn, cutoff)
-        if categories_filter:
-            entries = [e for e in entries if (e.get("category") or "") in categories_filter]
-        # Apply source bonus and compute final_score
-        for e in entries:
-            eva = e.get("evaluation") or {}
-            if eva:
-                bonus = float(source_bonus.get(e.get("source", ""), 0.0))
-                if bonus:
-                    eva["bonus"] = bonus
-                score = compute_weighted_score(eva, weights)
-                if bonus:
-                    score = max(1.0, min(5.0, score + bonus))
-                e["final_score"] = round(score, 2)
-        entries = apply_limits(entries, limit_map, limit_default, per_source_cap)
+        articles = load_article_scores(conn)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, effective_hours))
+    entries: List[Dict[str, Any]] = []
+    seen_links: Set[str] = set()
+
+    for article in articles:
+        dt = try_parse_dt(article.get("publish", ""))
+        if not dt or dt < cutoff:
+            continue
+        category = article.get("category", "")
+        if categories_filter and category not in categories_filter:
+            continue
+        link = article.get("link", "").strip()
+        if not link:
+            continue
+        title = article.get("ai_summary", "").strip() or article.get("title", "").strip()
+        if not title:
+            continue
+        if link in seen_links:
+            continue
+        seen_links.add(link)
+        scores = {key: int(value) for key, value in article.get("scores", {}).items() if key in metric_keys}
+        weighted = compute_weighted_score(scores, weights)
+        if weighted <= 0:
+            continue
+        bonus = float(source_bonus.get(article.get("source", ""), 0.0))
+        if bonus:
+            weighted = round(max(1.0, min(5.0, weighted + bonus)), 2)
+        entry = {
+            "id": article["id"],
+            "category": category,
+            "source": article.get("source", ""),
+            "publish": article.get("publish", ""),
+            "title": title,
+            "link": link,
+            "scores": scores,
+            "ai_comment": article.get("ai_comment", ""),
+            "ai_summary": article.get("ai_summary", ""),
+            "final_score": weighted,
+            "bonus": bonus if bonus else None,
+        }
+        entries.append(entry)
 
     if not entries:
         print("没有符合条件的资讯，未生成文件")
         return
 
-    html = render_html(entries, effective_hours, weights)
-    if not html:
+    entries = apply_limits(entries, limit_map, limit_default, per_source_cap)
+    if not entries:
         print("没有符合条件的资讯，未生成文件")
         return
+
+    html = render_html(entries, effective_hours, weights, metrics)
     out_path.write_text(html, encoding="utf-8")
     print(f"已生成: {out_path}")
 

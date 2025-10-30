@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +45,21 @@ CREATE TABLE IF NOT EXISTS pipeline_writers (
   per_source_cap      INTEGER,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_writer_metric_weights (
+  pipeline_id INTEGER NOT NULL,
+  metric_id   INTEGER NOT NULL,
+  weight      REAL    NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id, metric_id),
+  FOREIGN KEY (pipeline_id) REFERENCES pipelines(id),
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wm_weights_pipeline
+  ON pipeline_writer_metric_weights (pipeline_id);
 
 -- Email 投递（单管线单投递）
 CREATE TABLE IF NOT EXISTS pipeline_deliveries_email (
@@ -174,6 +189,61 @@ def _limit_map_to_json(limit_map: Optional[Dict[str, int]]) -> Optional[str]:
     return json.dumps(limit_map, ensure_ascii=False)
 
 
+def _ensure_metric_key(conn: sqlite3.Connection, raw_key: Any) -> Optional[str]:
+    key = str(raw_key or "").strip()
+    if not key:
+        return None
+    row = conn.execute("SELECT key FROM ai_metrics WHERE key=?", (key,)).fetchone()
+    if row:
+        return str(row[0])
+    if key.isdigit():
+        row = conn.execute("SELECT key FROM ai_metrics WHERE id=?", (int(key),)).fetchone()
+        if row:
+            return str(row[0])
+    return None
+
+
+def _normalize_weights_json(conn: sqlite3.Connection, raw_value: Any) -> Optional[str]:
+    if raw_value is None:
+        return None
+    value = raw_value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            return s
+        else:
+            value = parsed
+    if isinstance(value, dict):
+        normalized: Dict[str, float] = {}
+        for key, val in value.items():
+            metric_key = _ensure_metric_key(conn, key)
+            if metric_key is None:
+                print(f"[WARN] 跳过未知指标权重 key={key!r}")
+                continue
+            try:
+                normalized[metric_key] = float(val)
+            except (TypeError, ValueError):
+                continue
+        return json.dumps(normalized, ensure_ascii=False)
+    return str(value)
+
+
+def _resolve_metric_id(conn: sqlite3.Connection, raw_key: Any) -> Optional[int]:
+    key = _ensure_metric_key(conn, raw_key)
+    if key is None:
+        return None
+    row = conn.execute("SELECT id FROM ai_metrics WHERE key=?", (key,)).fetchone()
+    if not row:
+        return None
+    return int(row[0])
+
+
 def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
     cur = conn.cursor()
     prow = cur.execute(
@@ -204,14 +274,38 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
     writer = {}
     if wrow:
         limit_map = _normalize_limit_map(wrow[4])
+        weights_raw = str(wrow[2] or "") or None
+        weights_payload: Optional[Any] = None
+        if weights_raw:
+            normalized = _normalize_weights_json(conn, weights_raw)
+            if normalized:
+                try:
+                    weights_payload = json.loads(normalized)
+                except json.JSONDecodeError:
+                    weights_payload = normalized
         writer = {
             "type": str(wrow[0] or ""),
             "hours": int(wrow[1] or 24),
-            "weights_json": str(wrow[2] or "") or None,
+            "weights_json": weights_payload,
             "bonus_json": str(wrow[3] or "") or None,
             "limit_per_category": limit_map,
             "per_source_cap": int(wrow[5]) if wrow[5] is not None else None,
         }
+        mrows = cur.execute(
+            """
+            SELECT m.key, w.weight, w.enabled
+            FROM pipeline_writer_metric_weights AS w
+            JOIN ai_metrics AS m ON m.id = w.metric_id
+            WHERE w.pipeline_id=?
+            ORDER BY m.sort_order ASC, m.id ASC
+            """,
+            (pid,),
+        ).fetchall()
+        if mrows:
+            writer["metric_weights"] = [
+                {"key": str(r[0]), "weight": float(r[1]), "enabled": int(r[2] or 0)}
+                for r in mrows
+            ]
     # delivery (email or feishu)
     drow = cur.execute(
         "SELECT email, subject_tpl FROM pipeline_deliveries_email WHERE pipeline_id=?",
@@ -289,6 +383,7 @@ def _get_or_create_pipeline(conn: sqlite3.Connection, name: str, enabled: int, d
             for t in (
                 "pipeline_filters",
                 "pipeline_writers",
+                "pipeline_writer_metric_weights",
                 "pipeline_deliveries_email",
                 "pipeline_deliveries_feishu",
             ):
@@ -377,6 +472,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                     for t in (
                         "pipeline_filters",
                         "pipeline_writers",
+                        "pipeline_writer_metric_weights",
                         "pipeline_deliveries_email",
                         "pipeline_deliveries_feishu",
                     ):
@@ -402,6 +498,7 @@ def cmd_import(args: argparse.Namespace) -> None:
             # writer
             w = it.get("writer") or {}
             limit_map = _normalize_limit_map(w.get("limit_per_category"))
+            weights_json_norm = _normalize_weights_json(conn, w.get("weights_json"))
             cur.execute(
                 "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
@@ -409,12 +506,41 @@ def cmd_import(args: argparse.Namespace) -> None:
                     str(w.get("type") or ""),
                     # Respect explicit zeros; default only when key missing
                     int(w["hours"]) if ("hours" in w and w.get("hours") is not None) else 24,
-                    _to_json_text(w.get("weights_json")),
+                    weights_json_norm,
                     _to_json_text(w.get("bonus_json")),
                     _limit_map_to_json(limit_map),
                     _to_optional_int(w.get("per_source_cap")),
                 ),
             )
+            metric_weights = w.get("metric_weights")
+            if args.mode == "replace":
+                cur.execute("DELETE FROM pipeline_writer_metric_weights WHERE pipeline_id=?", (pid,))
+            if isinstance(metric_weights, list):
+                rows_to_insert: List[Tuple[int, int, float, int]] = []
+                for mw in metric_weights:
+                    if not isinstance(mw, dict):
+                        continue
+                    metric_id = _resolve_metric_id(conn, mw.get("key"))
+                    if metric_id is None:
+                        print(f"[WARN] {name}: metric_weights 跳过未知指标 {mw.get('key')!r}")
+                        continue
+                    try:
+                        weight_val = float(mw.get("weight"))
+                    except (TypeError, ValueError):
+                        print(f"[WARN] {name}: metric_weights 无效权重 {mw.get('weight')!r}")
+                        continue
+                    enabled_flag = 1 if int(mw.get("enabled", 1) or 0) else 0
+                    rows_to_insert.append((pid, metric_id, weight_val, enabled_flag))
+                if rows_to_insert:
+                    cur.executemany(
+                        """
+                        INSERT OR REPLACE INTO pipeline_writer_metric_weights (pipeline_id, metric_id, weight, enabled)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        rows_to_insert,
+                    )
+            elif metric_weights:
+                print(f"[WARN] {name}: metric_weights 需为列表，已忽略")
             # delivery
             d = it.get("delivery") or {}
             kind = str(d.get("kind") or "").strip().lower()

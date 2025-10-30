@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { AutoComplete, Button, Card, Form, Input, InputNumber, Radio, Select, Space, Tabs, Typography, message } from 'antd'
+import { AutoComplete, Button, Card, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { createPipeline, fetchOptions, fetchPipeline, updatePipeline } from '../api'
+import { createPipeline, fetchFeishuChats, fetchOptions, fetchPipeline, updatePipeline } from '../api'
+import type { FeishuChat, MetricOption } from '../api'
+import type { ColumnsType } from 'antd/es/table'
+import type { FormListFieldData } from 'antd/es/form/FormList'
 
 type DeliveryKind = 'email' | 'feishu'
 
@@ -12,22 +15,17 @@ type BonusEntry = { source?: string; bonus?: number }
 
 const CATEGORY_LIMIT_DEFAULT = 10
 
-const WEIGHT_FIELDS = [
-  { key: 'timeliness', label: '时效性', defaultValue: 0.2 },
-  { key: 'game_relevance', label: '游戏相关度', defaultValue: 0.4 },
-  { key: 'mobile_game_relevance', label: '手游相关度', defaultValue: 0.2 },
-  { key: 'ai_relevance', label: 'AI相关度', defaultValue: 0.1 },
-  { key: 'tech_relevance', label: '科技相关度', defaultValue: 0.05 },
-  { key: 'quality', label: '质量', defaultValue: 0.25 },
-  { key: 'insight', label: '洞察', defaultValue: 0.35 },
-  { key: 'depth', label: '深度', defaultValue: 0.25 },
-  { key: 'novelty', label: '新颖度', defaultValue: 0.2 }
-] as const
-
-const DEFAULT_WEIGHT_VALUES: Record<string, number> = WEIGHT_FIELDS.reduce(
-  (acc, cur) => ({ ...acc, [cur.key]: cur.defaultValue }),
-  {}
-)
+const FALLBACK_METRICS: MetricOption[] = [
+  { key: 'timeliness', label_zh: '时效性', default_weight: 0.14, sort_order: 10 },
+  { key: 'game_relevance', label_zh: '游戏相关性', default_weight: 0.2, sort_order: 20 },
+  { key: 'mobile_game_relevance', label_zh: '手游相关性', default_weight: 0.09, sort_order: 30 },
+  { key: 'ai_relevance', label_zh: 'AI相关性', default_weight: 0.14, sort_order: 40 },
+  { key: 'tech_relevance', label_zh: '科技相关性', default_weight: 0.11, sort_order: 50 },
+  { key: 'quality', label_zh: '文章质量', default_weight: 0.13, sort_order: 60 },
+  { key: 'insight', label_zh: '洞察力', default_weight: 0.08, sort_order: 70 },
+  { key: 'depth', label_zh: '深度', default_weight: 0.06, sort_order: 80 },
+  { key: 'novelty', label_zh: '新颖度', default_weight: 0.05, sort_order: 90 }
+]
 
 const BONUS_SUGGESTIONS = [
   { key: 'openai.research', label: 'OpenAI Research', defaultValue: 3 },
@@ -46,6 +44,20 @@ const filterAutoCompleteOption = (input: string, option?: { value: string; label
   if (!normalized) return true
   const labelText = option.label ? option.label.toLowerCase() : ''
   return option.value.toLowerCase().includes(normalized) || labelText.includes(normalized)
+}
+
+const SUBJECT_DATE_TOKENS = ['${date_zh}', '$(date_zh)', '${data_zh}', '$(data_zh)'] as const
+const DEFAULT_SUBJECT_DATE_TOKEN = '${date_zh}'
+
+function stripDateToken(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const withoutTokens = SUBJECT_DATE_TOKENS.reduce((acc, token) => acc.split(token).join(''), value)
+  return withoutTokens.trim()
+}
+
+function buildSubjectTemplate(value: unknown): string {
+  const stripped = stripDateToken(value)
+  return stripped ? `${stripped}${DEFAULT_SUBJECT_DATE_TOKEN}` : DEFAULT_SUBJECT_DATE_TOKEN
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -87,14 +99,15 @@ function normalizeLimitForForm(limit: unknown): { defaultValue: number; override
   return { defaultValue, overrides }
 }
 
-function normalizeWeightsForForm(weights: unknown): WeightEntry[] {
+function normalizeWeightsForForm(weights: unknown, metrics: MetricOption[]): WeightEntry[] {
   const result: WeightEntry[] = []
   const provided = weights && typeof weights === 'object' ? (weights as Record<string, unknown>) : {}
   const seen = new Set<string>()
 
-  WEIGHT_FIELDS.forEach(({ key, defaultValue }) => {
+  metrics.forEach(({ key, default_weight }) => {
     const numeric = toNumber(provided[key])
-    result.push({ metric: key, weight: typeof numeric === 'number' ? numeric : defaultValue })
+    const fallback = typeof default_weight === 'number' ? default_weight : 0
+    result.push({ metric: key, weight: typeof numeric === 'number' ? numeric : fallback })
     seen.add(key)
   })
 
@@ -164,13 +177,24 @@ export default function PipelineForm() {
   const [form] = Form.useForm()
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
-  const [options, setOptions] = useState<{ categories: string[]; writer_types: string[]; delivery_kinds: string[] }>({
+  const [options, setOptions] = useState<{
+    categories: string[]
+    writer_types: string[]
+    delivery_kinds: string[]
+    metrics: MetricOption[]
+  }>({
     categories: [],
     writer_types: [],
-    delivery_kinds: []
+    delivery_kinds: [],
+    metrics: FALLBACK_METRICS
   })
   const [deliveryKind, setDeliveryKind] = useState<DeliveryKind>('email')
+  const [feishuChats, setFeishuChats] = useState<FeishuChat[]>([])
+  const [fetchingFeishuChats, setFetchingFeishuChats] = useState(false)
+  const [optionsReady, setOptionsReady] = useState(false)
   const limitOverrides = Form.useWatch<LimitOverride[]>(["writer", "limit_per_category_overrides"], form)
+  const toAllChatValue = Form.useWatch<number | undefined>(["delivery", "to_all_chat"], form)
+  const metrics = options.metrics.length ? options.metrics : FALLBACK_METRICS
 
   const initialFormValues = useMemo(
     () => ({
@@ -181,19 +205,22 @@ export default function PipelineForm() {
         limit_per_category_default: CATEGORY_LIMIT_DEFAULT,
         limit_per_category_overrides: [],
         per_source_cap: 3,
-        weights_entries: normalizeWeightsForForm(DEFAULT_WEIGHT_VALUES),
+        weights_entries: normalizeWeightsForForm(undefined, metrics),
         bonus_entries: normalizeBonusForForm(DEFAULT_BONUS_VALUES)
+      },
+      delivery: {
+        to_all_chat: 1
       }
     }),
-    []
+    [metrics]
   )
   const weightSuggestions = useMemo(
     () =>
-      WEIGHT_FIELDS.map((item) => ({
+      metrics.map((item) => ({
         value: item.key,
-        label: `${item.label} (${item.key})`
+        label: `${item.label_zh || item.key} (${item.key})`
       })),
-    []
+    [metrics]
   )
   const bonusSuggestions = useMemo(
     () =>
@@ -203,13 +230,74 @@ export default function PipelineForm() {
       })),
     []
   )
+  const feishuChatOptions = useMemo(
+    () =>
+      feishuChats.map((chat) => ({
+        value: chat.chat_id,
+        label: chat.name && chat.name !== chat.chat_id ? `${chat.name} (${chat.chat_id})` : chat.chat_id
+      })),
+    [feishuChats]
+  )
 
   useEffect(() => {
-    fetchOptions().then(setOptions)
-  }, [])
+    let mounted = true
+    fetchOptions()
+      .then((data) => {
+        if (!mounted) return
+        const metricList = Array.isArray(data.metrics) ? data.metrics : []
+        const sanitizedMetrics = metricList
+          .filter((item): item is MetricOption => !!item && typeof item === 'object' && typeof item.key === 'string')
+          .map((item, idx) => ({
+            key: item.key.trim(),
+            label_zh: item.label_zh || item.key.trim(),
+            default_weight: typeof item.default_weight === 'number' ? item.default_weight : undefined,
+            sort_order: typeof item.sort_order === 'number' ? item.sort_order : idx
+          }))
+        const sortedMetrics = sanitizedMetrics.length
+          ? [...sanitizedMetrics].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+          : FALLBACK_METRICS
+        setOptions({
+          categories: Array.isArray(data.categories) ? data.categories : [],
+          writer_types: Array.isArray(data.writer_types) ? data.writer_types : [],
+          delivery_kinds: Array.isArray(data.delivery_kinds) ? data.delivery_kinds : [],
+          metrics: sortedMetrics
+        })
+        if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
+          form.setFieldsValue({
+            writer: {
+              weights_entries: normalizeWeightsForForm(undefined, sortedMetrics)
+            }
+          })
+        }
+      })
+      .catch(() => {
+        if (!mounted) return
+        setOptions({
+          categories: [],
+          writer_types: [],
+          delivery_kinds: [],
+          metrics: FALLBACK_METRICS
+        })
+        if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
+          form.setFieldsValue({
+            writer: {
+              weights_entries: normalizeWeightsForForm(undefined, FALLBACK_METRICS)
+            }
+          })
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setOptionsReady(true)
+        }
+      })
+    return () => {
+      mounted = false
+    }
+  }, [editing, form])
 
   useEffect(() => {
-    if (!editing) return
+    if (!editing || !optionsReady) return
     setLoading(true)
     fetchPipeline(Number(id))
       .then((data) => {
@@ -218,7 +306,7 @@ export default function PipelineForm() {
         const { defaultValue, overrides } = normalizeLimitForForm(w?.limit_per_category)
         writerPatched.limit_per_category_default = defaultValue
         writerPatched.limit_per_category_overrides = overrides
-        writerPatched.weights_entries = normalizeWeightsForForm(w?.weights_json ?? DEFAULT_WEIGHT_VALUES)
+        writerPatched.weights_entries = normalizeWeightsForForm(w?.weights_json ?? {}, metrics)
         writerPatched.bonus_entries = normalizeBonusForForm(w?.bonus_json ?? DEFAULT_BONUS_VALUES)
         delete writerPatched.limit_per_category
         delete writerPatched.weights_json
@@ -229,16 +317,66 @@ export default function PipelineForm() {
         if (typeof writerPatched.hours === 'undefined' || writerPatched.hours === null) {
           writerPatched.hours = 24
         }
+        const deliveryForForm = data.delivery ? { ...data.delivery } : undefined
+        if (deliveryForForm?.kind === 'email') {
+          deliveryForForm.subject_tpl = stripDateToken(deliveryForForm.subject_tpl)
+        }
         form.setFieldsValue({
           pipeline: data.pipeline,
           filters: data.filters || { all_categories: 1 },
           writer: writerPatched,
-          delivery: data.delivery
+          delivery: deliveryForForm
         })
-        if (data.delivery?.kind) setDeliveryKind(data.delivery.kind)
+        if (deliveryForForm?.kind) setDeliveryKind(deliveryForForm.kind as DeliveryKind)
       })
       .finally(() => setLoading(false))
-  }, [id])
+  }, [editing, id, metrics, optionsReady])
+
+  useEffect(() => {
+    if (deliveryKind !== 'feishu') {
+      setFeishuChats([])
+      if (form.getFieldValue(["delivery", "chat_id"])) {
+        form.setFieldValue(["delivery", "chat_id"], undefined)
+      }
+    }
+  }, [deliveryKind, form])
+
+  useEffect(() => {
+    if (deliveryKind !== 'feishu') return
+    const sendToAll = toAllChatValue === 1 || typeof toAllChatValue === 'undefined'
+    if (!sendToAll) return
+    if (form.getFieldValue(["delivery", "chat_id"])) {
+      form.setFieldValue(["delivery", "chat_id"], undefined)
+    }
+  }, [deliveryKind, form, toAllChatValue])
+
+  const handleFetchFeishuChats = useCallback(async () => {
+    const appId = (form.getFieldValue(["delivery", "app_id"]) as string | undefined)?.trim() || ''
+    const appSecret = (form.getFieldValue(["delivery", "app_secret"]) as string | undefined)?.trim() || ''
+    if (!appId || !appSecret) {
+      message.warning('请先填写 App ID 和 App Secret')
+      return
+    }
+    setFetchingFeishuChats(true)
+    try {
+      const chats = await fetchFeishuChats({ app_id: appId, app_secret: appSecret })
+      setFeishuChats(chats)
+      if (!chats.length) {
+        message.info('未获取到群信息')
+      }
+      const current = form.getFieldValue(["delivery", "chat_id"])
+      if (current && !chats.some((chat) => chat.chat_id === current)) {
+        form.setFieldValue(["delivery", "chat_id"], undefined)
+      } else if (!current && chats.length === 1) {
+        form.setFieldValue(["delivery", "chat_id"], chats[0].chat_id)
+      }
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail
+      message.error(detail || '获取群信息失败，请检查凭证')
+    } finally {
+      setFetchingFeishuChats(false)
+    }
+  }, [form])
 
   const onSubmit = async () => {
     const values = await form.validateFields()
@@ -279,10 +417,15 @@ export default function PipelineForm() {
         delete writerValues.bonus_entries
       }
 
+      const deliveryValues = values.delivery ? { ...values.delivery } : undefined
+      if (deliveryValues && deliveryKind === 'email') {
+        deliveryValues.subject_tpl = buildSubjectTemplate(deliveryValues.subject_tpl)
+      }
+
       const payload = {
         ...values,
         writer: writerValues,
-        delivery: values.delivery ? { kind: deliveryKind, ...values.delivery } : undefined
+        delivery: deliveryValues ? { kind: deliveryKind, ...deliveryValues } : undefined
       }
       if (editing) {
         await updatePipeline(Number(id), payload)
@@ -299,19 +442,31 @@ export default function PipelineForm() {
     }
   }
 
-  const deliveryFields = useMemo(() => {
+  const renderDeliveryFields = () => {
     if (deliveryKind === 'email') {
       return (
         <Space direction="vertical" style={{ width: '100%' }}>
           <Form.Item name={["delivery", "email"]} label="收件邮箱" rules={[{ required: true }]}>
             <Input placeholder="example@domain.com" />
           </Form.Item>
-          <Form.Item name={["delivery", "subject_tpl"]} label="主题模板">
-            <Input placeholder="${date_zh}整合" />
+          <Form.Item
+            name={["delivery", "subject_tpl"]}
+            label="邮件标题"
+            extra="系统会在末尾自动追加当天日期，无需手动填写变量"
+          >
+            <Input placeholder="整合" />
           </Form.Item>
         </Space>
       )
     }
+
+    const sendToAll = toAllChatValue === 1 || typeof toAllChatValue === 'undefined'
+    const currentChatId = form.getFieldValue(["delivery", "chat_id"]) as string | undefined
+    const selectOptions =
+      currentChatId && !feishuChatOptions.some((item) => item.value === currentChatId)
+        ? [{ value: currentChatId, label: currentChatId }, ...feishuChatOptions]
+        : feishuChatOptions
+
     return (
       <Space direction="vertical" style={{ width: '100%' }}>
         <Form.Item name={["delivery", "app_id"]} label="App ID" rules={[{ required: true }]}>
@@ -326,15 +481,40 @@ export default function PipelineForm() {
             <Radio value={0}>否</Radio>
           </Radio.Group>
         </Form.Item>
-        <Form.Item name={["delivery", "chat_id"]} label="Chat ID">
-          <Input placeholder="留空=所有所在群" />
-        </Form.Item>
-        <Form.Item name={["delivery", "title_tpl"]} label="标题模板">
+        {!sendToAll && (
+          <Form.Item
+            label="Chat ID"
+            required
+            extra={feishuChats.length ? '仅投递到选中的群聊' : '点击右侧按钮拉取机器人所在群'}
+          >
+            <Space align="baseline" wrap>
+              <Form.Item
+                noStyle
+                name={["delivery", "chat_id"]}
+                rules={[{ required: true, message: '请选择群聊' }]}
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  placeholder="请选择群聊"
+                  options={selectOptions}
+                  optionFilterProp="label"
+                  loading={fetchingFeishuChats}
+                  style={{ minWidth: 260 }}
+                />
+              </Form.Item>
+              <Button type="default" onClick={handleFetchFeishuChats} loading={fetchingFeishuChats}>
+                获取机器人所在群信息
+              </Button>
+            </Space>
+          </Form.Item>
+        )}
+        <Form.Item name={["delivery", "title_tpl"]} label="卡片标题">
           <Input placeholder="通知" />
         </Form.Item>
       </Space>
     )
-  }, [deliveryKind])
+  }
 
   return (
     <Card loading={loading}>
@@ -490,50 +670,134 @@ export default function PipelineForm() {
                         调整取稿时的排序权重，可修改默认值或新增自定义指标。
                       </Typography.Text>
                       <Form.List name={["writer", "weights_entries"]}>
-                        {(fields, { add, remove }) => (
-                          <Space direction="vertical" style={{ width: '100%' }} size="small">
-                            {fields.map((field) => (
-                              <Space key={field.key} align="baseline" wrap>
-                                <Form.Item
-                                  {...field}
-                                  name={[field.name, 'metric']}
-                                  fieldKey={`${field.fieldKey}-metric`}
-                                  rules={[{ required: true, message: '请输入指标名称' }]}
-                                >
-                                  <AutoComplete
-                                    options={weightSuggestions}
-                                    filterOption={filterAutoCompleteOption}
-                                    placeholder="timeliness"
+                        {(fields, { add, remove }) => {
+                          const entries =
+                            (form.getFieldValue(["writer", "weights_entries"]) as WeightEntry[] | undefined) ?? []
+                          const selectedMetrics = new Set(
+                            entries
+                              .map((entry) =>
+                                entry && typeof entry.metric === 'string' && entry.metric.trim()
+                                  ? entry.metric.trim()
+                                  : undefined
+                              )
+                              .filter((key): key is string => !!key)
+                          )
+                          const availableMetrics = metrics.filter((item) => !selectedMetrics.has(item.key.trim()))
+                          const dataSource = fields.map((field) => ({ key: field.key, field }))
+                          const columns: ColumnsType<{ field: FormListFieldData }> = [
+                            {
+                              title: '指标',
+                              dataIndex: 'field',
+                              key: 'metric',
+                              render: (_, { field }) => {
+                                const rawMetric =
+                                  entries?.[field.name] && typeof entries[field.name]?.metric === 'string'
+                                    ? entries[field.name]?.metric
+                                    : undefined
+                                const currentMetric =
+                                  typeof rawMetric === 'string' && rawMetric.trim() ? rawMetric.trim() : undefined
+                                const usedByOthers = new Set<string>()
+                                entries.forEach((entry, idx) => {
+                                  if (idx === field.name) return
+                                  if (entry && typeof entry.metric === 'string' && entry.metric.trim()) {
+                                    usedByOthers.add(entry.metric.trim())
+                                  }
+                                })
+                                const baseOptions = weightSuggestions.filter(
+                                  (option) => option.value === currentMetric || !usedByOthers.has(option.value)
+                                )
+                                const options = baseOptions.map((option) => ({
+                                  value: option.value,
+                                  label: option.label
+                                }))
+                                if (
+                                  typeof currentMetric === 'string' &&
+                                  currentMetric &&
+                                  !options.some((opt) => opt.value === currentMetric)
+                                ) {
+                                  options.unshift({ value: currentMetric, label: currentMetric })
+                                }
+                                return (
+                                  <Form.Item
+                                    name={[field.name, 'metric']}
+                                    fieldKey={`${field.key}-metric`}
+                                    rules={[{ required: true, message: '请选择指标' }]}
+                                    style={{ marginBottom: 0 }}
                                   >
-                                    <Input placeholder="timeliness" style={{ minWidth: 200 }} />
-                                  </AutoComplete>
-                                </Form.Item>
+                                    <Select
+                                      showSearch
+                                      optionFilterProp="label"
+                                      placeholder="请选择指标"
+                                      options={options}
+                                      style={{ minWidth: 220 }}
+                                    />
+                                  </Form.Item>
+                                )
+                              }
+                            },
+                            {
+                              title: '权重',
+                              dataIndex: 'field',
+                              key: 'weight',
+                              render: (_, { field }) => (
                                 <Form.Item
-                                  {...field}
                                   name={[field.name, 'weight']}
-                                  fieldKey={`${field.fieldKey}-weight`}
+                                  fieldKey={`${field.key}-weight`}
                                   rules={[{ required: true, message: '请输入权重' }]}
+                                  style={{ marginBottom: 0 }}
                                 >
-                                  <InputNumber min={0} step={0.05} />
+                                  <InputNumber min={0} step={0.05} style={{ width: '100%' }} />
                                 </Form.Item>
+                              )
+                            },
+                            {
+                              title: '操作',
+                              dataIndex: 'actions',
+                              key: 'actions',
+                              align: 'center',
+                              width: 80,
+                              render: (_, { field }) => (
                                 <Button
                                   type="text"
                                   danger
                                   icon={<MinusCircleOutlined />}
                                   onClick={() => remove(field.name)}
                                 />
-                              </Space>
-                            ))}
-                            <Button
-                              type="dashed"
-                              icon={<PlusOutlined />}
-                              onClick={() => add({ weight: 0.1 })}
-                              style={{ width: 'fit-content' }}
-                            >
-                              添加指标
-                            </Button>
-                          </Space>
-                        )}
+                              )
+                            }
+                          ]
+                          const handleAddMetric = () => {
+                            const next = availableMetrics[0]
+                            if (!next) return
+                            const metricKey = typeof next.key === 'string' ? next.key.trim() : next.key
+                            add({
+                              metric: metricKey,
+                              weight: typeof next.default_weight === 'number' ? next.default_weight : 0.1
+                            })
+                          }
+                          return (
+                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="key"
+                                dataSource={dataSource}
+                                columns={columns}
+                                tableLayout="fixed"
+                                locale={{ emptyText: '暂无指标' }}
+                              />
+                              <Button
+                                type="dashed"
+                                icon={<PlusOutlined />}
+                                onClick={handleAddMetric}
+                                disabled={!availableMetrics.length}
+                                style={{ width: 'fit-content' }}
+                              >
+                                添加指标
+                              </Button>
+                            </Space>
+                          )
+                        }}
                       </Form.List>
                     </Space>
                   </Form.Item>
@@ -543,50 +807,121 @@ export default function PipelineForm() {
                         为特定来源加分，正数代表额外加权。
                       </Typography.Text>
                       <Form.List name={["writer", "bonus_entries"]}>
-                        {(fields, { add, remove }) => (
-                          <Space direction="vertical" style={{ width: '100%' }} size="small">
-                            {fields.map((field) => (
-                              <Space key={field.key} align="baseline" wrap>
-                                <Form.Item
-                                  {...field}
-                                  name={[field.name, 'source']}
-                                  fieldKey={`${field.fieldKey}-source`}
-                                  rules={[{ required: true, message: '请输入来源标识' }]}
-                                >
-                                  <AutoComplete
-                                    options={bonusSuggestions}
-                                    filterOption={filterAutoCompleteOption}
-                                    placeholder="openai.research"
+                        {(fields, { add, remove }) => {
+                          const entries =
+                            (form.getFieldValue(["writer", "bonus_entries"]) as BonusEntry[] | undefined) ?? []
+                          const selectedSources = new Set(
+                            entries
+                              .map((entry) => (entry && typeof entry.source === 'string' ? entry.source.trim() : undefined))
+                              .filter((key): key is string => !!key)
+                          )
+                          const dataSource = fields.map((field) => ({ key: field.key, field }))
+                          const columns: ColumnsType<{ field: FormListFieldData }> = [
+                            {
+                              title: '来源',
+                              dataIndex: 'field',
+                              key: 'source',
+                              render: (_, { field }) => {
+                                const currentSource =
+                                  (entries?.[field.name] && typeof entries[field.name]?.source === 'string'
+                                    ? entries[field.name]?.source
+                                    : undefined) ?? undefined
+                                const usedByOthers = new Set<string>()
+                                entries.forEach((entry, idx) => {
+                                  if (idx === field.name) return
+                                  if (entry && typeof entry.source === 'string' && entry.source.trim()) {
+                                    usedByOthers.add(entry.source.trim())
+                                  }
+                                })
+                                const baseOptions = bonusSuggestions
+                                  .filter((option) => option.value === currentSource || !usedByOthers.has(option.value))
+                                  .map((option) => ({ value: option.value, label: option.label }))
+                                if (
+                                  typeof currentSource === 'string' &&
+                                  currentSource &&
+                                  !baseOptions.some((opt) => opt.value === currentSource)
+                                ) {
+                                  baseOptions.unshift({ value: currentSource, label: currentSource })
+                                }
+                                return (
+                                  <Form.Item
+                                    name={[field.name, 'source']}
+                                    fieldKey={`${field.key}-source`}
+                                    rules={[{ required: true, message: '请输入来源标识' }]}
+                                    style={{ marginBottom: 0 }}
                                   >
-                                    <Input placeholder="openai.research" style={{ minWidth: 200 }} />
-                                  </AutoComplete>
-                                </Form.Item>
+                                    <AutoComplete
+                                      options={baseOptions}
+                                      filterOption={filterAutoCompleteOption}
+                                      placeholder="openai.research"
+                                    >
+                                      <Input placeholder="openai.research" style={{ minWidth: 200 }} />
+                                    </AutoComplete>
+                                  </Form.Item>
+                                )
+                              }
+                            },
+                            {
+                              title: '加权',
+                              dataIndex: 'field',
+                              key: 'bonus',
+                              render: (_, { field }) => (
                                 <Form.Item
-                                  {...field}
                                   name={[field.name, 'bonus']}
-                                  fieldKey={`${field.fieldKey}-bonus`}
+                                  fieldKey={`${field.key}-bonus`}
                                   rules={[{ required: true, message: '请输入加权分值' }]}
+                                  style={{ marginBottom: 0 }}
                                 >
                                   <InputNumber step={0.5} />
                                 </Form.Item>
+                              )
+                            },
+                            {
+                              title: '操作',
+                              dataIndex: 'actions',
+                              key: 'actions',
+                              align: 'center',
+                              width: 80,
+                              render: (_, { field }) => (
                                 <Button
                                   type="text"
                                   danger
                                   icon={<MinusCircleOutlined />}
                                   onClick={() => remove(field.name)}
                                 />
-                              </Space>
-                            ))}
-                            <Button
-                              type="dashed"
-                              icon={<PlusOutlined />}
-                              onClick={() => add({ bonus: 1 })}
-                              style={{ width: 'fit-content' }}
-                            >
-                              添加来源
-                            </Button>
-                          </Space>
-                        )}
+                              )
+                            }
+                          ]
+                          const handleAddSource = () => {
+                            const suggestion = BONUS_SUGGESTIONS.find((item) => !selectedSources.has(item.key))
+                            if (suggestion) {
+                              add({ source: suggestion.key, bonus: suggestion.defaultValue })
+                            } else {
+                              add({ bonus: 1 })
+                            }
+                          }
+                          return (
+                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="key"
+                                dataSource={dataSource}
+                                columns={columns}
+                                tableLayout="fixed"
+                                locale={{ emptyText: '暂无来源' }}
+                              />
+                              <Button
+                                type="dashed"
+                                icon={<PlusOutlined />}
+                                onClick={handleAddSource}
+                                style={{ width: 'fit-content' }}
+                              >
+                                添加来源
+                              </Button>
+                            </Space>
+                          )
+                        }}
                       </Form.List>
                     </Space>
                   </Form.Item>
@@ -602,7 +937,7 @@ export default function PipelineForm() {
                     <Radio value="email">Email</Radio>
                     <Radio value="feishu">Feishu</Radio>
                   </Radio.Group>
-                  {deliveryFields}
+                  {renderDeliveryFields()}
                 </Space>
               )
             }

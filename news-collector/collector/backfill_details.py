@@ -53,10 +53,40 @@ def _scan_sources() -> Dict[str, Path]:
     return mapping
 
 
-def discover_fetchers() -> Dict[str, Fetcher]:
+def _load_sources_from_db(db_path: Path) -> Dict[str, Path]:
+    mapping: Dict[str, Path] = {}
+    if not db_path.exists():
+        return mapping
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except Exception:
+        return mapping
+    try:
+        rows = conn.execute(
+            "SELECT key, script_path FROM sources WHERE script_path IS NOT NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return mapping
+    finally:
+        conn.close()
+
+    for key, script_path in rows:
+        key_str = str(key or "").strip()
+        path_str = str(script_path or "").strip()
+        if not (key_str and path_str):
+            continue
+        path = Path(path_str)
+        if not path.is_absolute():
+            path = (PROJECT_ROOT.parent / path_str).resolve()
+        mapping[key_str] = path
+    return mapping
+
+
+def discover_fetchers(source_to_path: Dict[str, Path]) -> Dict[str, Fetcher]:
     mapping: Dict[str, Fetcher] = {}
-    by_source = _scan_sources()
-    for src, path in by_source.items():
+    for src, path in source_to_path.items():
+        if not path.exists():
+            continue
         try:
             mod = _load_module(path)
         except Exception:
@@ -83,14 +113,20 @@ def main() -> None:
     if not db_path.exists():
         raise SystemExit(f"数据库不存在: {db_path}")
 
-    fetchers = discover_fetchers()
-    if not fetchers:
-        print("未发现任何可用的 fetch_article_detail 函数（可能是依赖未安装，但将尝试按需导入）")
-        # Fallback to on-demand import using textual SOURCE mapping
-        source_to_path = _scan_sources()
-    else:
+    source_to_path = _load_sources_from_db(db_path)
+    fetchers = discover_fetchers(source_to_path)
+    if fetchers:
         print(f"发现可用来源: {', '.join(sorted(fetchers))}")
-        source_to_path = {}
+    else:
+        print("未发现任何可用的 fetch_article_detail 函数（尝试扫描 scraping 目录 以获取路径映射）")
+        fallback = _scan_sources()
+        for src, path in fallback.items():
+            source_to_path.setdefault(src, path)
+        fetchers = discover_fetchers(source_to_path)
+        if fetchers:
+            print(f"发现可用来源: {', '.join(sorted(fetchers))}")
+        else:
+            print("仍未解析到 fetch_article_detail；后续将按需导入相关脚本")
 
     conn = sqlite3.connect(str(db_path))
     try:

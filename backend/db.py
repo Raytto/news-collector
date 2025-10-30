@@ -2,15 +2,59 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "info.db"
 
+DATE_PLACEHOLDER_VARIANTS = ("${date_zh}", "$(date_zh)", "${data_zh}", "$(data_zh)")
+DEFAULT_DATE_PLACEHOLDER = "${date_zh}"
+
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS categories (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  key        TEXT NOT NULL UNIQUE,
+  label_zh   TEXT NOT NULL,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sources (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  category_key TEXT NOT NULL,
+  script_path  TEXT NOT NULL,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (category_key) REFERENCES categories(key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sources_enabled
+  ON sources (enabled);
+
+CREATE INDEX IF NOT EXISTS idx_sources_category
+  ON sources (category_key, enabled);
+
+CREATE TABLE IF NOT EXISTS source_address (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id  INTEGER NOT NULL,
+  address    TEXT NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_source_address_source
+  ON source_address (source_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_source_address_unique
+  ON source_address (source_id, address);
+
 CREATE TABLE IF NOT EXISTS pipelines (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL UNIQUE,
@@ -39,6 +83,21 @@ CREATE TABLE IF NOT EXISTS pipeline_writers (
   per_source_cap      INTEGER,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+CREATE TABLE IF NOT EXISTS pipeline_writer_metric_weights (
+  pipeline_id INTEGER NOT NULL,
+  metric_id   INTEGER NOT NULL,
+  weight      REAL    NOT NULL,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id, metric_id),
+  FOREIGN KEY (pipeline_id) REFERENCES pipelines(id),
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_wm_weights_pipeline
+  ON pipeline_writer_metric_weights (pipeline_id);
 
 CREATE TABLE IF NOT EXISTS pipeline_deliveries_email (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,16 +136,20 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 """
 
 # Defaults aligned with writers (email_writer.py / feishu_writer.py)
+DEFAULT_METRICS: Tuple[Dict[str, object], ...] = (
+    {"key": "timeliness", "label_zh": "时效性", "default_weight": 0.14, "sort_order": 10},
+    {"key": "game_relevance", "label_zh": "游戏相关性", "default_weight": 0.20, "sort_order": 20},
+    {"key": "mobile_game_relevance", "label_zh": "手游相关性", "default_weight": 0.09, "sort_order": 30},
+    {"key": "ai_relevance", "label_zh": "AI相关性", "default_weight": 0.14, "sort_order": 40},
+    {"key": "tech_relevance", "label_zh": "科技相关性", "default_weight": 0.11, "sort_order": 50},
+    {"key": "quality", "label_zh": "文章质量", "default_weight": 0.13, "sort_order": 60},
+    {"key": "insight", "label_zh": "洞察力", "default_weight": 0.08, "sort_order": 70},
+    {"key": "depth", "label_zh": "深度", "default_weight": 0.06, "sort_order": 80},
+    {"key": "novelty", "label_zh": "新颖度", "default_weight": 0.05, "sort_order": 90},
+)
+
 DEFAULT_WEIGHTS: Dict[str, float] = {
-    "timeliness": 0.20,
-    "game_relevance": 0.40,
-    "mobile_game_relevance": 0.20,
-    "ai_relevance": 0.10,
-    "tech_relevance": 0.05,
-    "quality": 0.25,
-    "insight": 0.35,
-    "depth": 0.25,
-    "novelty": 0.20,
+    str(metric["key"]): float(metric.get("default_weight") or 0.0) for metric in DEFAULT_METRICS
 }
 
 DEFAULT_SOURCE_BONUS: Dict[str, float] = {
@@ -94,6 +157,8 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
     "deepmind": 1.0,
     "qbitai-zhiku": 2.0,
 }
+
+_MISSING = object()
 
 
 def ensure_db() -> None:
@@ -113,6 +178,7 @@ def ensure_db() -> None:
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -154,6 +220,137 @@ def _limit_map_to_json(limit_map: Optional[Dict[str, int]]) -> Optional[str]:
     if limit_map is None:
         return None
     return json.dumps(limit_map, ensure_ascii=False)
+
+
+def _normalize_email_subject_tpl(value: Any) -> str:
+    raw = str(value or "")
+    for placeholder in DATE_PLACEHOLDER_VARIANTS:
+        raw = raw.replace(placeholder, "")
+    stripped = raw.strip()
+    if not stripped:
+        return DEFAULT_DATE_PLACEHOLDER
+    return f"{stripped}{DEFAULT_DATE_PLACEHOLDER}"
+
+
+def _ensure_metric_key(conn: sqlite3.Connection, raw_key: Any) -> Optional[str]:
+    key = str(raw_key or "").strip()
+    if not key:
+        return None
+    row = conn.execute("SELECT key FROM ai_metrics WHERE key=?", (key,)).fetchone()
+    if row:
+        return str(row[0])
+    if key.isdigit():
+        row = conn.execute("SELECT key FROM ai_metrics WHERE id=?", (int(key),)).fetchone()
+        if row:
+            return str(row[0])
+    return None
+
+
+def _normalize_weights_json(conn: sqlite3.Connection, raw_value: Any) -> Optional[str]:
+    if raw_value is None:
+        return None
+    value = raw_value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            return s
+        else:
+            value = parsed
+    if isinstance(value, dict):
+        normalized: Dict[str, float] = {}
+        for key, val in value.items():
+            metric_key = _ensure_metric_key(conn, key)
+            if metric_key is None:
+                print(f"[WARN] normalize_weights_json: 跳过未知指标 {key!r}")
+                continue
+            try:
+                normalized[metric_key] = float(val)
+            except (TypeError, ValueError):
+                continue
+        return json.dumps(normalized, ensure_ascii=False)
+    return str(value)
+
+
+def _resolve_metric_id(conn: sqlite3.Connection, raw_key: Any) -> Optional[int]:
+    key = _ensure_metric_key(conn, raw_key)
+    if key is None:
+        return None
+    row = conn.execute("SELECT id FROM ai_metrics WHERE key=?", (key,)).fetchone()
+    if not row:
+        return None
+    return int(row[0])
+
+
+def _load_metric_defaults(conn: sqlite3.Connection) -> Dict[str, float]:
+    metrics = _list_active_metrics(conn)
+    return {
+        metric["key"]: float(metric.get("default_weight") or 0.0)
+        for metric in metrics
+    }
+
+
+def _list_active_metrics(conn: sqlite3.Connection) -> list[dict]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT key, label_zh, default_weight, sort_order
+            FROM ai_metrics
+            WHERE active = 1
+            ORDER BY sort_order ASC, id ASC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return [
+            {
+                "key": str(metric["key"]),
+                "label_zh": str(metric["label_zh"]),
+                "default_weight": float(metric.get("default_weight") or 0.0),
+                "sort_order": int(metric.get("sort_order") or 0),
+            }
+            for metric in DEFAULT_METRICS
+        ]
+    if not rows:
+        return [
+            {
+                "key": str(metric["key"]),
+                "label_zh": str(metric["label_zh"]),
+                "default_weight": float(metric.get("default_weight") or 0.0),
+                "sort_order": int(metric.get("sort_order") or 0),
+            }
+            for metric in DEFAULT_METRICS
+        ]
+    return [
+        {
+            "key": str(row[0]),
+            "label_zh": str(row[1]),
+            "default_weight": float(row[2] or 0.0),
+            "sort_order": int(row[3] or 0),
+        }
+        for row in rows
+    ]
+
+
+def _fetch_metric_weights(conn: sqlite3.Connection, pipeline_id: int) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT m.key, w.weight, w.enabled
+        FROM pipeline_writer_metric_weights AS w
+        JOIN ai_metrics AS m ON m.id = w.metric_id
+        WHERE w.pipeline_id=?
+        ORDER BY m.sort_order ASC, m.id ASC
+        """,
+        (pipeline_id,),
+    ).fetchall()
+    return [
+        {"key": str(row[0]), "weight": float(row[1]), "enabled": int(row[2] or 0)}
+        for row in rows
+    ]
 
 
 def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
@@ -230,13 +427,27 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
 
     writer = None
     if w:
+        defaults = _load_metric_defaults(conn)
+        normalized_weights = _normalize_weights_json(conn, w[2])
+        weights_dict: Dict[str, float]
+        if normalized_weights:
+            try:
+                weights_dict = json.loads(normalized_weights)
+            except json.JSONDecodeError:
+                weights_dict = defaults.copy()
+            else:
+                if not isinstance(weights_dict, dict):
+                    weights_dict = defaults.copy()
+        else:
+            weights_dict = defaults.copy()
         writer = {
             "type": str(w[0] or ""),
             "hours": int(w[1] or 24),
-            "weights_json": json.loads(w[2]) if w[2] else None,
+            "weights_json": weights_dict,
             "bonus_json": json.loads(w[3]) if w[3] else None,
             "limit_per_category": _normalize_limit_map(w[4]),
             "per_source_cap": int(w[5]) if w[5] is not None else None,
+            "metric_weights": _fetch_metric_weights(conn, pid),
         }
         # Provide effective defaults for editing convenience
         if writer["limit_per_category"] is None:
@@ -244,7 +455,7 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
         if writer["per_source_cap"] is None or (isinstance(writer["per_source_cap"], int) and writer["per_source_cap"] <= 0):
             writer["per_source_cap"] = 3
         if writer["weights_json"] is None:
-            writer["weights_json"] = DEFAULT_WEIGHTS.copy()
+            writer["weights_json"] = defaults.copy()
         if writer["bonus_json"] is None:
             writer["bonus_json"] = DEFAULT_SOURCE_BONUS.copy()
 
@@ -332,18 +543,43 @@ def create_or_update_pipeline(conn: sqlite3.Connection, payload: dict, pid: Opti
     if w:
         cur.execute("DELETE FROM pipeline_writers WHERE pipeline_id=?", (pid,))
         limit_map = _normalize_limit_map(w.get("limit_per_category"))
+        weights_json_norm = _normalize_weights_json(conn, w.get("weights_json"))
         cur.execute(
             "INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 pid,
                 str(w.get("type") or ""),
                 int(w.get("hours") or 24),
-                _to_json_text(w.get("weights_json")),
+                weights_json_norm,
                 _to_json_text(w.get("bonus_json")),
                 _limit_map_to_json(limit_map),
                 int(w.get("per_source_cap")) if w.get("per_source_cap") is not None else None,
             ),
         )
+        cur.execute("DELETE FROM pipeline_writer_metric_weights WHERE pipeline_id=?", (pid,))
+        metric_weights_payload = w.get("metric_weights") or []
+        if isinstance(metric_weights_payload, list):
+            rows_to_insert: list[Tuple[int, int, float, int]] = []
+            for item in metric_weights_payload:
+                if not isinstance(item, dict):
+                    continue
+                metric_id = _resolve_metric_id(conn, item.get("key"))
+                if metric_id is None:
+                    continue
+                try:
+                    weight_val = float(item.get("weight"))
+                except (TypeError, ValueError):
+                    continue
+                enabled_flag = 1 if int(item.get("enabled", 1) or 0) else 0
+                rows_to_insert.append((pid, metric_id, weight_val, enabled_flag))
+            if rows_to_insert:
+                cur.executemany(
+                    """
+                    INSERT OR REPLACE INTO pipeline_writer_metric_weights (pipeline_id, metric_id, weight, enabled)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    rows_to_insert,
+                )
 
     # delivery
     d = payload.get("delivery") or {}
@@ -354,7 +590,11 @@ def create_or_update_pipeline(conn: sqlite3.Connection, payload: dict, pid: Opti
             cur.execute("DELETE FROM pipeline_deliveries_email WHERE pipeline_id=?", (pid,))
             cur.execute(
                 "INSERT OR REPLACE INTO pipeline_deliveries_email (pipeline_id, email, subject_tpl) VALUES (?, ?, ?)",
-                (pid, str(d.get("email") or ""), str(d.get("subject_tpl") or "")),
+                (
+                    pid,
+                    str(d.get("email") or ""),
+                    _normalize_email_subject_tpl(d.get("subject_tpl")),
+                ),
             )
         elif kind == "feishu":
             cur.execute("DELETE FROM pipeline_deliveries_email WHERE pipeline_id=?", (pid,))
@@ -382,6 +622,7 @@ def delete_pipeline(conn: sqlite3.Connection, pid: int) -> None:
     for t in (
         "pipeline_filters",
         "pipeline_writers",
+        "pipeline_writer_metric_weights",
         "pipeline_deliveries_email",
         "pipeline_deliveries_feishu",
         "pipeline_runs",
@@ -399,4 +640,626 @@ def fetch_options(conn: sqlite3.Connection) -> dict:
         "categories": categories,
         "writer_types": ["feishu_md", "info_html"],
         "delivery_kinds": ["email", "feishu"],
+        "metrics": _list_active_metrics(conn),
     }
+
+
+def fetch_categories(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, key, label_zh, enabled, created_at, updated_at
+        FROM categories
+        ORDER BY id
+        """
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "key": row["key"],
+            "label_zh": row["label_zh"],
+            "enabled": int(row["enabled"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def fetch_category(conn: sqlite3.Connection, cid: int) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT id, key, label_zh, enabled, created_at, updated_at
+        FROM categories
+        WHERE id=?
+        """,
+        (cid,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "key": row["key"],
+        "label_zh": row["label_zh"],
+        "enabled": int(row["enabled"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def create_category(conn: sqlite3.Connection, payload: dict) -> int:
+    cur = conn.cursor()
+    key = str(payload.get("key") or "").strip()
+    label = str(payload.get("label_zh") or "").strip()
+    enabled = 1 if int(payload.get("enabled", 1) or 0) else 0
+    if not key:
+        raise ValueError("类别 key 不能为空")
+    if not label:
+        raise ValueError("类别名称不能为空")
+    cur.execute(
+        "INSERT INTO categories (key, label_zh, enabled) VALUES (?, ?, ?)",
+        (key, label, enabled),
+    )
+    conn.commit()
+    return int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def update_category(conn: sqlite3.Connection, cid: int, payload: dict) -> None:
+    cur = conn.cursor()
+    existing = fetch_category(conn, cid)
+    if not existing:
+        raise ValueError("未找到类别")
+    new_key = str(payload.get("key") or "").strip() or existing["key"]
+    new_label = str(payload.get("label_zh") or existing["label_zh"]).strip()
+    if not new_label:
+        raise ValueError("类别名称不能为空")
+    new_enabled = 1 if int(payload.get("enabled", existing["enabled"]) or 0) else 0
+    if new_key != existing["key"]:
+        ref_count = cur.execute(
+            "SELECT COUNT(1) FROM sources WHERE category_key=?",
+            (existing["key"],),
+        ).fetchone()[0]
+        if ref_count:
+            raise ValueError("该类别仍有关联来源，无法修改 key")
+    cur.execute(
+        """
+        UPDATE categories
+        SET key=?, label_zh=?, enabled=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (new_key, new_label, new_enabled, cid),
+    )
+    conn.commit()
+
+
+def delete_category(conn: sqlite3.Connection, cid: int) -> None:
+    cur = conn.cursor()
+    existing = fetch_category(conn, cid)
+    if not existing:
+        raise ValueError("未找到类别")
+    key = existing["key"]
+    ref_sources = cur.execute(
+        "SELECT COUNT(1) FROM sources WHERE category_key=?",
+        (key,),
+    ).fetchone()[0]
+    if ref_sources:
+        raise ValueError("该类别仍有关联来源，无法删除")
+    ref_info = cur.execute(
+        "SELECT COUNT(1) FROM info WHERE category=?",
+        (key,),
+    ).fetchone()[0]
+    if ref_info:
+        raise ValueError("该类别仍有关联资讯，无法删除")
+    cur.execute("DELETE FROM categories WHERE id=?", (cid,))
+    conn.commit()
+
+
+def fetch_sources(conn: sqlite3.Connection) -> list[dict]:
+    addresses_map = _fetch_source_addresses_map(conn)
+    rows = conn.execute(
+        """
+        SELECT s.id, s.key, s.label_zh, s.enabled, s.category_key,
+               s.script_path, s.created_at, s.updated_at,
+               c.label_zh AS category_label
+        FROM sources AS s
+        LEFT JOIN categories AS c ON c.key = s.category_key
+        ORDER BY s.id
+        """
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "key": row["key"],
+            "label_zh": row["label_zh"],
+            "enabled": int(row["enabled"]),
+            "category_key": row["category_key"],
+            "script_path": row["script_path"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "category_label": row["category_label"],
+            "addresses": addresses_map.get(int(row["id"]), []),
+        }
+        for row in rows
+    ]
+
+
+def fetch_source(conn: sqlite3.Connection, sid: int) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT id, key, label_zh, enabled, category_key, script_path,
+               created_at, updated_at
+        FROM sources
+        WHERE id=?
+        """,
+        (sid,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "key": row["key"],
+        "label_zh": row["label_zh"],
+        "enabled": int(row["enabled"]),
+        "category_key": row["category_key"],
+        "script_path": row["script_path"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "addresses": fetch_source_addresses(conn, sid),
+    }
+
+
+def _ensure_category_exists(conn: sqlite3.Connection, category_key: str) -> None:
+    row = conn.execute(
+        "SELECT 1 FROM categories WHERE key=?",
+        (category_key,),
+    ).fetchone()
+    if not row:
+        raise ValueError("关联的类别不存在")
+
+
+def _normalize_addresses(addresses: Any) -> List[str]:
+    if addresses is None:
+        return []
+    if isinstance(addresses, (str, bytes, bytearray)):
+        raw_items: List[Any] = [addresses]
+    elif isinstance(addresses, Iterable):
+        raw_items = list(addresses)
+    else:
+        raw_items = [addresses]
+
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        if isinstance(raw, (bytes, bytearray)):
+            text = raw.decode("utf-8", errors="ignore")
+        else:
+            text = str(raw)
+        text = text.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _replace_source_addresses(
+    conn: sqlite3.Connection,
+    source_id: int,
+    addresses: List[str],
+) -> None:
+    cur = conn.cursor()
+    cur.execute("DELETE FROM source_address WHERE source_id=?", (source_id,))
+    if addresses:
+        cur.executemany(
+            "INSERT INTO source_address (source_id, address) VALUES (?, ?)",
+            [(source_id, addr) for addr in addresses],
+        )
+
+
+def fetch_source_addresses(conn: sqlite3.Connection, source_id: int) -> List[str]:
+    rows = conn.execute(
+        """
+        SELECT address
+        FROM source_address
+        WHERE source_id=?
+        ORDER BY id
+        """,
+        (source_id,),
+    ).fetchall()
+    return [row["address"] for row in rows]
+
+
+def _fetch_source_addresses_map(conn: sqlite3.Connection) -> Dict[int, List[str]]:
+    rows = conn.execute(
+        "SELECT source_id, address FROM source_address ORDER BY id"
+    ).fetchall()
+    mapping: Dict[int, List[str]] = {}
+    for row in rows:
+        sid = int(row["source_id"])
+        mapping.setdefault(sid, []).append(row["address"])
+    return mapping
+
+
+def create_source(conn: sqlite3.Connection, payload: dict) -> int:
+    cur = conn.cursor()
+    key = str(payload.get("key") or "").strip()
+    label = str(payload.get("label_zh") or "").strip()
+    category_key = str(payload.get("category_key") or "").strip()
+    script_path = str(payload.get("script_path") or "").strip()
+    enabled = 1 if int(payload.get("enabled", 1) or 0) else 0
+    addresses = _normalize_addresses(payload.get("addresses"))
+    if not key:
+        raise ValueError("来源 key 不能为空")
+    if not label:
+        raise ValueError("来源名称不能为空")
+    if not category_key:
+        raise ValueError("来源所属类别不能为空")
+    if not script_path:
+        raise ValueError("脚本路径不能为空")
+    _ensure_category_exists(conn, category_key)
+    cur.execute(
+        """
+        INSERT INTO sources (key, label_zh, enabled, category_key, script_path)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (key, label, enabled, category_key, script_path),
+    )
+    new_id = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+    _replace_source_addresses(conn, new_id, addresses)
+    conn.commit()
+    return new_id
+
+
+def update_source(conn: sqlite3.Connection, sid: int, payload: dict) -> None:
+    cur = conn.cursor()
+    existing = fetch_source(conn, sid)
+    if not existing:
+        raise ValueError("未找到来源")
+    new_key = str(payload.get("key") or "").strip() or existing["key"]
+    new_label = str(payload.get("label_zh") or existing["label_zh"]).strip()
+    if not new_label:
+        raise ValueError("来源名称不能为空")
+    new_category_key = str(payload.get("category_key") or existing["category_key"]).strip()
+    if not new_category_key:
+        raise ValueError("来源所属类别不能为空")
+    new_script_path = str(payload.get("script_path") or existing["script_path"]).strip()
+    if not new_script_path:
+        raise ValueError("脚本路径不能为空")
+    new_enabled = 1 if int(payload.get("enabled", existing["enabled"]) or 0) else 0
+    _ensure_category_exists(conn, new_category_key)
+    cur.execute(
+        """
+        UPDATE sources
+        SET key=?, label_zh=?, enabled=?, category_key=?, script_path=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (new_key, new_label, new_enabled, new_category_key, new_script_path, sid),
+    )
+    if new_key != existing["key"]:
+        cur.execute(
+            "UPDATE info SET source=? WHERE source=?",
+            (new_key, existing["key"]),
+        )
+    if new_category_key != existing["category_key"]:
+        cur.execute(
+            "UPDATE info SET category=? WHERE category=?",
+            (new_category_key, existing["category_key"]),
+        )
+    addresses_data = payload.get("addresses", _MISSING)
+    if addresses_data is not _MISSING:
+        new_addresses = _normalize_addresses(addresses_data)
+        _replace_source_addresses(conn, sid, new_addresses)
+    conn.commit()
+
+
+def delete_source(conn: sqlite3.Connection, sid: int) -> None:
+    cur = conn.cursor()
+    existing = fetch_source(conn, sid)
+    if not existing:
+        raise ValueError("未找到来源")
+    cur.execute("DELETE FROM source_address WHERE source_id=?", (sid,))
+    cur.execute("DELETE FROM sources WHERE id=?", (sid,))
+    conn.commit()
+
+
+def fetch_info_list(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    offset: int,
+    category: Optional[str] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+) -> dict:
+    clauses: List[str] = []
+    params: List[Any] = []
+    if category:
+        cat_key = category.strip()
+        if cat_key:
+            clauses.append("i.category = ?")
+            params.append(cat_key)
+    if source:
+        src_key = source.strip()
+        if src_key:
+            clauses.append("i.source = ?")
+            params.append(src_key)
+    term = search.strip() if isinstance(search, str) else ""
+    if term:
+        clauses.append("(i.title LIKE ? OR i.link LIKE ?)")
+        like = f"%{term}%"
+        params.extend([like, like])
+    where_clause = "WHERE " + " AND ".join(clauses) if clauses else ""
+    total = conn.execute(
+        f"SELECT COUNT(1) FROM info AS i {where_clause}",
+        params,
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"""
+        SELECT i.id,
+               i.title,
+               i.source,
+               COALESCE(src.label_zh, i.source) AS source_label,
+               i.category,
+               COALESCE(cat.label_zh, i.category) AS category_label,
+               i.publish,
+               i.link,
+               r.final_score,
+               r.updated_at AS review_updated_at
+        FROM info AS i
+        LEFT JOIN sources AS src ON src.key = i.source
+        LEFT JOIN categories AS cat ON cat.key = i.category
+        LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+        {where_clause}
+        ORDER BY i.publish DESC, i.id DESC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    ).fetchall()
+    items = [
+        {
+            "id": int(row["id"]),
+            "title": row["title"],
+            "source": row["source"],
+            "source_label": row["source_label"],
+            "category": row["category"],
+            "category_label": row["category_label"],
+            "publish": row["publish"],
+            "link": row["link"],
+            "final_score": float(row["final_score"]) if row["final_score"] is not None else None,
+            "review_updated_at": row["review_updated_at"],
+        }
+        for row in rows
+    ]
+    return {"items": items, "total": int(total)}
+
+
+def fetch_info_detail(conn: sqlite3.Connection, info_id: int) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT i.id, i.title, i.source, i.category, i.publish, i.link, i.detail,
+               COALESCE(src.label_zh, i.source) AS source_label,
+               COALESCE(cat.label_zh, i.category) AS category_label
+        FROM info AS i
+        LEFT JOIN sources AS src ON src.key = i.source
+        LEFT JOIN categories AS cat ON cat.key = i.category
+        WHERE i.id = ?
+        """,
+        (info_id,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "id": int(row["id"]),
+        "title": row["title"],
+        "source": row["source"],
+        "source_label": row["source_label"],
+        "category": row["category"],
+        "category_label": row["category_label"],
+        "publish": row["publish"],
+        "link": row["link"],
+        "detail": row["detail"],
+    }
+
+
+def fetch_info_ai_review(conn: sqlite3.Connection, info_id: int) -> dict:
+    review = conn.execute(
+        """
+        SELECT final_score,
+               ai_comment,
+               ai_summary,
+               ai_key_concepts,
+               ai_summary_long,
+               raw_response,
+               updated_at,
+               created_at
+        FROM info_ai_review
+        WHERE info_id=?
+        """,
+        (info_id,),
+    ).fetchone()
+    scores = conn.execute(
+        """
+        SELECT m.key, m.label_zh, s.score
+        FROM info_ai_scores AS s
+        JOIN ai_metrics AS m ON m.id = s.metric_id
+        WHERE s.info_id=?
+        ORDER BY m.sort_order ASC, m.id ASC
+        """,
+        (info_id,),
+    ).fetchall()
+    concepts: list[str] = []
+    if review:
+        raw_concepts = review["ai_key_concepts"]
+        if isinstance(raw_concepts, (bytes, bytearray)):
+            raw_concepts = raw_concepts.decode("utf-8", errors="ignore")
+        if raw_concepts:
+            if isinstance(raw_concepts, str):
+                text = raw_concepts.strip()
+            else:
+                text = str(raw_concepts)
+            if text:
+                try:
+                    parsed = json.loads(text)
+                except (json.JSONDecodeError, TypeError):
+                    normalized = text.replace("，", ",").replace("、", ",").replace(";", ",")
+                    concepts = [item.strip() for item in normalized.split(",") if item.strip()]
+                else:
+                    if isinstance(parsed, list):
+                        concepts = [str(item).strip() for item in parsed if str(item).strip()]
+                    elif isinstance(parsed, str):
+                        normalized = parsed.replace("，", ",").replace("、", ",").replace(";", ",")
+                        concepts = [item.strip() for item in normalized.split(",") if item.strip()]
+                    else:
+                        concepts = []
+
+    return {
+        "final_score": float(review["final_score"]) if review and review["final_score"] is not None else None,
+        "ai_comment": review["ai_comment"] if review else None,
+        "ai_summary": review["ai_summary"] if review else None,
+        "ai_key_concepts": concepts,
+        "ai_summary_long": review["ai_summary_long"] if review else None,
+        "raw_response": review["raw_response"] if review else None,
+        "updated_at": review["updated_at"] if review else None,
+        "created_at": review["created_at"] if review else None,
+        "scores": [
+            {
+                "metric_key": row["key"],
+                "metric_label": row["label_zh"],
+                "score": int(row["score"]),
+            }
+            for row in scores
+        ],
+    }
+
+
+def fetch_ai_metrics(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, key, label_zh, rate_guide_zh, default_weight, active, sort_order, created_at, updated_at
+        FROM ai_metrics
+        ORDER BY sort_order ASC, id ASC
+        """
+    ).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "key": row["key"],
+            "label_zh": row["label_zh"],
+            "rate_guide_zh": row["rate_guide_zh"],
+            "default_weight": float(row["default_weight"]) if row["default_weight"] is not None else None,
+            "active": int(row["active"]),
+            "sort_order": int(row["sort_order"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_ai_metric(conn: sqlite3.Connection, payload: dict) -> int:
+    cur = conn.cursor()
+    key = str(payload.get("key") or "").strip()
+    label = str(payload.get("label_zh") or "").strip()
+    rate_guide = payload.get("rate_guide_zh")
+    default_weight = payload.get("default_weight")
+    sort_order = payload.get("sort_order", 0)
+    active = 1 if int(payload.get("active", 1) or 0) else 0
+    if not key:
+        raise ValueError("指标 key 不能为空")
+    if not label:
+        raise ValueError("指标名称不能为空")
+    weight_value = None
+    if default_weight is not None and str(default_weight).strip() != "":
+        try:
+            weight_value = float(default_weight)
+        except (TypeError, ValueError):
+            raise ValueError("默认权重需要是数值")
+    try:
+        sort_value = int(sort_order)
+    except (TypeError, ValueError):
+        sort_value = 0
+    cur.execute(
+        """
+        INSERT INTO ai_metrics (key, label_zh, rate_guide_zh, default_weight, active, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (key, label, rate_guide, weight_value, active, sort_value),
+    )
+    conn.commit()
+    return int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+
+def update_ai_metric(conn: sqlite3.Connection, metric_id: int, payload: dict) -> None:
+    cur = conn.cursor()
+    existing = cur.execute(
+        "SELECT id, key FROM ai_metrics WHERE id=?",
+        (metric_id,),
+    ).fetchone()
+    if not existing:
+        raise ValueError("未找到指标")
+    label = payload.get("label_zh")
+    rate_guide = payload.get("rate_guide_zh")
+    default_weight = payload.get("default_weight")
+    sort_order = payload.get("sort_order")
+    active = payload.get("active")
+    updates: List[str] = []
+    params: List[Any] = []
+    if label is not None:
+        name = str(label).strip()
+        if not name:
+            raise ValueError("指标名称不能为空")
+        updates.append("label_zh=?")
+        params.append(name)
+    if rate_guide is not None:
+        updates.append("rate_guide_zh=?")
+        params.append(rate_guide)
+    if default_weight is not None:
+        if str(default_weight).strip() == "":
+            updates.append("default_weight=?")
+            params.append(None)
+        else:
+            try:
+                weight_value = float(default_weight)
+            except (TypeError, ValueError):
+                raise ValueError("默认权重需要是数值")
+            updates.append("default_weight=?")
+            params.append(weight_value)
+    if sort_order is not None:
+        try:
+            sort_value = int(sort_order)
+        except (TypeError, ValueError):
+            raise ValueError("排序需要是整数")
+        updates.append("sort_order=?")
+        params.append(sort_value)
+    if active is not None:
+        active_flag = 1 if int(active or 0) else 0
+        updates.append("active=?")
+        params.append(active_flag)
+    if not updates:
+        return
+    updates.append("updated_at=CURRENT_TIMESTAMP")
+    cur.execute(
+        f"UPDATE ai_metrics SET {', '.join(updates)} WHERE id=?",
+        [*params, metric_id],
+    )
+    conn.commit()
+
+
+def delete_ai_metric(conn: sqlite3.Connection, metric_id: int) -> None:
+    cur = conn.cursor()
+    existing = cur.execute("SELECT id FROM ai_metrics WHERE id=?", (metric_id,)).fetchone()
+    if not existing:
+        raise ValueError("未找到指标")
+    refs_scores = cur.execute(
+        "SELECT COUNT(1) FROM info_ai_scores WHERE metric_id=?",
+        (metric_id,),
+    ).fetchone()[0]
+    if refs_scores:
+        raise ValueError("仍有关联的资讯评分记录，无法删除")
+    refs_weights = cur.execute(
+        "SELECT COUNT(1) FROM pipeline_writer_metric_weights WHERE metric_id=?",
+        (metric_id,),
+    ).fetchone()[0]
+    if refs_weights:
+        raise ValueError("仍有关联的投递配置指标，无法删除")
+    cur.execute("DELETE FROM ai_metrics WHERE id=?", (metric_id,))
+    conn.commit()

@@ -5,7 +5,7 @@ set -euo pipefail
 # Sleep until next 09:30 and repeat.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON="python"
+PYTHON="${PYTHON:-python}"
 ENV_NAME="news-collector"
 
 check_pipeline_config() {
@@ -40,6 +40,10 @@ with conn:
         "pipeline_writers",
         "pipeline_deliveries_email",
         "pipeline_deliveries_feishu",
+        "pipeline_writer_metric_weights",
+        "ai_metrics",
+        "info_ai_scores",
+        "info_ai_review",
     )
     missing_tables = []
     for tbl in required_tables:
@@ -96,7 +100,11 @@ print("[INFO] Pipeline DB configuration looks good.", file=sys.stderr)
 PY
 }
 
-activate_conda() {
+activate_runtime() {
+  if command -v "$PYTHON" >/dev/null 2>&1; then
+    return 0
+  fi
+
   if ! command -v conda >/dev/null 2>&1; then
     for base in "$HOME/miniconda3" "$HOME/anaconda3" "/opt/conda" "/root/anaconda3"; do
       if [ -f "$base/etc/profile.d/conda.sh" ]; then
@@ -106,12 +114,44 @@ activate_conda() {
       fi
     done
   fi
-  if ! command -v conda >/dev/null 2>&1; then
-    echo "[ERROR] conda command not found; ensure Conda is installed and on PATH" >&2
-    return 1
+  if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    if conda activate "$ENV_NAME" >/dev/null 2>&1; then
+      local found
+      found="$(command -v python3 2>/dev/null || command -v python 2>/dev/null)"
+      if [ -n "$found" ]; then
+        PYTHON="$found"
+        return 0
+      fi
+    fi
   fi
-  eval "$(conda shell.bash hook)"
-  conda activate "$ENV_NAME"
+
+  if [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
+    # shellcheck source=/dev/null
+    source "$ROOT_DIR/.venv/bin/activate"
+    if [ -x "$ROOT_DIR/.venv/bin/python" ]; then
+      PYTHON="$ROOT_DIR/.venv/bin/python"
+      return 0
+    fi
+    local venv_py
+    venv_py="$(command -v python3 2>/dev/null || command -v python 2>/dev/null)"
+    if [ -n "$venv_py" ]; then
+      PYTHON="$venv_py"
+      return 0
+    fi
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON="python3"
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    PYTHON="python"
+    return 0
+  fi
+
+  echo "[ERROR] Unable to locate a Python interpreter; set PYTHON env var or install Python." >&2
+  return 1
 }
 
 sleep_until_next_0930() {
@@ -135,8 +175,13 @@ sleep_until_next_0930() {
 }
 
 run_once() {
-  echo "[INFO] Activating conda env: $ENV_NAME" >&2
-  activate_conda
+  if ! activate_runtime; then
+    return 1
+  fi
+  echo "[INFO] Using python interpreter: $PYTHON" >&2
+
+  echo "[INFO] Applying AI metrics migration (idempotent)..." >&2
+  $PYTHON "$ROOT_DIR/scripts/migrations/202510_ai_metrics_refactor.py" --db "$ROOT_DIR/data/info.db" || true
 
   check_pipeline_config
 

@@ -1,12 +1,12 @@
 **Overview**
 - Purpose: Manage write/deliver pipelines via SQLite so writers and deliveries are configurable without editing scripts.
 - Location: tables live in `data/info.db`; tools in `news-collector/write-deliver-pipeline/`.
-- Writers used: `info_writer.py`, `wenhao_writer.py`, `feishu_writer.py` (existing). Deliveries use `deliver/mail_deliver.py` and `deliver/feishu_deliver.py`.
+- Writers used: `email_writer.py` (HTML digest) and `feishu_writer.py` (Feishu Markdown). Deliveries use `deliver/mail_deliver.py` and `deliver/feishu_deliver.py`.
 
 **Schema Summary**
 - `pipelines`: name, enabled, description, timestamps.
 - `pipeline_filters`: category/source selectors with all-or-whitelist controls (`all_categories`, `categories_json`, `all_src`, `include_src_json`).
-- `pipeline_writers`: `type` (info_html | email_html | feishu_md), `hours`, optional `weights_json` (metric-key → weight), `bonus_json`.
+- `pipeline_writers`: `type` (info_html | feishu_md | wenhao_html), `hours`, optional `weights_json` (metric-key → weight), `bonus_json`, limit fields.
 - `pipeline_writer_metric_weights`: normalized per-pipeline metric weights (preferred over JSON).
 - `pipeline_deliveries_email`: single recipient email + `subject_tpl`. One row per pipeline.
 - `pipeline_deliveries_feishu`: Feishu card delivery with `app_id`, `app_secret`, `to_all_chat` (1=all groups, 0=use `chat_id`), optional `title_tpl`, `to_all`, `content_json`. One row per pipeline.
@@ -34,10 +34,10 @@
 
 **Writers**
 - Email writer: `writer/email_writer.py`
-  - Generates HTML digest; applies per-source bonus, category limits, etc.
-  - If AI scoring is available, reads from `ai_metrics` + `info_ai_scores` to compute weighted scores；否则仅按时间排序。
+  - Generates HTML digest; reads `ai_metrics` + `info_ai_scores` to compute weighted scores and display AI comment/summary (required for ranking)。
+  - Applies per-source bonus, category limits, `limit_per_category`, and `per_source_cap`.
 - Feishu writer: `writer/feishu_writer.py`
-  - Generates Feishu-friendly Markdown; requires AI评分（`ai_metrics` + `info_ai_scores`）。
+  - Generates Feishu-friendly Markdown digest; same metric/bonus logic as email writer.
 - DB-driven defaults: when `PIPELINE_ID` is present, writers read hours/categories/weights/bonus from DB. Weights precedence: `pipeline_writer_metric_weights` > `pipeline_writers.weights_json` > `ai_metrics.default_weight`. CLI flags still override for ad-hoc runs.
 
 **Delivery Config**
@@ -51,7 +51,7 @@
 - Item fields:
   - `pipeline`: `{ "id?", "name", "enabled", "description" }` (`id` optional; exported for reference)
   - `filters`: `{ "all_categories", "categories_json", "all_src", "include_src_json" }` (arrays or JSON strings accepted)
-  - `writer`: `{ "type", "hours", "weights_json", "bonus_json" }` (objects or JSON strings accepted; `weights_json` keys must be metric keys defined in `ai_metrics`)
+  - `writer`: `{ "type", "hours", "weights_json", "bonus_json", "metric_weights?" }` (`weights_json` keys must be metric `key` values from `ai_metrics`; `metric_weights` is a list like `[{"key":"timeliness","weight":0.2,"enabled":1}, ...]`)
   - `delivery`:
     - Email: `{ "kind": "email", "email": "a@b.com", "subject_tpl": "${date_zh}整合" }`
     - Feishu: `{ "kind": "feishu", "app_id": "...", "app_secret": "...", "to_all_chat": 1, "chat_id": null, "title_tpl": "通知", "to_all": 1, "content_json": null }`
@@ -72,7 +72,7 @@
 
 **Gotchas**
 - Missing deps: collectors require `feedparser`/`beautifulsoup4`; install with `pip install -r requirements.txt`.
-- AI evaluator requires `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY`. Without it, `ai_metrics`/`info_ai_scores` won’t be populated; runners skip writers that need AI scores.
+- AI evaluator requires `AI_API_BASE_URL`, `AI_API_MODEL`, `AI_API_KEY`. Without it, `ai_metrics`/`info_ai_scores`/`info_ai_review` won’t be populated; runner skips writers that need AI scores.
 - Single-delivery rule: each pipeline must have exactly one delivery (email or Feishu). Both present → runner fails.
 - Secrets: keep `app_secret` out of VCS; use environment overrides during runtime when possible.
 

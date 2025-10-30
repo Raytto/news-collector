@@ -11,6 +11,10 @@ from pathlib import Path
 from datetime import datetime
 
 
+DATE_PLACEHOLDER_VARIANTS = ("${date_zh}", "$(date_zh)", "${data_zh}", "$(data_zh)")
+TS_PLACEHOLDER_VARIANTS = ("${ts}", "$(ts)")
+
+
 DEFAULT_SENDER = "pangruitaosite@gmail.com"
 DEFAULT_RECEIVERS = ["306483372@qq.com"]
 
@@ -18,7 +22,7 @@ DEFAULT_RECEIVERS = ["306483372@qq.com"]
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Send an HTML file via SMTP or local sendmail")
     p.add_argument("--html", required=True, help="Path to the HTML file to send")
-    p.add_argument("--subject", default="", help="Mail subject; default is YYYY年MM月DD日整合")
+    p.add_argument("--subject", default="", help="Mail subject; default is 整合YYYY年MM月DD日")
     p.add_argument("--sender", default=DEFAULT_SENDER, help="Sender email address")
     p.add_argument("--to", default=",".join(DEFAULT_RECEIVERS), help="Comma-separated recipient addresses")
 
@@ -64,10 +68,13 @@ def _load_email_delivery_from_db(db_path: Path, pipeline_id: int) -> tuple[str |
 def _render_subject_from_tpl(tpl: str | None) -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     date_zh = datetime.now().strftime("%Y年%m月%d日")
-    s = (tpl or "").strip()
-    s = s.replace("${date_zh}", date_zh)
-    s = s.replace("${ts}", ts)
-    return s or date_zh
+    subject = str(tpl or "")
+    for placeholder in TS_PLACEHOLDER_VARIANTS:
+        subject = subject.replace(placeholder, ts)
+    for placeholder in DATE_PLACEHOLDER_VARIANTS:
+        subject = subject.replace(placeholder, "")
+    subject = subject.strip()
+    return f"{subject}{date_zh}" if subject else date_zh
 
 
 def try_send_via_smtp(msg: MIMEText, sender: str, receivers: list[str], host: str, port: int,
@@ -134,7 +141,8 @@ def main() -> None:
         if subject_tpl:
             subject = _render_subject_from_tpl(subject_tpl)
     if not subject:
-        subject = datetime.now().strftime("%Y年%m月%d日整合")
+        date_zh = datetime.now().strftime("%Y年%m月%d日")
+        subject = f"整合{date_zh}"
 
     body = html_path.read_text(encoding="utf-8")
 

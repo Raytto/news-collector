@@ -30,6 +30,22 @@ class Entry:
     category: str = ""
 
 
+@dataclass
+class SourceSpec:
+    source: str
+    category: str
+    path: Path
+
+
+DEFAULT_CATEGORY_LABELS = {
+    "game": "游戏",
+    "tech": "科技",
+    "humanities": "人文",
+}
+
+SOURCE_LABEL_FIELDS = ("SOURCE_LABEL_ZH", "SOURCE_LABEL", "SOURCE_NAME")
+
+
 def _load_module(path: Path):
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
     if spec is None or spec.loader is None:
@@ -37,6 +53,103 @@ def _load_module(path: Path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
+
+
+def _extract_metadata(path: Path, keys: tuple[str, ...]) -> Dict[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    metadata: Dict[str, str] = {}
+    for key in keys:
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=\s*(['\"])(.*?)\1", re.MULTILINE)
+        match = pattern.search(text)
+        if match:
+            metadata[key] = match.group(2).strip()
+    return metadata
+
+
+def _seed_sources_from_fs(conn: sqlite3.Connection) -> None:
+    cur = conn.cursor()
+    row = cur.execute("SELECT COUNT(*) FROM sources").fetchone()
+    if row and int(row[0] or 0):
+        return
+
+    print("sources 表为空，首次运行将自动注册 scraping 目录下的脚本")
+    inserted_categories = 0
+    inserted_sources = 0
+    keys = ("SOURCE", "CATEGORY") + SOURCE_LABEL_FIELDS
+
+    for path in sorted(SCRAPING_DIR.rglob("*.py")):
+        if path.name.startswith("__"):
+            continue
+        if path.name == "_datetime.py":
+            continue
+        if path.name.startswith("test_") or "tests" in path.parts:
+            continue
+
+        metadata = _extract_metadata(path, keys)
+        source_key = (metadata.get("SOURCE") or "").strip()
+        if not source_key:
+            try:
+                rel_hint = path.relative_to(SCRAPING_DIR)
+            except ValueError:
+                rel_hint = path
+            print(f"{rel_hint}: 未找到 SOURCE 常量，跳过注册")
+            continue
+
+        category_key = (metadata.get("CATEGORY") or "").strip()
+        if not category_key:
+            try:
+                rel_parts = path.relative_to(SCRAPING_DIR).parts
+            except ValueError:
+                rel_parts = ()
+            if rel_parts:
+                category_key = rel_parts[0]
+        category_key = str(category_key or "").strip()
+        if not category_key:
+            print(f"{path.name}: 无法推断分类，跳过注册")
+            continue
+
+        label = source_key
+        for field in SOURCE_LABEL_FIELDS:
+            val = (metadata.get(field) or "").strip()
+            if val:
+                label = val
+                break
+
+        category_label = DEFAULT_CATEGORY_LABELS.get(category_key, category_key)
+        cur.execute(
+            "INSERT OR IGNORE INTO categories (key, label_zh, enabled) VALUES (?, ?, 1)",
+            (category_key, category_label),
+        )
+        if cur.rowcount:
+            inserted_categories += 1
+
+        try:
+            script_rel = path.relative_to(PROJECT_ROOT.parent).as_posix()
+        except ValueError:
+            script_rel = path.as_posix()
+
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO sources (key, label_zh, enabled, category_key, script_path)
+            VALUES (?, ?, 1, ?, ?)
+            """,
+            (source_key, label, category_key, script_rel),
+        )
+        if cur.rowcount:
+            inserted_sources += 1
+
+    conn.commit()
+    if inserted_categories or inserted_sources:
+        details: list[str] = []
+        if inserted_sources:
+            details.append(f"{inserted_sources} 个信息源")
+        if inserted_categories:
+            details.append(f"{inserted_categories} 个分类")
+        print("已自动注册 " + "、".join(details) + "。")
+
 
 
 def _get_module_feed_urls(mod) -> List[str]:
@@ -190,6 +303,46 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
         ON info (link)
         """
     )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS categories (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            key        TEXT NOT NULL UNIQUE,
+            label_zh   TEXT NOT NULL,
+            enabled    INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sources (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            key          TEXT NOT NULL UNIQUE,
+            label_zh     TEXT NOT NULL,
+            enabled      INTEGER NOT NULL DEFAULT 1,
+            category_key TEXT NOT NULL,
+            script_path  TEXT NOT NULL,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (category_key) REFERENCES categories(key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sources_enabled
+        ON sources (enabled)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_sources_category
+        ON sources (category_key, enabled)
+        """
+    )
     conn.commit()
 
 
@@ -218,6 +371,48 @@ def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> list[
                 newly_added.append(e)
     conn.commit()
     return newly_added
+
+
+def _resolve_script_path(script_path: str) -> Path:
+    path = Path(script_path)
+    if not path.is_absolute():
+        base = PROJECT_ROOT.parent
+        path = (base / script_path).resolve()
+    return path
+
+
+def _load_sources_from_db(conn: sqlite3.Connection) -> list[SourceSpec]:
+    cursor = conn.cursor()
+    try:
+        rows = cursor.execute(
+            """
+            SELECT key, category_key, script_path
+            FROM sources
+            WHERE enabled = 1
+            ORDER BY id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    specs: list[SourceSpec] = []
+    for key, category_key, script_path in rows:
+        key_str = str(key or "").strip()
+        script_path_str = str(script_path or "").strip()
+        if not (key_str and script_path_str):
+            continue
+        try:
+            resolved = _resolve_script_path(script_path_str)
+        except Exception:
+            continue
+        specs.append(
+            SourceSpec(
+                source=key_str,
+                category=str(category_key or "").strip(),
+                path=resolved,
+            )
+        )
+    return specs
 
 
 def _update_detail(conn: sqlite3.Connection, link: str, detail: str) -> None:
@@ -273,29 +468,33 @@ def main() -> None:
         print("未找到 scraping 目录")
         sys.exit(1)
 
-    modules = []
-    # Recursively discover scraper scripts (e.g., scraping/game/*.py)
-    for path in sorted(SCRAPING_DIR.rglob("*.py")):
-        if path.name.startswith("__"):
-            continue
-        if path.name == "_datetime.py":
-            continue
-        # Skip test modules if present under scraping/tests
-        if path.name.startswith("test_") or "tests" in path.parts:
-            continue
-        modules.append(path)
-
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     try:
         _ensure_db(conn)
+        _seed_sources_from_fs(conn)
+        source_specs = _load_sources_from_db(conn)
+        if source_specs:
+            print(f"从 sources 表加载 {len(source_specs)} 个启用来源")
+        else:
+            print("sources 表暂无启用来源，采集已跳过。请在数据库中启用至少一个来源。")
+            return
 
         total_new = 0
-        for path in modules:
+        for spec in source_specs:
+            path = spec.path
+            if not path.exists():
+                print(f"{path}: 脚本不存在，跳过 (source={spec.source or 'unknown'})")
+                continue
             try:
                 mod = _load_module(path)
             except Exception as exc:
                 print(f"{path.name}: 加载模块失败 - {exc}")
+                continue
+            source_key = spec.source or str(getattr(mod, "SOURCE", "") or "").strip()
+            category_key = spec.category or str(getattr(mod, "CATEGORY", "") or "").strip()
+            if not source_key:
+                print(f"{path.name}: 缺少来源标识 (SOURCE)，已跳过执行")
                 continue
             try:
                 items = _to_entry_dicts(mod)
@@ -309,35 +508,36 @@ def main() -> None:
                             link_hint = str(item.get("url") or item.get("link") or "")
                         except Exception:
                             link_hint = ""
-                        src_hint = str(getattr(mod, "SOURCE", "") or "")
+                        src_hint = source_key
                         print(
                             f"  [条目解析失败] {path.name}({src_hint}) -> link={link_hint or '(unknown)'} - {ex_item}"
                         )
                         continue
                     if e:
-                        # Backfill source/category from module-level constants when missing
-                        if not e.source and hasattr(mod, "SOURCE"):
-                            e.source = str(getattr(mod, "SOURCE"))
-                        if not e.category and hasattr(mod, "CATEGORY"):
+                        # Standardize source/category from DB when available
+                        e.source = source_key
+                        if category_key:
+                            e.category = category_key
+                        elif not e.category and hasattr(mod, "CATEGORY"):
                             e.category = str(getattr(mod, "CATEGORY"))
                         # Validate publish time format and print hint if suspicious
                         if raw_publish and not _is_iso8601_full(raw_publish):
                             print(
-                                f"  [时间格式疑似异常] {path.name}({e.source}) -> '{raw_publish}'"
+                                f"  [时间格式疑似异常] {path.name}({source_key}) -> '{raw_publish}'"
                             )
                         elif not raw_publish and not e.publish:
                             print(
-                                f"  [时间缺失] {path.name}({e.source}) -> link={e.link}"
+                                f"  [时间缺失] {path.name}({source_key}) -> link={e.link}"
                             )
                         elif e.publish and not _is_iso8601_full(e.publish):
                             print(
-                                f"  [时间非标准] {path.name}({e.source}) -> '{e.publish}'"
+                                f"  [时间非标准] {path.name}({source_key}) -> '{e.publish}'"
                                 + (f" (原始:'{raw_publish}')" if raw_publish else "")
                             )
                         entries.append(e)
                 newly_added = _insert_entries(conn, entries)
                 total_new += len(newly_added)
-                print(f"{path.name}: 解析 {len(items)} 条，新增 {len(newly_added)} 条")
+                print(f"{path.name}({source_key}): 解析 {len(items)} 条，新增 {len(newly_added)} 条")
 
                 # For newly added links only, try to fetch and store details
                 if newly_added:
@@ -368,16 +568,16 @@ def main() -> None:
                     _backfill_missing_details(
                         conn,
                         mod,
-                        source_hint=str(getattr(mod, "SOURCE", "")),
+                        source_hint=source_key,
                         limit=5,
                     )
                 except Exception:
                     # Non-fatal
                     pass
             except Exception as exc:
-                urls = _get_module_feed_urls(locals().get("mod")) if 'mod' in locals() else []
+                urls = _get_module_feed_urls(mod) if mod else []
                 extra = f" (feed_urls={urls!r})" if urls else ""
-                print(f"{path.name}: 处理失败 - {exc}{extra}")
+                print(f"{path.name}({source_key}): 处理失败 - {exc}{extra}")
 
         print(f"完成，数据库: {DB_PATH}，新增总计 {total_new} 条")
     finally:

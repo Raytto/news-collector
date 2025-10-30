@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "info.db"
 
+DATE_PLACEHOLDER_VARIANTS = ("${date_zh}", "$(date_zh)", "${data_zh}", "$(data_zh)")
+TS_PLACEHOLDER_VARIANTS = ("${ts}", "$(ts)")
+
 # Script paths
 WRITER_DIR = ROOT / "news-collector" / "writer"
 DELIVER_DIR = ROOT / "news-collector" / "deliver"
@@ -62,10 +65,13 @@ def ensure_output_dir(pipeline_id: int) -> Path:
 
 
 def render_subject(tpl: str, ts: str, date_zh: str) -> str:
-    s = (tpl or "").strip()
-    s = s.replace("${date_zh}", date_zh)
-    s = s.replace("${ts}", ts)
-    return s or date_zh
+    subject = str(tpl or "")
+    for placeholder in TS_PLACEHOLDER_VARIANTS:
+        subject = subject.replace(placeholder, ts)
+    for placeholder in DATE_PLACEHOLDER_VARIANTS:
+        subject = subject.replace(placeholder, "")
+    subject = subject.strip()
+    return f"{subject}{date_zh}" if subject else date_zh
 
 
 def run_writer(
@@ -97,7 +103,7 @@ def run_writer(
             "--output",
             str(out_path),
         ]
-    elif wtype in {"info_html", "wenhao_html", "email_html"}:
+    elif wtype in {"info_html", "wenhao_html"}:
         # Unified email writer for all HTML digests
         out_path = out_dir / f"{ts}.html"
         cmd = [
@@ -176,13 +182,20 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
         raise SystemExit(f"pipeline {p.name} 未配置投递")
 
     # If writer depends on AI review table, ensure it exists before running
-    needs_ai = str(writer.get("type", "")) in {"feishu_md"}
-    has_ai_table = bool(cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='info_ai_review'"
-    ).fetchone())
-    if needs_ai and not has_ai_table:
-        print(f"[SKIP] {p.name}: 缺少 info_ai_review 表，跳过需要 AI 评分的数据写作")
-        return
+    writer_type = str(writer.get("type", "")).strip()
+    needs_ai = writer_type in {"feishu_md", "info_html", "wenhao_html"}
+    if needs_ai:
+        required_tables = ("ai_metrics", "info_ai_scores", "info_ai_review")
+        missing = [
+            tbl
+            for tbl in required_tables
+            if not cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+            ).fetchone()
+        ]
+        if missing:
+            print(f"[SKIP] {p.name}: 缺少 {', '.join(missing)} 表，跳过需要 AI 评分的数据写作")
+            return
 
     out_path = run_writer(p.id, writer, filters, out_dir, ts)
 
