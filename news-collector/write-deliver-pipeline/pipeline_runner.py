@@ -12,6 +12,11 @@ import html as htmllib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+import textwrap
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +38,7 @@ class Pipeline:
     name: str
     enabled: int
     description: str
+    weekdays_json: Optional[str] = None
 
 
 def _fetchone_dict(cur: sqlite3.Cursor, sql: str, args: Tuple[Any, ...]) -> Dict[str, Any]:
@@ -47,27 +53,91 @@ def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool
     cur = conn.cursor()
     rows: list[tuple] = []
     if name:
-        rows = cur.execute(
-            "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE name=?",
-            (name,),
-        ).fetchall()
+        # Try selecting weekdays_json; fallback if column missing
+        try:
+            rows = cur.execute(
+                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE name=?",
+                (name,),
+            ).fetchall()
+            with_weekdays = True
+        except sqlite3.OperationalError:
+            rows = cur.execute(
+                "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE name=?",
+                (name,),
+            ).fetchall()
+            with_weekdays = False
     elif all_flag:
         # When debug_only is set, select by debug flag instead of enabled
         if debug_only:
             # If debug_enabled column is missing, treat as empty set to avoid crashing
             try:
                 rows = cur.execute(
-                    "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE debug_enabled=1 ORDER BY id",
+                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE debug_enabled=1 ORDER BY id",
                 ).fetchall()
+                with_weekdays = True
             except sqlite3.OperationalError:
-                rows = []
+                try:
+                    rows = cur.execute(
+                        "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE debug_enabled=1 ORDER BY id",
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+                with_weekdays = False
         else:
-            rows = cur.execute(
-                "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
-            ).fetchall()
+            try:
+                rows = cur.execute(
+                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE enabled=1 ORDER BY id",
+                ).fetchall()
+                with_weekdays = True
+            except sqlite3.OperationalError:
+                rows = cur.execute(
+                    "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
+                ).fetchall()
+                with_weekdays = False
     else:
         raise SystemExit("必须指定 --name 或 --all")
-    return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3])) for r in rows]
+    if not rows:
+        return []
+    if with_weekdays:
+        return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3]), r[4] if len(r) > 4 else None) for r in rows]
+    return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3]), None) for r in rows]
+
+
+def _allowed_today(weekdays_json_text: Optional[str]) -> tuple[bool, str]:
+    """Return (allowed, debug_msg), interpreting NULL as no restriction.
+
+    - NULL/None: allowed
+    - []: disallowed
+    - [1..7]: allowed iff today in list (Asia/Shanghai by default or PIPELINE_TZ)
+    """
+    if weekdays_json_text is None or str(weekdays_json_text).strip() == "":
+        return True, "no weekday restriction"
+    try:
+        parsed = json.loads(str(weekdays_json_text))
+    except json.JSONDecodeError:
+        return True, "invalid weekdays_json -> ignore"
+    if not isinstance(parsed, list):
+        return True, "non-list weekdays_json -> ignore"
+    # Normalize to ints in 1..7
+    vals: list[int] = []
+    for x in parsed:
+        if isinstance(x, (int, float)):
+            xi = int(x)
+            if 1 <= xi <= 7:
+                vals.append(xi)
+    tz_name = os.getenv("PIPELINE_TZ", "Asia/Shanghai")
+    if ZoneInfo is not None:
+        try:
+            today = datetime.now(ZoneInfo(tz_name)).isoweekday()
+        except Exception:
+            today = datetime.now().isoweekday()
+    else:
+        today = datetime.now().isoweekday()
+    if not vals:
+        return False, f"weekday not allowed (today={today}; allowed=[] )"
+    if today not in vals:
+        return False, f"weekday not allowed (today={today}; allowed={vals})"
+    return True, f"weekday allowed (today={today}; allowed={vals})"
 
 
 def ensure_output_dir(pipeline_id: int) -> Path:
@@ -167,14 +237,30 @@ def _write_plain_copy_if_needed(html_file: Path) -> Path | None:
     if os.getenv("MAIL_PLAIN_ONLY", "").strip().lower() not in {"1", "true", "yes", "on"}:
         return None
     try:
+        def html_to_wrapped_text(html: str, width: int = 78) -> str:
+            x = html
+            x = re.sub(r"(?i)<br\s*/?>", "\n", x)
+            x = re.sub(r"(?i)</(p|div|section|article|h[1-6]|tr)>", "\n", x)
+            x = re.sub(r"(?i)<li[^>]*>", "\n- ", x)
+            x = re.sub(r"(?i)</li>", "\n", x)
+            x = re.sub(r"(?is)<script.*?</script>", " ", x)
+            x = re.sub(r"(?is)<style.*?</style>", " ", x)
+            x = re.sub(r"<[^>]+>", " ", x)
+            x = htmllib.unescape(x)
+            x = re.sub(r"[\t\x0b\x0c\r ]+", " ", x)
+            x = re.sub(r"\n{3,}", "\n\n", x)
+            parts = [p.strip() for p in x.split("\n\n")]
+            wrapped = []
+            for p in parts:
+                if not p:
+                    continue
+                wrapped.append(textwrap.fill(p, width=78, break_long_words=False, replace_whitespace=False))
+            return ("\n\n".join(wrapped).strip() or "(digest content)")
+
         body = html_file.read_text(encoding="utf-8", errors="ignore")
-        tmp = re.sub(r"<script[\s\S]*?</script>", " ", body, flags=re.IGNORECASE)
-        tmp = re.sub(r"<style[\s\S]*?</style>", " ", tmp, flags=re.IGNORECASE)
-        tmp = re.sub(r"<[^>]+>", " ", tmp)
-        tmp = htmllib.unescape(tmp)
-        tmp = re.sub(r"\s+", " ", tmp).strip()
+        txt = html_to_wrapped_text(body)
         txt_path = html_file.with_suffix(".txt")
-        txt_path.write_text(tmp, encoding="utf-8")
+        txt_path.write_text(txt, encoding="utf-8")
         print(f"[DELIVER] wrote plain copy: {txt_path}")
         return txt_path
     except Exception as e:
@@ -289,6 +375,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run pipelines marked debug_enabled=1 instead of enabled=1 when used with --all",
     )
+    p.add_argument(
+        "--ignore-weekday",
+        action="store_true",
+        help="Ignore per-pipeline weekday restriction when deciding to run",
+    )
     return p.parse_args()
 
 
@@ -305,6 +396,12 @@ def main() -> None:
             if int(p.enabled) != 1:
                 print(f"[SKIP] {p.name} (disabled)")
                 continue
+            # Weekday gating (unless overridden)
+            if not getattr(args, "ignore_weekday", False) and os.getenv("FORCE_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}:
+                ok, why = _allowed_today(p.weekdays_json)
+                if not ok:
+                    print(f"[SKIP] {p.name}: {why}")
+                    continue
             print(f"[RUN] {p.name} (id={p.id})")
             try:
                 run_one(conn, p)

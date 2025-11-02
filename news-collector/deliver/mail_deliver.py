@@ -8,6 +8,7 @@ import subprocess
 from email.header import Header
 import re
 import html as htmllib
+import textwrap
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
@@ -166,17 +167,42 @@ def main() -> None:
     body = html_path.read_text(encoding="utf-8")
 
     # Build multipart/alternative to improve deliverability
-    # Basic text fallback: strip scripts/styles/tags and condense whitespace
-    try:
-        tmp = re.sub(r"<script[\s\S]*?</script>", " ", body, flags=re.IGNORECASE)
-        tmp = re.sub(r"<style[\s\S]*?</style>", " ", tmp, flags=re.IGNORECASE)
-        tmp = re.sub(r"<[^>]+>", " ", tmp)
-        tmp = htmllib.unescape(tmp)
-        tmp = re.sub(r"\s+", " ", tmp).strip()
-        # cap to a reasonable length to avoid huge plain text part
-        text_fallback = tmp[:4000]
-    except Exception:
-        text_fallback = "(digest content)"
+    # Convert HTML to readable wrapped text (lines <= 78 chars, paragraphs preserved)
+    def _html_to_wrapped_text(html: str, width: int = 78, cap: int = 8000) -> str:
+        try:
+            x = html
+            # Normalize line breaks for common block elements
+            x = re.sub(r"(?i)<br\s*/?>", "\n", x)
+            x = re.sub(r"(?i)</(p|div|section|article|h[1-6]|tr)>", "\n", x)
+            # Bullet points
+            x = re.sub(r"(?i)<li[^>]*>", "\n- ", x)
+            x = re.sub(r"(?i)</li>", "\n", x)
+            # Remove scripts/styles
+            x = re.sub(r"(?is)<script.*?</script>", " ", x)
+            x = re.sub(r"(?is)<style.*?</style>", " ", x)
+            # Strip remaining tags
+            x = re.sub(r"<[^>]+>", " ", x)
+            x = htmllib.unescape(x)
+            # Collapse spaces but keep newlines
+            x = re.sub(r"[\t\x0b\x0c\r ]+", " ", x)
+            # Normalize multiple blank lines
+            x = re.sub(r"\n{3,}", "\n\n", x)
+            # Split paragraphs by blank lines, wrap each
+            parts = [p.strip() for p in x.split("\n\n")]
+            wrapped = []
+            for p in parts:
+                if not p:
+                    continue
+                wrapped.append(textwrap.fill(p, width=width, break_long_words=False, replace_whitespace=False))
+            out = "\n\n".join(wrapped).strip()
+            # Cap to avoid oversized plain body
+            if cap > 0 and len(out) > cap:
+                out = out[:cap] + "\n..."
+            return out or "(digest content)"
+        except Exception:
+            return "(digest content)"
+
+    text_fallback = _html_to_wrapped_text(body)
 
     # Build message according to mode
     if args.plain_only:

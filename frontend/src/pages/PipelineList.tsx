@@ -98,6 +98,23 @@ export default function PipelineList() {
       }
     },
     {
+      title: '星期',
+      dataIndex: 'weekday_tag',
+      width: 110,
+      render: (v) => {
+        const map: Record<string, { color: string; text: string }> = {
+          '每天': { color: 'green', text: '每天' },
+          '工作日': { color: 'blue', text: '工作日' },
+          '周末': { color: 'purple', text: '周末' },
+          '不限制': { color: 'default', text: '不限制' },
+          '不按星期': { color: 'default', text: '不按星期' },
+          '自定义': { color: 'orange', text: '自定义' }
+        }
+        const tag = v && map[v] ? map[v] : { color: 'default', text: v || '—' }
+        return <Tag color={tag.color}>{tag.text}</Tag>
+      }
+    },
+    {
       title: '推送方式',
       dataIndex: 'delivery_kind',
       render: (v) => (v ? <Tag color={v === 'email' ? 'blue' : 'green'}>{v}</Tag> : <Tag>未配置</Tag>)

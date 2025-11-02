@@ -359,3 +359,417 @@ INFO:     127.0.0.1:42888 - "GET /pipelines HTTP/1.1" 200 OK
 INFO:     127.0.0.1:42890 - "GET /options HTTP/1.1" 200 OK
 INFO:     127.0.0.1:42902 - "GET /options HTTP/1.1" 200 OK
 INFO:     127.0.0.1:42912 - "GET /pipelines/1 HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [807434]
+INFO:     Started server process [808735]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [808735]
+INFO:     Started server process [808748]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     198.235.24.244:62400 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     206.189.132.209:49204 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     206.189.132.209:49220 - "GET /login HTTP/1.1" 401 Unauthorized
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [808748]
+INFO:     Started server process [811285]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811285]
+INFO:     Started server process [811335]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:51878 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51888 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37666 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37678 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37692 - "GET /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36620 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36632 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36638 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36640 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36642 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56594 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56600 - "GET /pipelines HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811335]
+INFO:     Started server process [811819]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811819]
+INFO:     Started server process [811867]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811867]
+INFO:     Started server process [811877]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811877]
+INFO:     Started server process [811885]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:54016 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54006 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54020 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54030 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54038 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54042 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54058 - "GET /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44040 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44048 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54052 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54066 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54070 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54080 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54086 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54100 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54114 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38350 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38356 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38360 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38370 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59320 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:51290 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:40952 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:45552 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:54560 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:42708 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57094 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36640 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+INFO:     127.0.0.1:38438 - "POST /pipelines HTTP/1.1" 422 Unprocessable Entity
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [811885]
+INFO:     Started server process [812462]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:36042 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48488 - "POST /pipelines HTTP/1.1" 201 Created
+INFO:     127.0.0.1:48490 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48498 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40068 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40072 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40088 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36552 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56070 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56084 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56096 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52644 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52634 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52656 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52664 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52680 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55372 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [812462]
+INFO:     Started server process [812881]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [812881]
+INFO:     Started server process [812925]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:48250 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38390 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38384 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38404 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38408 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38424 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38430 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [812925]
+INFO:     Started server process [813098]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:55094 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55078 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55096 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55112 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55118 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51598 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51590 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51604 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33344 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33332 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33354 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54642 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54644 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35052 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35056 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35060 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35076 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35090 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35112 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35106 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35116 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44994 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45006 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45018 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45026 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53872 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53880 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53894 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47766 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47780 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47534 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34352 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34362 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34366 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34372 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34378 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58250 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58266 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50544 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50546 - "GET /pipelines HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [813098]
+INFO:     Started server process [813633]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:38652 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38668 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38672 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38680 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38684 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38696 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38698 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54966 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54980 - "GET /pipelines/9 HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [813633]
+INFO:     Started server process [813796]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [813796]
+INFO:     Started server process [813831]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [813831]
+INFO:     Started server process [813986]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [813986]
+INFO:     Started server process [814034]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:48948 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48942 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48952 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48966 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48982 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': None}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': '5', 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': None}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': '5'}}
+[DEBUG] update pipeline pid=9 weekdays_json=None
+INFO:     127.0.0.1:54954 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54956 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54982 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54968 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54994 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55006 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55020 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40704 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40718 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43230 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43242 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43248 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': None}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': '5', 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': None}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': '5'}}
+[DEBUG] update pipeline pid=9 weekdays_json=None
+INFO:     127.0.0.1:35326 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35332 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54478 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54486 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54500 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': None}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': '5', 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': None}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': '5'}}
+[DEBUG] update pipeline pid=9 weekdays_json=None
+INFO:     127.0.0.1:54504 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54516 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38782 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38784 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38790 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34838 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34840 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34846 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45728 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45732 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45746 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': None}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': None, 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': None}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': None}}
+[DEBUG] update pipeline pid=9 weekdays_json=None
+INFO:     127.0.0.1:54466 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54478 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47300 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47308 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47320 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47326 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47338 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52552 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52568 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52576 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': [3, 4, 5]}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': [3, 4, 5], 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': [3, 4, 5]}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': [3, 4, 5]}}
+[DEBUG] update pipeline pid=9 weekdays_json=[3, 4, 5]
+INFO:     127.0.0.1:52592 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52608 - "GET /pipelines/9 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=9 payload.pipeline={'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'debug_enabled': None, 'weekdays_json': [2, 3, 4, 5]}; raw={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'weekdays_json': [2, 3, 4, 5], 'description': 'aa'}}
+[DEBUG] update_pipeline pid=9 model_dump_before_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': [2, 3, 4, 5]}}
+[DEBUG] update_pipeline pid=9 model_dump_after_merge={'pipeline': {'name': 'feishu_all_week_1_to_5', 'enabled': 1, 'description': 'aa', 'weekdays_json': [2, 3, 4, 5]}}
+[DEBUG] update pipeline pid=9 weekdays_json=[2, 3, 4, 5]
+INFO:     127.0.0.1:51972 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51984 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51992 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51994 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52008 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52024 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52038 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55866 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55868 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55870 - "GET /pipelines/9 HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [814034]
+INFO:     Started server process [814335]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [814335]
+INFO:     Started server process [814343]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:36976 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:36984 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37000 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37012 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37018 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40594 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40596 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40598 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40614 - "GET /options HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [814343]
+INFO:     Started server process [814354]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [814354]
+INFO:     Started server process [814389]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+[DEBUG] insert pipeline weekdays_json=[1]
+INFO:     127.0.0.1:57502 - "POST /pipelines HTTP/1.1" 201 Created
+INFO:     127.0.0.1:57514 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57522 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45804 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45816 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45830 - "GET /pipelines/10 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=10 payload.pipeline={'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'debug_enabled': None, 'weekdays_json': [1, 7]}; raw={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'weekdays_json': [1, 7], 'description': ''}}
+[DEBUG] update_pipeline pid=10 model_dump_before_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1, 7]}}
+[DEBUG] update_pipeline pid=10 model_dump_after_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1, 7]}}
+[DEBUG] update pipeline pid=10 weekdays_json=[1, 7]
+INFO:     127.0.0.1:58376 - "PUT /pipelines/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58384 - "GET /pipelines/10 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=10 payload.pipeline={'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'debug_enabled': None, 'weekdays_json': [1]}; raw={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'weekdays_json': [1], 'description': ''}}
+[DEBUG] update_pipeline pid=10 model_dump_before_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1]}}
+[DEBUG] update_pipeline pid=10 model_dump_after_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1]}}
+[DEBUG] update pipeline pid=10 weekdays_json=[1]
+INFO:     127.0.0.1:40724 - "PUT /pipelines/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40728 - "GET /pipelines/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57486 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57498 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57512 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57524 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57536 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40716 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40726 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38978 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38990 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39000 - "GET /pipelines/10 HTTP/1.1" 200 OK
+[DEBUG] update_pipeline pid=10 payload.pipeline={'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'debug_enabled': None, 'weekdays_json': [1]}; raw={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'weekdays_json': [1], 'description': ''}, 'writer': {'type': 'feishu_md', 'hours': 72, 'per_source_cap': 3, 'limit_per_category': {'default': 10, 'tech': 5}, 'weights_json': {'timeliness': 0.2, 'game_relevance': 0.2, 'mobile_game_relevance': 0.2, 'ai_relevance': 0.1, 'tech_relevance': 0.01, 'quality': 0.2, 'insight': 0.2, 'depth': 0.2, 'novelty': 0.2}, 'bonus_json': {'openai.research': 2, 'deepmind': 1, 'qbitai-zhiku': 1}}}
+[DEBUG] update_pipeline pid=10 model_dump_before_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1]}, 'writer': {'type': 'feishu_md', 'hours': 72, 'weights_json': {'timeliness': 0.2, 'game_relevance': 0.2, 'mobile_game_relevance': 0.2, 'ai_relevance': 0.1, 'tech_relevance': 0.01, 'quality': 0.2, 'insight': 0.2, 'depth': 0.2, 'novelty': 0.2}, 'bonus_json': {'openai.research': 2, 'deepmind': 1, 'qbitai-zhiku': 1}, 'limit_per_category': {'default': 10, 'tech': 5}, 'per_source_cap': 3}}
+[DEBUG] update_pipeline pid=10 model_dump_after_merge={'pipeline': {'name': 'feishu_all_monday', 'enabled': 1, 'description': '', 'weekdays_json': [1]}, 'writer': {'type': 'feishu_md', 'hours': 72, 'weights_json': {'timeliness': 0.2, 'game_relevance': 0.2, 'mobile_game_relevance': 0.2, 'ai_relevance': 0.1, 'tech_relevance': 0.01, 'quality': 0.2, 'insight': 0.2, 'depth': 0.2, 'novelty': 0.2}, 'bonus_json': {'openai.research': 2, 'deepmind': 1, 'qbitai-zhiku': 1}, 'limit_per_category': {'default': 10, 'tech': 5}, 'per_source_cap': 3}}
+[DEBUG] update pipeline pid=10 weekdays_json=[1]
+INFO:     127.0.0.1:40826 - "PUT /pipelines/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40828 - "GET /pipelines/10 HTTP/1.1" 200 OK

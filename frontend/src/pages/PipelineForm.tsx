@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { AutoComplete, Button, Card, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
+import { AutoComplete, Button, Card, Checkbox, Divider, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { createPipeline, fetchFeishuChats, fetchOptions, fetchPipeline, updatePipeline } from '../api'
 import type { FeishuChat, MetricOption } from '../api'
@@ -198,6 +198,19 @@ export default function PipelineForm() {
   const toAllChatValue = Form.useWatch<number | undefined>(["delivery", "to_all_chat"], form)
   const chatIdValue = Form.useWatch<string | undefined>(["delivery", "chat_id"], form)
   const metrics = options.metrics.length ? options.metrics : FALLBACK_METRICS
+  const [weekdaySelection, setWeekdaySelection] = useState<number[] | null>(null)
+  const weekdayOptions = useMemo(
+    () => [
+      { label: '周一', value: 1 },
+      { label: '周二', value: 2 },
+      { label: '周三', value: 3 },
+      { label: '周四', value: 4 },
+      { label: '周五', value: 5 },
+      { label: '周六', value: 6 },
+      { label: '周日', value: 7 }
+    ],
+    []
+  )
 
   const initialFormValues = useMemo(
     () => ({
@@ -337,56 +350,102 @@ export default function PipelineForm() {
     }
   }, [editing, form])
 
+  const applyPipelineData = (data: any) => {
+    // Normalize pipeline for form consumption (esp. weekdays array)
+    const pipelinePatched: any = { ...(data.pipeline || {}) }
+    const wdRaw = pipelinePatched?.weekdays_json
+    if (Array.isArray(wdRaw)) {
+      pipelinePatched.weekdays_json = wdRaw
+        .map((n: any) => Number(n))
+        .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 7)
+    } else if (typeof wdRaw === 'string') {
+      try {
+        const parsed = JSON.parse(wdRaw)
+        if (Array.isArray(parsed)) {
+          pipelinePatched.weekdays_json = parsed
+            .map((n: any) => Number(n))
+            .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 7)
+        } else {
+          pipelinePatched.weekdays_json = undefined
+        }
+      } catch {
+        pipelinePatched.weekdays_json = undefined
+      }
+    } else if (wdRaw == null || (typeof wdRaw === 'string' && wdRaw.trim() === '')) {
+      pipelinePatched.weekdays_json = undefined
+    }
+    const w = data.writer || {}
+    const writerPatched: any = { ...w }
+    const { defaultValue, overrides } = normalizeLimitForForm(w?.limit_per_category)
+    writerPatched.limit_per_category_default = defaultValue
+    writerPatched.limit_per_category_overrides = overrides
+    writerPatched.weights_entries = normalizeWeightsForForm(w?.weights_json ?? {}, metrics)
+    writerPatched.bonus_entries = normalizeBonusForForm(w?.bonus_json ?? DEFAULT_BONUS_VALUES)
+    delete writerPatched.limit_per_category
+    delete writerPatched.weights_json
+    delete writerPatched.bonus_json
+    if (typeof writerPatched.per_source_cap === 'undefined' || writerPatched.per_source_cap === null) {
+      writerPatched.per_source_cap = 3
+    }
+    if (typeof writerPatched.hours === 'undefined' || writerPatched.hours === null) {
+      writerPatched.hours = 24
+    }
+    const deliveryForForm = data.delivery ? { ...data.delivery } : undefined
+    if (deliveryForForm?.kind === 'email') {
+      deliveryForForm.subject_tpl = stripDateToken(deliveryForForm.subject_tpl)
+    }
+    const patchedDelivery =
+      deliveryForForm?.kind === 'feishu'
+        ? {
+            ...deliveryForForm,
+            to_all_chat:
+              typeof deliveryForForm.to_all_chat === 'number'
+                ? deliveryForForm.to_all_chat
+                : Number(deliveryForForm.to_all_chat ?? 0),
+            chat_id: deliveryForForm.chat_id || undefined
+          }
+        : deliveryForForm
+    form.setFieldsValue({
+      pipeline: pipelinePatched,
+      filters: data.filters || { all_categories: 1 },
+      writer: writerPatched,
+      delivery: patchedDelivery
+    })
+    if (deliveryForForm?.kind === 'feishu') {
+      form.setFieldValue(["delivery", "to_all_chat"], patchedDelivery?.to_all_chat ?? 0)
+      form.setFieldValue(["delivery", "chat_id"], patchedDelivery?.chat_id)
+    }
+    if (deliveryForForm?.kind) setDeliveryKind(deliveryForForm.kind as DeliveryKind)
+
+    if (pipelinePatched.weekdays_json === undefined) {
+      setWeekdaySelection(null)
+      form.setFieldValue(["pipeline", "weekdays_json"], null)
+    } else if (pipelinePatched.weekdays_json === null) {
+      setWeekdaySelection(null)
+      form.setFieldValue(["pipeline", "weekdays_json"], null)
+    } else if (Array.isArray(pipelinePatched.weekdays_json)) {
+      const normalized = pipelinePatched.weekdays_json
+        .map((n: any) => Number(n))
+        .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 7)
+      setWeekdaySelection(normalized)
+      form.setFieldValue(["pipeline", "weekdays_json"], normalized)
+    }
+  }
+
   useEffect(() => {
     if (!editing || !optionsReady) return
     setLoading(true)
     fetchPipeline(Number(id))
-      .then((data) => {
-        const w = data.writer || {}
-        const writerPatched: any = { ...w }
-        const { defaultValue, overrides } = normalizeLimitForForm(w?.limit_per_category)
-        writerPatched.limit_per_category_default = defaultValue
-        writerPatched.limit_per_category_overrides = overrides
-        writerPatched.weights_entries = normalizeWeightsForForm(w?.weights_json ?? {}, metrics)
-        writerPatched.bonus_entries = normalizeBonusForForm(w?.bonus_json ?? DEFAULT_BONUS_VALUES)
-        delete writerPatched.limit_per_category
-        delete writerPatched.weights_json
-        delete writerPatched.bonus_json
-        if (typeof writerPatched.per_source_cap === 'undefined' || writerPatched.per_source_cap === null) {
-          writerPatched.per_source_cap = 3
-        }
-        if (typeof writerPatched.hours === 'undefined' || writerPatched.hours === null) {
-          writerPatched.hours = 24
-        }
-        const deliveryForForm = data.delivery ? { ...data.delivery } : undefined
-        if (deliveryForForm?.kind === 'email') {
-          deliveryForForm.subject_tpl = stripDateToken(deliveryForForm.subject_tpl)
-        }
-        const patchedDelivery =
-          deliveryForForm?.kind === 'feishu'
-            ? {
-                ...deliveryForForm,
-                to_all_chat:
-                  typeof deliveryForForm.to_all_chat === 'number'
-                    ? deliveryForForm.to_all_chat
-                    : Number(deliveryForForm.to_all_chat ?? 0),
-                chat_id: deliveryForForm.chat_id || undefined
-              }
-            : deliveryForForm
-        form.setFieldsValue({
-          pipeline: data.pipeline,
-          filters: data.filters || { all_categories: 1 },
-          writer: writerPatched,
-          delivery: patchedDelivery
-        })
-        if (deliveryForForm?.kind === 'feishu') {
-          form.setFieldValue(["delivery", "to_all_chat"], patchedDelivery?.to_all_chat ?? 0)
-          form.setFieldValue(["delivery", "chat_id"], patchedDelivery?.chat_id)
-        }
-        if (deliveryForForm?.kind) setDeliveryKind(deliveryForForm.kind as DeliveryKind)
-      })
+      .then((data) => applyPipelineData(data))
       .finally(() => setLoading(false))
   }, [editing, id, metrics, optionsReady])
+
+  useEffect(() => {
+    if (!editing) {
+      setWeekdaySelection(null)
+      form.setFieldValue(["pipeline", "weekdays_json"], null)
+    }
+  }, [editing, form])
 
   useEffect(() => {
     if (deliveryKind !== 'feishu') {
@@ -424,9 +483,32 @@ export default function PipelineForm() {
 
   const onSubmit = async () => {
     const values = await form.validateFields()
+    // Debug log to inspect weekday values
+    // eslint-disable-next-line no-console
+    console.log('debug weekdays', values?.pipeline?.weekdays_json, form.getFieldValue(["pipeline", "weekdays_json"]))
     setLoading(true)
     try {
-      const writerValues = values.writer ? { ...values.writer } : undefined
+      // Normalize weekdays for payload (source of truth = component state)
+      const pipelinePayload: any = { ...(values?.pipeline || {}) }
+      if (Array.isArray(weekdaySelection)) {
+        const sorted = [...weekdaySelection]
+          .map((n: any) => Number(n))
+          .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= 7)
+          .sort((a: number, b: number) => a - b)
+        pipelinePayload.weekdays_json = sorted
+      } else if (weekdaySelection === null) {
+        pipelinePayload.weekdays_json = null
+      } else {
+        delete pipelinePayload.weekdays_json
+      }
+      let writerValues = values.writer ? { ...values.writer } as any : undefined
+      if (writerValues) {
+        // If writer.type not selected, drop writer to avoid 422 validation
+        const wtype = typeof writerValues.type === 'string' ? writerValues.type.trim() : ''
+        if (!wtype) {
+          writerValues = undefined
+        }
+      }
       if (writerValues) {
         const limitMap = buildLimitPayload(
           toNumber(writerValues.limit_per_category_default),
@@ -468,12 +550,15 @@ export default function PipelineForm() {
 
       const payload = {
         ...values,
+        pipeline: pipelinePayload,
         writer: writerValues,
         delivery: deliveryValues ? { kind: deliveryKind, ...deliveryValues } : undefined
       }
       if (editing) {
-        // 在编辑模式下，保存后留在当前页
+        // 在编辑模式下，保存后刷新一次表单，确保与数据库一致
         await updatePipeline(Number(id), payload)
+        const latest = await fetchPipeline(Number(id))
+        applyPipelineData(latest)
         message.success('已更新')
       } else {
         // 新建完成后仍返回列表页（保留原行为）
@@ -481,8 +566,23 @@ export default function PipelineForm() {
         message.success('已创建')
         navigate('/')
       }
-    } catch (e) {
-      message.error('保存失败')
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      if (detail) {
+        if (typeof detail === 'string') {
+          message.error(`保存失败：${detail}`)
+        } else if (Array.isArray(detail)) {
+          // FastAPI validation errors array
+          const first = detail[0]
+          const loc = Array.isArray(first?.loc) ? first.loc.join('.') : ''
+          const msg = first?.msg || JSON.stringify(detail)
+          message.error(`保存失败：${loc ? loc + ' - ' : ''}${msg}`)
+        } else {
+          message.error('保存失败')
+        }
+      } else {
+        message.error('保存失败')
+      }
     } finally {
       setLoading(false)
     }
@@ -631,6 +731,78 @@ export default function PipelineForm() {
                       <Radio value={1}>启用</Radio>
                       <Radio value={0}>停用</Radio>
                     </Radio.Group>
+                  </Form.Item>
+                  <Form.Item
+                    name={["pipeline", "weekdays_json"]}
+                    label="按星期运行"
+                    tooltip="留空=不限制；全选=等价于不限制；选择为空数组=永不按星期触发（常用于临时停发）"
+                  >
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      <Checkbox.Group
+                        options={weekdayOptions}
+                        value={Array.isArray(weekdaySelection) ? weekdaySelection : []}
+                        onChange={(vals) => {
+                          const normalized = (vals as Array<number | string>).map((v) => Number(v))
+                          setWeekdaySelection(normalized)
+                          form.setFieldValue(["pipeline", "weekdays_json"], normalized)
+                        }}
+                      />
+                      <Space size="small">
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            const preset = [1, 2, 3, 4, 5]
+                            setWeekdaySelection(preset)
+                            form.setFieldValue(["pipeline", "weekdays_json"], preset)
+                          }}
+                        >
+                          仅工作日
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            const preset = [6, 7]
+                            setWeekdaySelection(preset)
+                            form.setFieldValue(["pipeline", "weekdays_json"], preset)
+                          }}
+                        >
+                          仅周末
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            const preset = [1, 2, 3, 4, 5, 6, 7]
+                            setWeekdaySelection(preset)
+                            form.setFieldValue(["pipeline", "weekdays_json"], preset)
+                          }}
+                        >
+                          全选
+                        </Button>
+                        <Button
+                          size="small"
+                          onClick={() => {
+                            setWeekdaySelection(null)
+                            form.setFieldValue(["pipeline", "weekdays_json"], null)
+                          }}
+                        >
+                          不限制
+                        </Button>
+                        <Button
+                          size="small"
+                          danger
+                          onClick={() => {
+                            const preset: number[] = []
+                            setWeekdaySelection(preset)
+                            form.setFieldValue(["pipeline", "weekdays_json"], preset)
+                          }}
+                        >
+                          清空
+                        </Button>
+                      </Space>
+                      <Typography.Text type="secondary">
+                        说明：系统按北京时区判断今天的星期；Runner 提供 --ignore-weekday 或 FORCE_RUN=1 覆盖。
+                      </Typography.Text>
+                    </Space>
                   </Form.Item>
                   <Form.Item name={["pipeline", "description"]} label="描述">
                     <Input.TextArea rows={3} />

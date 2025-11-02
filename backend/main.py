@@ -15,7 +15,7 @@ from email.utils import formatdate, make_msgid
 from email.header import Header
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import db
 
@@ -28,6 +28,57 @@ class PipelineBase(BaseModel):
     enabled: int = Field(1, ge=0, le=1)
     description: str | None = None
     debug_enabled: Optional[int] = Field(None, ge=0, le=1)
+    # 允许运行的星期（1=周一…7=周日）；None 表示不限制
+    weekdays_json: Optional[list[int]] = None
+
+    @field_validator("weekdays_json", mode="before")
+    @classmethod
+    def _coerce_weekdays(cls, v):  # type: ignore[override]
+        # Accept list[int], list[str], JSON-string, CSV, empty string → normalize to list[int] or None
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode("utf-8", errors="ignore")
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            # Try JSON first
+            try:
+                import json as _json
+                parsed = _json.loads(s)
+            except Exception:
+                # Try CSV like "1,2,3"
+                parts = [p.strip() for p in s.split(",") if p.strip()]
+                try:
+                    vals = [int(p) for p in parts]
+                except Exception:
+                    return None
+                return [x for x in vals if 1 <= int(x) <= 7]
+            else:
+                if isinstance(parsed, list):
+                    vals: list[int] = []
+                    for x in parsed:
+                        try:
+                            xi = int(x)
+                        except Exception:
+                            continue
+                        if 1 <= xi <= 7:
+                            vals.append(xi)
+                    return vals
+                return None
+        if isinstance(v, list):
+            vals: list[int] = []
+            for x in v:
+                try:
+                    xi = int(x)
+                except Exception:
+                    continue
+                if 1 <= xi <= 7:
+                    vals.append(xi)
+            return vals
+        # Unknown type: let pydantic handle or drop
+        return v
 
 
 class PipelineFilters(BaseModel):
@@ -671,6 +722,36 @@ def options(user: dict = Depends(_require_user)) -> dict:
         return db.fetch_options(conn)
 
 
+def _parse_weekday_string(value: str) -> list[int] | None:
+    s = (value or "").strip()
+    if not s:
+        return []
+    import json as _json
+
+    try:
+        parsed = _json.loads(s)
+    except Exception:
+        # Try comma-separated fallback
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        try:
+            return [int(p) for p in parts if 1 <= int(p) <= 7]
+        except Exception:
+            return None
+    else:
+        if isinstance(parsed, list):
+            try:
+                return [int(p) for p in parsed if 1 <= int(p) <= 7]
+            except Exception:
+                return None
+        if isinstance(parsed, (int, float)):
+            try:
+                pi = int(parsed)
+                return [pi] if 1 <= pi <= 7 else []
+            except Exception:
+                return None
+        return None
+
+
 @app.get("/categories")
 def list_categories(user: dict = Depends(_require_user)) -> list[dict]:
     with db.get_conn() as conn:
@@ -978,16 +1059,55 @@ def get_pipeline(pid: int, user: dict = Depends(_require_user)) -> dict:
 
 
 @app.post("/pipelines", status_code=201)
-def create_pipeline(payload: PipelinePayload, user: dict = Depends(_require_user)) -> dict:
+async def create_pipeline(payload: PipelinePayload, request: Request, user: dict = Depends(_require_user)) -> dict:
+    raw_body = {}
+    try:
+        raw_body = await request.json()
+    except Exception:
+        pass
     with db.get_conn() as conn:
         owner_id = int(user["id"]) if int(user.get("is_admin", 0)) != 1 else int(user["id"])  # default to self
-        new_id = db.create_or_update_pipeline(conn, payload.model_dump(), owner_user_id=owner_id)
+        result = payload.model_dump(exclude_unset=True)
+        raw_weekdays = None
+        raw_has_weekdays = False
+        if isinstance(raw_body, dict):
+            raw_pipeline = raw_body.get("pipeline")
+            if isinstance(raw_pipeline, dict) and "weekdays_json" in raw_pipeline:
+                raw_weekdays = raw_pipeline.get("weekdays_json")
+                raw_has_weekdays = True
+        if raw_has_weekdays:
+            normalized = None
+            if raw_weekdays is None:
+                normalized = None
+            else:
+                if isinstance(raw_weekdays, (list, tuple)):
+                    try:
+                        normalized = [int(x) for x in raw_weekdays if 1 <= int(x) <= 7]
+                    except Exception:
+                        normalized = None
+                elif isinstance(raw_weekdays, (bytes, bytearray)):
+                    normalized = _parse_weekday_string(raw_weekdays.decode("utf-8", errors="ignore"))
+                elif isinstance(raw_weekdays, str):
+                    normalized = _parse_weekday_string(raw_weekdays)
+            result_pipeline = result.setdefault("pipeline", {})
+            result_pipeline["weekdays_json"] = normalized
+        new_id = db.create_or_update_pipeline(conn, result, owner_user_id=owner_id)
         return {"id": new_id}
 
 
 @app.put("/pipelines/{pid}")
-def update_pipeline(pid: int, payload: PipelinePayload, user: dict = Depends(_require_user)) -> dict:
+async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, user: dict = Depends(_require_user)) -> dict:
+    raw_body = {}
+    try:
+        raw_body = await request.json()
+    except Exception:
+        pass
     with db.get_conn() as conn:
+        try:
+            p_dump = payload.pipeline.model_dump(exclude_unset=False) if payload.pipeline is not None else None
+            print(f"[DEBUG] update_pipeline pid={pid} payload.pipeline={p_dump}; raw={raw_body}")
+        except Exception as _e:
+            print(f"[DEBUG] update_pipeline pid={pid} dump err={_e}; raw={raw_body}")
         existed = db.fetch_pipeline(conn, pid)
         if not existed:
             raise HTTPException(status_code=404, detail="Pipeline not found")
@@ -995,7 +1115,45 @@ def update_pipeline(pid: int, payload: PipelinePayload, user: dict = Depends(_re
             owner_id = (existed.get("pipeline") or {}).get("owner_user_id")
             if owner_id is None or int(owner_id) != int(user["id"]):
                 raise HTTPException(status_code=403, detail="无权修改该投递")
-        db.create_or_update_pipeline(conn, payload.model_dump(), pid=pid)
+        # exclude_unset 避免未在请求中出现的字段被重置为 None
+        result = payload.model_dump(exclude_unset=True)
+        try:
+            print(f"[DEBUG] update_pipeline pid={pid} model_dump_before_merge={result}")
+        except Exception:
+            pass
+        # Ensure weekdays_json propagates even if excluded by Pydantic
+        raw_weekdays = None
+        raw_has_weekdays = False
+        if isinstance(raw_body, dict):
+            raw_pipeline = raw_body.get("pipeline")
+            if isinstance(raw_pipeline, dict) and "weekdays_json" in raw_pipeline:
+                raw_weekdays = raw_pipeline.get("weekdays_json")
+                raw_has_weekdays = True
+        if raw_has_weekdays:
+            # Normalize various possible payload shapes into list[int] or None
+            normalized_weekdays: list[int] | None
+            if raw_weekdays is None:
+                normalized_weekdays = None
+            else:
+                try:
+                    if isinstance(raw_weekdays, (list, tuple)):
+                        normalized_weekdays = [int(x) for x in raw_weekdays if 1 <= int(x) <= 7]
+                    elif isinstance(raw_weekdays, (bytes, bytearray)):
+                        s = raw_weekdays.decode("utf-8", errors="ignore")
+                        normalized_weekdays = _parse_weekday_string(s)
+                    elif isinstance(raw_weekdays, str):
+                        normalized_weekdays = _parse_weekday_string(raw_weekdays)
+                    else:
+                        normalized_weekdays = None
+                except Exception:
+                    normalized_weekdays = None
+            result_pipeline = result.setdefault("pipeline", {})
+            result_pipeline["weekdays_json"] = normalized_weekdays
+        try:
+            print(f"[DEBUG] update_pipeline pid={pid} model_dump_after_merge={result}")
+        except Exception:
+            pass
+        db.create_or_update_pipeline(conn, result, pid=pid)
         return {"id": pid}
 
 

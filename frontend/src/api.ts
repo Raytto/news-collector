@@ -60,6 +60,7 @@ export type PipelineListItem = {
   delivery_kind?: 'email' | 'feishu' | null
   owner_user_id?: number | null
   owner_user_name?: string | null
+  weekday_tag?: string | null
 }
 
 // --- Users (admin) ---

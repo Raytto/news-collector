@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS pipelines (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL UNIQUE,
   enabled      INTEGER NOT NULL DEFAULT 1,
+  -- 允许运行的星期（ISO 1-7）；NULL 表示不限制
+  weekdays_json TEXT,
   description  TEXT,
   created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
@@ -106,6 +108,13 @@ def ensure_db() -> None:
     with sqlite3.connect(str(DB_PATH)) as conn:
         conn.executescript(SCHEMA_SQL)
         cur = conn.cursor()
+        # Ensure pipelines.weekdays_json exists (idempotent)
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pipelines'")
+        if cur.fetchone():
+            cur.execute("PRAGMA table_info(pipelines)")
+            p_cols = {row[1] for row in cur.fetchall()}
+            if "weekdays_json" not in p_cols:
+                cur.execute("ALTER TABLE pipelines ADD COLUMN weekdays_json TEXT")
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_writers'"
         )
@@ -285,6 +294,7 @@ def _resolve_metric_id(conn: sqlite3.Connection, raw_key: Any) -> Optional[int]:
 
 def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
     cur = conn.cursor()
+    # Base fields
     prow = cur.execute(
         "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE id=?",
         (pid,)
@@ -292,6 +302,26 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
     if not prow:
         return {}
     pid, name, enabled, desc = int(prow[0]), str(prow[1]), int(prow[2]), str(prow[3])
+    # Optional weekdays_json
+    weekdays: Optional[list[int]] = None
+    try:
+        wrow = cur.execute(
+            "SELECT weekdays_json FROM pipelines WHERE id=?",
+            (pid,),
+        ).fetchone()
+        if wrow and wrow[0] is not None:
+            try:
+                parsed = json.loads(str(wrow[0]))
+                if isinstance(parsed, list):
+                    # keep only 1..7 ints
+                    weekdays = [int(x) for x in parsed if isinstance(x, (int, float)) and 1 <= int(x) <= 7]
+                else:
+                    weekdays = None
+            except json.JSONDecodeError:
+                weekdays = None
+    except sqlite3.OperationalError:
+        # Column missing; ignore for backward compatibility
+        weekdays = None
     # filters
     frow = cur.execute(
         "SELECT all_categories, categories_json, all_src, include_src_json FROM pipeline_filters WHERE pipeline_id=?",
@@ -376,7 +406,7 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
             delivery = {}
     # expose id as well so exports/imports can optionally match by id
     return {
-        "pipeline": {"id": pid, "name": name, "enabled": enabled, "description": desc},
+        "pipeline": {"id": pid, "name": name, "enabled": enabled, "description": desc, "weekdays_json": weekdays},
         "filters": filters,
         "writer": writer,
         "delivery": delivery,
@@ -486,6 +516,29 @@ def cmd_import(args: argparse.Namespace) -> None:
             # Respect explicit zeros: only use default when key missing
             enabled = int(meta["enabled"]) if ("enabled" in meta and meta.get("enabled") is not None) else 1
             desc = str(meta.get("description") or "")
+            raw_weekdays = meta.get("weekdays_json")
+            weekdays_norm: Optional[str]
+            if raw_weekdays is None or raw_weekdays == "":
+                weekdays_norm = None
+            else:
+                # accept list or JSON string; normalize and filter to 1..7 ints
+                arr: Optional[list[int]] = None
+                if isinstance(raw_weekdays, str):
+                    try:
+                        parsed = json.loads(raw_weekdays)
+                    except json.JSONDecodeError:
+                        parsed = None
+                else:
+                    parsed = raw_weekdays
+                if isinstance(parsed, list):
+                    try:
+                        vals = [int(x) for x in parsed if isinstance(x, (int, float))]
+                    except Exception:
+                        vals = []
+                    arr = [v for v in vals if 1 <= v <= 7]
+                    weekdays_norm = json.dumps(arr, ensure_ascii=False)
+                else:
+                    weekdays_norm = None
             # Prefer matching by id when provided and valid; otherwise, fall back to name
             pid: Optional[int] = None
             if isinstance(raw_id, int):
@@ -518,8 +571,14 @@ def cmd_import(args: argparse.Namespace) -> None:
                         cur.execute(f"DELETE FROM {t} WHERE pipeline_id=?", (pid,))
                 # Ensure base fields up-to-date
                 cur.execute(
-                    "UPDATE pipelines SET enabled=?, description=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (int(enabled), desc, pid),
+                    "UPDATE pipelines SET enabled=?, description=?, updated_at=CURRENT_TIMESTAMP, weekdays_json=? WHERE id=?",
+                    (int(enabled), desc, weekdays_norm, pid),
+                )
+            # When created via _get_or_create_pipeline, also set weekdays_json (since base helper ignores it)
+            if pid is not None and weekdays_norm is not None:
+                cur.execute(
+                    "UPDATE pipelines SET weekdays_json=? WHERE id=?",
+                    (weekdays_norm, pid),
                 )
 
             # filters

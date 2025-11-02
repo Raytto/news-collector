@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS pipelines (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
   enabled       INTEGER NOT NULL DEFAULT 1,
+  -- 允许运行的星期（ISO 1-7）；NULL 表示不限制
+  weekdays_json TEXT,
   description   TEXT,
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -240,6 +242,11 @@ def ensure_db() -> None:
         p_cols = {row[1] for row in cur.fetchall()}
         if "debug_enabled" not in p_cols:
             cur.execute("ALTER TABLE pipelines ADD COLUMN debug_enabled INTEGER NOT NULL DEFAULT 0")
+        # Add weekdays_json column to pipelines if missing (weekday gating)
+        cur.execute("PRAGMA table_info(pipelines)")
+        p_cols = {row[1] for row in cur.fetchall()}
+        if "weekdays_json" not in p_cols:
+            cur.execute("ALTER TABLE pipelines ADD COLUMN weekdays_json TEXT")
         # Add enabled column to users if missing
         cur.execute("PRAGMA table_info(users)")
         u_cols = {row[1] for row in cur.fetchall()}
@@ -263,6 +270,7 @@ def ensure_db() -> None:
                       id            INTEGER PRIMARY KEY AUTOINCREMENT,
                       name          TEXT NOT NULL,
                       enabled       INTEGER NOT NULL DEFAULT 1,
+                      weekdays_json TEXT,
                       description   TEXT,
                       created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
                       updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -274,8 +282,8 @@ def ensure_db() -> None:
                 # Copy data across
                 cur.execute(
                     """
-                    INSERT INTO pipelines (id, name, enabled, description, created_at, updated_at, owner_user_id, debug_enabled)
-                    SELECT id, name, enabled, description, created_at, updated_at, owner_user_id, 0 as debug_enabled
+                    INSERT INTO pipelines (id, name, enabled, weekdays_json, description, created_at, updated_at, owner_user_id, debug_enabled)
+                    SELECT id, name, enabled, NULL as weekdays_json, description, created_at, updated_at, owner_user_id, 0 as debug_enabled
                     FROM pipelines_old
                     """
                 )
@@ -475,7 +483,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
           FROM pipeline_writers
           GROUP BY pipeline_id
         )
-        SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id, p.debug_enabled,
+        SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id, p.debug_enabled, p.weekdays_json,
                u.name AS owner_user_name, u.email AS owner_user_email,
                w.type AS writer_type, w.hours AS writer_hours,
                CASE WHEN e.pipeline_id IS NOT NULL THEN 'email'
@@ -493,6 +501,28 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
     ).fetchall()
     result: list[dict] = []
     for r in rows:
+        # Derive weekday summary tag
+        wjson = r["weekdays_json"]
+        weekday_tag: str | None
+        try:
+            if wjson is None or str(wjson).strip() == "":
+                weekday_tag = "不限制"
+            else:
+                import json as _json
+                arr = _json.loads(str(wjson)) if not isinstance(wjson, (list, tuple)) else list(wjson)
+                nums = sorted({int(x) for x in arr if 1 <= int(x) <= 7})
+                if not nums:
+                    weekday_tag = "不按星期"
+                elif nums == [1, 2, 3, 4, 5, 6, 7]:
+                    weekday_tag = "每天"
+                elif nums == [1, 2, 3, 4, 5]:
+                    weekday_tag = "工作日"
+                elif nums == [6, 7]:
+                    weekday_tag = "周末"
+                else:
+                    weekday_tag = "自定义"
+        except Exception:
+            weekday_tag = None
         result.append({
             "id": int(r["id"]),
             "name": r["name"],
@@ -506,14 +536,35 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
             "writer_hours": r["writer_hours"],
             "delivery_kind": r["delivery_kind"],
             "debug_enabled": int(r["debug_enabled"]) if r["debug_enabled"] is not None else 0,
+            "weekday_tag": weekday_tag,
         })
     return result
+
+
+def _parse_weekdays_text(raw: Any) -> Optional[list[int]]:
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(str(raw))
+    except Exception:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    vals: list[int] = []
+    for x in parsed:
+        try:
+            xi = int(x)
+        except Exception:
+            continue
+        if 1 <= xi <= 7:
+            vals.append(xi)
+    return vals
 
 
 def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
     cur = conn.cursor()
     p = cur.execute(
-        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id, COALESCE(debug_enabled,0) AS debug_enabled FROM pipelines WHERE id=?",
+        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id, COALESCE(debug_enabled,0) AS debug_enabled, weekdays_json FROM pipelines WHERE id=?",
         (pid,),
     ).fetchone()
     if not p:
@@ -605,6 +656,7 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             "description": p["description"],
             "owner_user_id": int(p["owner_user_id"]) if p["owner_user_id"] is not None else None,
             "debug_enabled": int(p["debug_enabled"]) if p["debug_enabled"] is not None else 0,
+            "weekdays_json": _parse_weekdays_text(p["weekdays_json"]) if "weekdays_json" in p.keys() else None,
         },
         "filters": filters,
         "writer": writer,
@@ -645,6 +697,34 @@ def create_or_update_pipeline(
         except (TypeError, ValueError):
             debug_enabled_param = 0
     description = str(base.get("description") or "")
+    # Normalize weekdays_json (list[int] 1..7) → JSON text or NULL; preserve if MISSING
+    raw_weekdays = base.get("weekdays_json", _MISSING)
+    weekdays_norm: object | None
+    if raw_weekdays is _MISSING:
+        weekdays_norm = _MISSING
+    else:
+        if raw_weekdays is None or raw_weekdays == "":
+            weekdays_norm = None
+        else:
+            if isinstance(raw_weekdays, str):
+                try:
+                    parsed = json.loads(raw_weekdays)
+                except Exception:
+                    parsed = None
+            else:
+                parsed = raw_weekdays
+            if isinstance(parsed, list):
+                vals: list[int] = []
+                for x in parsed:
+                    try:
+                        xi = int(x)
+                    except Exception:
+                        continue
+                    if 1 <= xi <= 7:
+                        vals.append(xi)
+                weekdays_norm = json.dumps(vals, ensure_ascii=False)
+            else:
+                weekdays_norm = None
     # Prefer explicit owner in payload, fallback to parameter
     raw_owner = base.get("owner_user_id")
     owner_id: Optional[int] = None
@@ -657,16 +737,36 @@ def create_or_update_pipeline(
         owner_id = owner_user_id
 
     if pid is None:
-        cur.execute(
-            "INSERT INTO pipelines (name, enabled, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?)",
-            (name, enabled, description, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
-        )
+        if weekdays_norm is _MISSING:
+            cur.execute(
+                "INSERT INTO pipelines (name, enabled, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?)",
+                (name, enabled, description, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
+            )
+        else:
+            try:
+                print(f"[DEBUG] insert pipeline weekdays_json={weekdays_norm}")
+            except Exception:
+                pass
+            cur.execute(
+                "INSERT INTO pipelines (name, enabled, weekdays_json, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, enabled, weekdays_norm, description, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
+            )
         pid = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
     else:
-        cur.execute(
-            "UPDATE pipelines SET name=?, enabled=?, description=?, owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (name, enabled, description, owner_id, debug_enabled_param, pid),
-        )
+        if weekdays_norm is _MISSING:
+            cur.execute(
+                "UPDATE pipelines SET name=?, enabled=?, description=?, owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (name, enabled, description, owner_id, debug_enabled_param, pid),
+            )
+        else:
+            try:
+                print(f"[DEBUG] update pipeline pid={pid} weekdays_json={weekdays_norm}")
+            except Exception:
+                pass
+            cur.execute(
+                "UPDATE pipelines SET name=?, enabled=?, weekdays_json=?, description=?, owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (name, enabled, weekdays_norm, description, owner_id, debug_enabled_param, pid),
+            )
 
     # filters
     f = payload.get("filters") or {}
