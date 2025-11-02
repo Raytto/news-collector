@@ -6,7 +6,11 @@ import smtplib
 import sqlite3
 import subprocess
 from email.header import Header
+import re
+import html as htmllib
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.utils import formatdate, make_msgid
 from pathlib import Path
 from datetime import datetime
 
@@ -15,7 +19,7 @@ DATE_PLACEHOLDER_VARIANTS = ("${date_zh}", "$(date_zh)", "${data_zh}", "$(data_z
 TS_PLACEHOLDER_VARIANTS = ("${ts}", "$(ts)")
 
 
-DEFAULT_SENDER = "pangruitaosite@gmail.com"
+DEFAULT_SENDER = "news@email.pangruitao.com"
 DEFAULT_RECEIVERS = ["306483372@qq.com"]
 
 
@@ -25,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--subject", default="", help="Mail subject; default is 整合YYYY年MM月DD日")
     p.add_argument("--sender", default=DEFAULT_SENDER, help="Sender email address")
     p.add_argument("--to", default=",".join(DEFAULT_RECEIVERS), help="Comma-separated recipient addresses")
+    p.add_argument("--dump-msg", default="", help="Optional path to dump RFC822 message for debugging")
 
     # Optional SMTP overrides (otherwise tries localhost:25, then sendmail)
     p.add_argument("--smtp-host", default=os.getenv("SMTP_HOST", ""))
@@ -34,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--smtp-use-ssl", action="store_true", default=os.getenv("SMTP_USE_SSL", "false").lower() == "true")
     p.add_argument("--smtp-use-tls", action="store_true", default=os.getenv("SMTP_USE_TLS", "false").lower() == "true")
     p.add_argument("--dry-run", action="store_true", help="Print message metadata without sending")
+    p.add_argument("--plain-only", action="store_true", help="Send only text/plain part (omit HTML)")
     return p.parse_args()
 
 
@@ -98,13 +104,20 @@ def try_send_via_smtp(msg: MIMEText, sender: str, receivers: list[str], host: st
         return False
 
 
-def try_send_via_sendmail(msg: MIMEText, sender: str) -> bool:
+def try_send_via_sendmail(msg: MIMEText, sender: str, receivers: list[str]) -> bool:
     sendmail = "/usr/sbin/sendmail"
     if not Path(sendmail).exists():
         return False
     try:
+        # Pass rcpt explicitly in addition to -t for clarity
+        verbose = str(os.getenv("MAIL_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        cmd = [sendmail, "-oi", "-t"]
+        if verbose:
+            cmd.append("-v")
+        cmd += ["-f", sender]
+        cmd += receivers
         proc = subprocess.run(
-            [sendmail, "-oi", "-t", "-f", sender],
+            cmd,
             input=msg.as_string().encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -120,6 +133,12 @@ def try_send_via_sendmail(msg: MIMEText, sender: str) -> bool:
 
 def main() -> None:
     args = parse_args()
+    # Allow env to force plain-only and dump path without changing DB/CLI
+    if (os.getenv("MAIL_PLAIN_ONLY") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        args.plain_only = True  # type: ignore[attr-defined]
+    env_dump = (os.getenv("MAIL_DUMP_MSG") or "").strip()
+    if env_dump and not getattr(args, "dump_msg", ""):
+        args.dump_msg = env_dump  # type: ignore[attr-defined]
     html_path = Path(args.html)
     if not html_path.exists():
         raise SystemExit(f"HTML 文件不存在: {html_path}")
@@ -146,16 +165,64 @@ def main() -> None:
 
     body = html_path.read_text(encoding="utf-8")
 
-    msg = MIMEText(body, "html", "utf-8")
+    # Build multipart/alternative to improve deliverability
+    # Basic text fallback: strip scripts/styles/tags and condense whitespace
+    try:
+        tmp = re.sub(r"<script[\s\S]*?</script>", " ", body, flags=re.IGNORECASE)
+        tmp = re.sub(r"<style[\s\S]*?</style>", " ", tmp, flags=re.IGNORECASE)
+        tmp = re.sub(r"<[^>]+>", " ", tmp)
+        tmp = htmllib.unescape(tmp)
+        tmp = re.sub(r"\s+", " ", tmp).strip()
+        # cap to a reasonable length to avoid huge plain text part
+        text_fallback = tmp[:4000]
+    except Exception:
+        text_fallback = "(digest content)"
+
+    # Build message according to mode
+    if args.plain_only:
+        msg = MIMEText(text_fallback, "plain", "utf-8")
+    else:
+        msg = MIMEMultipart("alternative")
+        # Attach text then HTML
+        msg.attach(MIMEText(text_fallback, "plain", "utf-8"))
+        msg.attach(MIMEText(body, "html", "utf-8"))
+
+    # Common headers
     msg["From"] = sender
     msg["To"] = ", ".join(receivers)
     msg["Subject"] = Header(subject, "utf-8")
+    try:
+        msg["Date"] = formatdate(localtime=True)
+        domain = sender.split("@", 1)[1] if "@" in sender else None
+        msg["Message-ID"] = make_msgid(domain=domain)
+    except Exception:
+        pass
+    try:
+        lu = (os.getenv("MAIL_LIST_UNSUBSCRIBE") or "").strip()
+        if lu:
+            msg["List-Unsubscribe"] = f"<{lu}>"
+            if lu.startswith("http"):
+                msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    except Exception:
+        pass
+
+    dump_path = (args.dump_msg or "").strip()
+    if dump_path:
+        Path(dump_path).write_text(msg.as_string(), encoding="utf-8")
+        print(f"[DEBUG] dump message to: {dump_path}")
 
     if args.dry_run:
         print(f"[DRY-RUN] subject={subject} from={sender} to={receivers} bytes={len(body)}")
         return
 
-    # 1) Preferred SMTP if provided via args/env
+    force_smtp = (os.getenv("MAIL_FORCE_SMTP") or "").strip().lower() in {"1", "true", "yes", "on"}
+    # 1) Prefer local sendmail unless explicitly forcing SMTP
+    if not force_smtp:
+        if try_send_via_sendmail(msg, sender, receivers):
+            print(f"邮件已发送: {html_path} -> {', '.join(receivers)} (sendmail)")
+            return
+
+    # 2) Next: explicit SMTP if provided via args/env
     if args.smtp_host:
         if try_send_via_smtp(
             msg,
@@ -171,16 +238,13 @@ def main() -> None:
             print(f"邮件已发送: {html_path} -> {', '.join(receivers)} (SMTP {args.smtp_host})")
             return
 
-    # 2) Fallback to localhost SMTP (try IPv4 then hostname)
+    # 3) Finally: localhost SMTP (try IPv4 then hostname)
     for host in ("127.0.0.1", "localhost"):
         if try_send_via_smtp(msg, sender, receivers, host=host, port=25):
             print(f"邮件已发送: {html_path} -> {', '.join(receivers)} (SMTP {host})")
             return
 
-    # 3) Final fallback: use local sendmail binary if available
-    if try_send_via_sendmail(msg, sender):
-        print(f"邮件已发送: {html_path} -> {', '.join(receivers)} (sendmail)")
-        return
+    # No method worked
 
     raise SystemExit("发送失败：SMTP 与 sendmail 均不可用")
 

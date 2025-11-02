@@ -2,11 +2,21 @@
 set -euo pipefail
 
 # Ingest (collect + evaluate) then run all DB-backed pipelines sequentially.
-# Sleep until next 09:30 and repeat.
+# Sleep until the next 09:30 Beijing time (Asia/Shanghai, UTC+8) and repeat.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
 ENV_NAME="news-collector"
+
+# Setup timestamped logging: mirror all output to console and log file
+# Use Beijing time (Asia/Shanghai) for the timestamp
+TS="$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')"
+LOG_DIR="$ROOT_DIR/log"
+LOG_FILE="$LOG_DIR/${TS}-auto-930-log.txt"
+mkdir -p "$LOG_DIR"
+# Route both stdout and stderr through tee, appending to the log file
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[INFO] Log file: $LOG_FILE"
 
 check_pipeline_config() {
   local db_path="$ROOT_DIR/data/info.db"
@@ -155,20 +165,27 @@ activate_runtime() {
 }
 
 sleep_until_next_0930() {
+  # Use Beijing time regardless of server local TZ
+  local TZ_BEIJING="Asia/Shanghai"
+  local now_epoch today_target target_epoch label sleep_secs
+
   now_epoch=$(date +%s)
-  today_target=$(date -d "today 09:30" +%s)
+  today_target=$(TZ="$TZ_BEIJING" date -d "today 09:30" +%s)
+
   if [ "$now_epoch" -lt "$today_target" ]; then
     target_epoch="$today_target"
-    label="today 09:30"
+    label="Beijing today 09:30"
   else
-    target_epoch=$(date -d "tomorrow 09:30" +%s)
-    label="tomorrow 09:30"
+    target_epoch=$(TZ="$TZ_BEIJING" date -d "tomorrow 09:30" +%s)
+    label="Beijing tomorrow 09:30"
   fi
+
   sleep_secs=$(( target_epoch - now_epoch ))
   if [ "$sleep_secs" -lt 0 ]; then
     sleep_secs=0
   fi
-  echo "[INFO] Sleeping until $label (${sleep_secs}s)" >&2
+  # Show the absolute target time in server local TZ for convenience
+  echo "[INFO] Sleeping until $label ($(date -d @"$target_epoch" '+%F %T %Z'); ${sleep_secs}s)" >&2
   if [ "$sleep_secs" -gt 0 ]; then
     sleep "$sleep_secs"
   fi

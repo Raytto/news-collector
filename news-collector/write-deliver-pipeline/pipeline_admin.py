@@ -116,6 +116,45 @@ def ensure_db() -> None:
                 cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category TEXT")
             if "per_source_cap" not in existing_cols:
                 cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
+        # Enforce uniqueness for single-row tables keyed by pipeline_id.
+        # First, dedupe keeping latest row (max rowid), then create unique indexes.
+        try:
+            # Dedupe pipeline_writers
+            dup_w = cur.execute(
+                "SELECT pipeline_id, COUNT(*) FROM pipeline_writers GROUP BY pipeline_id HAVING COUNT(*)>1"
+            ).fetchall()
+            for pid, _ in dup_w:
+                keep = cur.execute(
+                    "SELECT MAX(rowid) FROM pipeline_writers WHERE pipeline_id=?",
+                    (pid,),
+                ).fetchone()[0]
+                cur.execute(
+                    "DELETE FROM pipeline_writers WHERE pipeline_id=? AND rowid<>?",
+                    (pid, keep),
+                )
+            # Dedupe pipeline_filters
+            dup_f = cur.execute(
+                "SELECT pipeline_id, COUNT(*) FROM pipeline_filters GROUP BY pipeline_id HAVING COUNT(*)>1"
+            ).fetchall()
+            for pid, _ in dup_f:
+                keep = cur.execute(
+                    "SELECT MAX(rowid) FROM pipeline_filters WHERE pipeline_id=?",
+                    (pid,),
+                ).fetchone()[0]
+                cur.execute(
+                    "DELETE FROM pipeline_filters WHERE pipeline_id=? AND rowid<>?",
+                    (pid, keep),
+                )
+            # Unique indexes (idempotent)
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_writers_pipeline_id ON pipeline_writers(pipeline_id)"
+            )
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_filters_pipeline_id ON pipeline_filters(pipeline_id)"
+            )
+        except sqlite3.DatabaseError:
+            # Best effort; ignore if tables missing during early bootstrap
+            pass
         conn.commit()
 
 

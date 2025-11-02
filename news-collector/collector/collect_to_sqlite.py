@@ -7,8 +7,14 @@ from dataclasses import dataclass
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import time
+import random
+from collections import defaultdict
+from urllib.parse import urlparse
 
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
@@ -19,6 +25,136 @@ DB_PATH = DATA_DIR / "info.db"
 
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ------------------------
+# Concurrency configuration
+# ------------------------
+
+def _get_int(name: str, default: int) -> int:
+    try:
+        v = os.getenv(name, str(default)).strip()
+        return int(v)
+    except Exception:
+        return default
+
+
+def _get_float(name: str, default: float) -> float:
+    try:
+        v = os.getenv(name, str(default)).strip()
+        return float(v)
+    except Exception:
+        return default
+
+
+SOURCE_CONCURRENCY = _get_int("COLLECTOR_SOURCE_CONCURRENCY", 10)
+PER_SOURCE_DETAIL_CONCURRENCY = _get_int("COLLECTOR_PER_SOURCE_CONCURRENCY", 1)
+GLOBAL_HTTP_CONCURRENCY = _get_int("COLLECTOR_GLOBAL_HTTP_CONCURRENCY", 16)
+PER_HOST_MIN_INTERVAL_MS = _get_int("COLLECTOR_PER_HOST_MIN_INTERVAL_MS", 500)
+TIMEOUT_CONNECT = _get_float("COLLECTOR_TIMEOUT_CONNECT", 5.0)
+TIMEOUT_READ = _get_float("COLLECTOR_TIMEOUT_READ", 10.0)
+RETRY_MAX = _get_int("COLLECTOR_RETRY_MAX", 3)
+RETRY_BACKOFF_BASE = _get_float("COLLECTOR_RETRY_BACKOFF_BASE", 0.6)
+DISABLE_CONCURRENCY = os.getenv("COLLECTOR_DISABLE_CONCURRENCY", "").strip().lower() in {"1", "true", "yes"}
+
+
+# ------------------------
+# Global HTTP throttling for requests
+# ------------------------
+
+_http_sem = threading.Semaphore(GLOBAL_HTTP_CONCURRENCY if GLOBAL_HTTP_CONCURRENCY > 0 else 1)
+_host_last_access: Dict[str, float] = defaultdict(float)
+_host_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
+_http_patch_installed = False
+
+
+def _respect_host_rate_limit(host: str) -> None:
+    if not host:
+        return
+    lock = _host_locks[host]
+    with lock:
+        now = time.time()
+        min_gap = PER_HOST_MIN_INTERVAL_MS / 1000.0
+        last = _host_last_access.get(host, 0.0)
+        wait = min_gap - (now - last)
+        if wait > 0:
+            # add small jitter ±10%
+            jitter = random.uniform(-0.1, 0.1) * min_gap
+            time.sleep(max(0.0, wait + jitter))
+        _host_last_access[host] = time.time()
+
+
+def _install_http_limits() -> None:
+    """Patch requests' Session.request to enforce global concurrency, per-host pacing, and default timeouts.
+
+    - Applies to all sessions created after import (and most existing ones as they call Session.request).
+    - Keeps behavior minimal-risk: we do not alter returned responses except adding timeouts when missing.
+    """
+    global _http_patch_installed
+    if _http_patch_installed:
+        return
+    try:
+        import requests  # type: ignore
+        from requests.sessions import Session as _Session  # type: ignore
+    except Exception:
+        return
+
+    orig_request = _Session.request
+
+    def wrapped_request(self, method, url, *args, **kwargs):  # type: ignore[no-redef]
+        # default timeout if not provided
+        if "timeout" not in kwargs or kwargs["timeout"] is None:
+            kwargs["timeout"] = (TIMEOUT_CONNECT, TIMEOUT_READ)
+
+        parsed = None
+        try:
+            parsed = urlparse(url or "")
+        except Exception:
+            parsed = None
+        host = parsed.hostname if parsed else ""
+
+        attempt = 0
+        while True:
+            _http_sem.acquire()
+            try:
+                _respect_host_rate_limit(host or "")
+                resp = orig_request(self, method, url, *args, **kwargs)
+                # Simple retry on transient statuses
+                if resp is not None and resp.status_code in (429, 500, 502, 503, 504) and attempt < max(0, RETRY_MAX):
+                    # honor Retry-After when present
+                    ra = resp.headers.get("Retry-After")
+                    sleep_s: float = 0.0
+                    if ra:
+                        try:
+                            sleep_s = float(ra)
+                        except Exception:
+                            sleep_s = 0.0
+                    if sleep_s <= 0:
+                        sleep_s = (RETRY_BACKOFF_BASE or 0.5) * (2 ** attempt)
+                    time.sleep(min(sleep_s, 30.0))
+                    attempt += 1
+                    continue
+                return resp
+            except Exception:
+                # Simple retry for network errors
+                if attempt < max(0, RETRY_MAX):
+                    sleep_s = (RETRY_BACKOFF_BASE or 0.5) * (2 ** attempt)
+                    time.sleep(min(sleep_s, 30.0))
+                    attempt += 1
+                    continue
+                raise
+            finally:
+                try:
+                    _http_sem.release()
+                except Exception:
+                    pass
+
+    # Install patch
+    try:
+        _Session.request = wrapped_request  # type: ignore[assignment]
+        _http_patch_installed = True
+    except Exception:
+        _http_patch_installed = False
 
 
 @dataclass
@@ -462,6 +598,127 @@ def _backfill_missing_details(
             print(f"  明细回填失败: {link} - {ex}")
 
 
+def _process_source_spec(spec: SourceSpec) -> Tuple[str, int]:
+    """Process a single source spec and return (source_key, newly_added_count).
+
+    Uses its own SQLite connection to avoid cross-thread usage.
+    """
+    path = spec.path
+    # Open a dedicated connection per worker
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        if not path.exists():
+            print(f"{path}: 脚本不存在，跳过 (source={spec.source or 'unknown'})")
+            return spec.source or "", 0
+        try:
+            mod = _load_module(path)
+        except Exception as exc:
+            print(f"{path.name}: 加载模块失败 - {exc}")
+            return spec.source or "", 0
+        source_key = spec.source or str(getattr(mod, "SOURCE", "") or "").strip()
+        category_key = spec.category or str(getattr(mod, "CATEGORY", "") or "").strip()
+        if not source_key:
+            print(f"{path.name}: 缺少来源标识 (SOURCE)，已跳过执行")
+            return "", 0
+        try:
+            items = _to_entry_dicts(mod)
+            entries: List[Entry] = []
+            for item in items:
+                raw_publish = str(item.get("published") or item.get("publish") or "").strip()
+                try:
+                    e = _coerce_entry(item)
+                except Exception as ex_item:
+                    try:
+                        link_hint = str(item.get("url") or item.get("link") or "")
+                    except Exception:
+                        link_hint = ""
+                    src_hint = source_key
+                    print(
+                        f"  [条目解析失败] {path.name}({src_hint}) -> link={link_hint or '(unknown)'} - {ex_item}"
+                    )
+                    continue
+                if e:
+                    # Standardize source/category from DB when available
+                    e.source = source_key
+                    if category_key:
+                        e.category = category_key
+                    elif not e.category and hasattr(mod, "CATEGORY"):
+                        e.category = str(getattr(mod, "CATEGORY"))
+                    # Validate publish time format and print hint if suspicious
+                    if raw_publish and not _is_iso8601_full(raw_publish):
+                        print(
+                            f"  [时间格式疑似异常] {path.name}({source_key}) -> '{raw_publish}'"
+                        )
+                    elif not raw_publish and not e.publish:
+                        print(
+                            f"  [时间缺失] {path.name}({source_key}) -> link={e.link}"
+                        )
+                    elif e.publish and not _is_iso8601_full(e.publish):
+                        print(
+                            f"  [时间非标准] {path.name}({source_key}) -> '{e.publish}'"
+                            + (f" (原始:'{raw_publish}')" if raw_publish else "")
+                        )
+                    entries.append(e)
+            newly_added = _insert_entries(conn, entries)
+            print(f"{path.name}({source_key}): 解析 {len(items)} 条，新增 {len(newly_added)} 条")
+
+            # For newly added links only, try to fetch and store details (default serial)
+            if newly_added:
+                fetcher = getattr(mod, "fetch_article_detail", None)
+                if callable(fetcher):
+                    if PER_SOURCE_DETAIL_CONCURRENCY <= 1:
+                        for e in newly_added:
+                            try:
+                                detail = (fetcher(e.link) or "").strip()
+                                if detail:
+                                    _update_detail(conn, e.link, detail)
+                                    try:
+                                        print(f"  明细抓取成功: {e.link} - {len(detail)} 字符")
+                                    except Exception:
+                                        print(f"  明细抓取成功: {e.link}")
+                            except Exception as ex:
+                                print(f"  明细抓取失败: {e.link} - {ex}")
+                    else:
+                        # Optional small concurrency within source
+                        with ThreadPoolExecutor(max_workers=PER_SOURCE_DETAIL_CONCURRENCY) as pool:
+                            futures = {pool.submit(fetcher, e.link): e for e in newly_added}
+                            for fut in as_completed(futures):
+                                e = futures[fut]
+                                try:
+                                    detail = (fut.result() or "").strip()
+                                    if detail:
+                                        _update_detail(conn, e.link, detail)
+                                        try:
+                                            print(f"  明细抓取成功: {e.link} - {len(detail)} 字符")
+                                        except Exception:
+                                            print(f"  明细抓取成功: {e.link}")
+                                except Exception as ex:
+                                    print(f"  明细抓取失败: {e.link} - {ex}")
+                else:
+                    # No site-specific fetcher provided; skip silently
+                    pass
+
+            # Backfill: for this source, attempt to fill missing details on recent rows
+            try:
+                _backfill_missing_details(
+                    conn,
+                    mod,
+                    source_hint=source_key,
+                    limit=5,
+                )
+            except Exception:
+                # Non-fatal
+                pass
+        except Exception as exc:
+            urls = _get_module_feed_urls(mod) if mod else []
+            extra = f" (feed_urls={urls!r})" if urls else ""
+            print(f"{path.name}({source_key}): 处理失败 - {exc}{extra}")
+            return source_key or "", 0
+        return source_key or "", len(newly_added)
+    finally:
+        conn.close()
+
+
 def main() -> None:
     print(f"收集目录: {SCRAPING_DIR}")
     if not SCRAPING_DIR.exists():
@@ -479,105 +736,24 @@ def main() -> None:
         else:
             print("sources 表暂无启用来源，采集已跳过。请在数据库中启用至少一个来源。")
             return
+        # Install HTTP concurrency/rate limits before executing scrapers
+        _install_http_limits()
 
         total_new = 0
-        for spec in source_specs:
-            path = spec.path
-            if not path.exists():
-                print(f"{path}: 脚本不存在，跳过 (source={spec.source or 'unknown'})")
-                continue
-            try:
-                mod = _load_module(path)
-            except Exception as exc:
-                print(f"{path.name}: 加载模块失败 - {exc}")
-                continue
-            source_key = spec.source or str(getattr(mod, "SOURCE", "") or "").strip()
-            category_key = spec.category or str(getattr(mod, "CATEGORY", "") or "").strip()
-            if not source_key:
-                print(f"{path.name}: 缺少来源标识 (SOURCE)，已跳过执行")
-                continue
-            try:
-                items = _to_entry_dicts(mod)
-                entries: List[Entry] = []
-                for item in items:
-                    raw_publish = str(item.get("published") or item.get("publish") or "").strip()
+        if DISABLE_CONCURRENCY or SOURCE_CONCURRENCY <= 1:
+            for spec in source_specs:
+                _, added = _process_source_spec(spec)
+                total_new += added
+        else:
+            with ThreadPoolExecutor(max_workers=SOURCE_CONCURRENCY) as pool:
+                future_map = {pool.submit(_process_source_spec, spec): spec for spec in source_specs}
+                for fut in as_completed(future_map):
                     try:
-                        e = _coerce_entry(item)
-                    except Exception as ex_item:
-                        try:
-                            link_hint = str(item.get("url") or item.get("link") or "")
-                        except Exception:
-                            link_hint = ""
-                        src_hint = source_key
-                        print(
-                            f"  [条目解析失败] {path.name}({src_hint}) -> link={link_hint or '(unknown)'} - {ex_item}"
-                        )
-                        continue
-                    if e:
-                        # Standardize source/category from DB when available
-                        e.source = source_key
-                        if category_key:
-                            e.category = category_key
-                        elif not e.category and hasattr(mod, "CATEGORY"):
-                            e.category = str(getattr(mod, "CATEGORY"))
-                        # Validate publish time format and print hint if suspicious
-                        if raw_publish and not _is_iso8601_full(raw_publish):
-                            print(
-                                f"  [时间格式疑似异常] {path.name}({source_key}) -> '{raw_publish}'"
-                            )
-                        elif not raw_publish and not e.publish:
-                            print(
-                                f"  [时间缺失] {path.name}({source_key}) -> link={e.link}"
-                            )
-                        elif e.publish and not _is_iso8601_full(e.publish):
-                            print(
-                                f"  [时间非标准] {path.name}({source_key}) -> '{e.publish}'"
-                                + (f" (原始:'{raw_publish}')" if raw_publish else "")
-                            )
-                        entries.append(e)
-                newly_added = _insert_entries(conn, entries)
-                total_new += len(newly_added)
-                print(f"{path.name}({source_key}): 解析 {len(items)} 条，新增 {len(newly_added)} 条")
-
-                # For newly added links only, try to fetch and store details
-                if newly_added:
-                    fetcher = getattr(mod, "fetch_article_detail", None)
-                    if callable(fetcher):
-                        for e in newly_added:
-                            try:
-                                detail = fetcher(e.link)
-                                # Normalize and keep it as plain text
-                                detail = (detail or "").strip()
-                                if detail:
-                                    _update_detail(conn, e.link, detail)
-                                    # Log success for visibility when detail is stored
-                                    try:
-                                        print(f"  明细抓取成功: {e.link} - {len(detail)} 字符")
-                                    except Exception:
-                                        # Length calculation/logging should not break flow
-                                        print(f"  明细抓取成功: {e.link}")
-                            except Exception as ex:
-                                # Non-fatal: continue with others
-                                print(f"  明细抓取失败: {e.link} - {ex}")
-                    else:
-                        # No site-specific fetcher provided; skip silently
-                        pass
-
-                # Backfill: for this source, attempt to fill missing details on recent rows
-                try:
-                    _backfill_missing_details(
-                        conn,
-                        mod,
-                        source_hint=source_key,
-                        limit=5,
-                    )
-                except Exception:
-                    # Non-fatal
-                    pass
-            except Exception as exc:
-                urls = _get_module_feed_urls(mod) if mod else []
-                extra = f" (feed_urls={urls!r})" if urls else ""
-                print(f"{path.name}({source_key}): 处理失败 - {exc}{extra}")
+                        _src, added = fut.result()
+                        total_new += added
+                    except Exception as exc:
+                        spec = future_map[fut]
+                        print(f"{spec.path.name}({spec.source or 'unknown'}): 并发执行失败 - {exc}")
 
         print(f"完成，数据库: {DB_PATH}，新增总计 {total_new} 条")
     finally:

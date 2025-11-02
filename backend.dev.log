@@ -1,6 +1,361 @@
-INFO:     Started server process [687167]
+The virtual environment was not created successfully because ensurepip is not
+available.  On Debian/Ubuntu systems, you need to install the python3-venv
+package using the following command.
+
+    apt install python3.11-venv
+
+You may need to use sudo with that command.  After installing the python3-venv
+package, recreate your virtual environment.
+
+Failing command: /home/pp/mp/news-collector/.venv/bin/python3
+
+[WARN] python venv unavailable; falling back to user site-packages
+INFO:     Will watch for changes in these directories: ['/home/pp/mp/news-collector/backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [756155] using WatchFiles
+INFO:     Started server process [756180]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-ERROR:    [Errno 98] error while attempting to bind on address ('0.0.0.0', 8000): address already in use
+INFO:     127.0.0.1:38096 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33804 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33816 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33830 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:33840 - "GET /me HTTP/1.1" 401 Unauthorized
+[auth] login code sent to 3***@qq.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:42038 - "POST /auth/login/code HTTP/1.1" 200 OK
+[auth] login code sent to 3***@qq.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:42166 - "POST /auth/login/code HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'news-collector/writer/email_writer.py'. Reloading...
+INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
+INFO:     Finished server process [756180]
+INFO:     Started server process [756752]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     107.170.107.85:41342 - "GET / HTTP/1.0" 401 Unauthorized
+INFO:     107.170.107.85:41352 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     107.170.107.85:41354 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.88:1486 - "GET /api/v2/heartbeat HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.88:1866 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.88:2336 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.231:4880 - "GET /api/v2/heartbeat HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.231:5032 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     165.154.112.231:5592 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:45048 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45032 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45060 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45074 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41382 - "PUT /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41398 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41404 - "PUT /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41416 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60458 - "PUT /pipelines/6 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60466 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50088 - "PUT /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56772 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     204.76.203.18:42720 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:58680 - "GET /bins/ HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:36812 - "GET /bin/ HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:35032 - "GET /backup/ HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [756752]
+INFO:     Started server process [765517]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [765517]
+INFO:     Started server process [765525]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     20.163.4.176:33026 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     128.199.166.80:41970 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     128.199.166.80:41976 - "GET /login HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     14.18.16.155:40298 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     14.18.16.155:40468 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     167.94.146.63:57048 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     167.94.146.63:55746 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     167.94.146.63:34908 - "GET /robots.txt HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     91.196.152.10:33371 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     91.196.152.180:33483 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     147.185.132.162:65224 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     3.131.215.38:37316 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.131.215.38:59988 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     195.140.215.17:40562 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     188.166.71.161:40358 - "GET /aaa9 HTTP/1.1" 401 Unauthorized
+INFO:     188.166.71.161:40374 - "GET /aab8 HTTP/1.1" 401 Unauthorized
+INFO:     188.166.71.161:40390 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     198.235.24.122:58704 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     106.75.75.129:36146 - "GET /api/v2/heartbeat HTTP/1.1" 401 Unauthorized
+INFO:     106.75.75.129:36310 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     106.75.75.129:36410 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     205.210.31.218:58384 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     195.178.110.199:46890 - "GET /.git/config HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     195.178.110.199:55558 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     64.62.156.24:32984 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     64.62.156.33:47053 - "GET /?format=json HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     66.132.153.118:53508 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     66.132.153.118:36084 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     66.132.153.118:36162 - "GET /login HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     147.185.132.81:62780 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     170.64.194.116:38914 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     170.64.194.116:36270 - "GET /login HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     195.184.76.233:38371 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     195.184.76.5:41027 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     45.156.128.126:59709 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     45.156.128.47:35307 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     64.62.156.132:48628 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     64.62.156.136:40067 - "GET /?format=json HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     3.143.33.63:33076 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.143.33.63:41818 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     205.210.31.168:61864 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     137.184.34.154:41522 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     137.184.34.154:41538 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     147.185.132.123:57454 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.130.96.91:44030 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.130.96.91:51642 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:57352 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57360 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57362 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:57364 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+[auth] login code sent to 3***@qq.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:54372 - "POST /auth/login/code HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [765525]
+INFO:     Started server process [799426]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [799426]
+INFO:     Started server process [799440]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:50592 - "POST /auth/login/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48212 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48226 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43350 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43356 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45606 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45610 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45622 - "GET /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40924 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40938 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35678 - "PUT /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35682 - "GET /pipelines HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [799440]
+INFO:     Started server process [800213]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [800213]
+INFO:     Started server process [800221]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [800221]
+INFO:     Started server process [800236]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [800236]
+INFO:     Started server process [800244]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     183.191.123.225:51209 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     122.96.28.179:51356 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:47642 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47650 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47658 - "GET /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48458 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48460 - "GET /pipelines HTTP/1.1" 200 OK
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [800244]
+INFO:     Started server process [802447]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [802447]
+INFO:     Started server process [803176]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803176]
+INFO:     Started server process [803192]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803192]
+INFO:     Started server process [803531]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/writer/email_writer.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803531]
+INFO:     Started server process [803545]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803545]
+INFO:     Started server process [803559]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803559]
+INFO:     Started server process [803575]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     103.203.57.20:51982 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     87.236.176.126:33315 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [803575]
+INFO:     Started server process [807288]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/deliver/mail_deliver.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [807288]
+INFO:     Started server process [807434]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:42862 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42852 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42872 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42888 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42890 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42902 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42912 - "GET /pipelines/1 HTTP/1.1" 200 OK

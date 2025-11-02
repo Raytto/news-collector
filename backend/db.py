@@ -56,12 +56,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_source_address_unique
   ON source_address (source_id, address);
 
 CREATE TABLE IF NOT EXISTS pipelines (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  name         TEXT NOT NULL,
-  enabled      INTEGER NOT NULL DEFAULT 1,
-  description  TEXT,
-  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  description   TEXT,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  debug_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_filters (
@@ -234,6 +235,11 @@ def ensure_db() -> None:
         if "owner_user_id" not in p_cols:
             cur.execute("ALTER TABLE pipelines ADD COLUMN owner_user_id INTEGER")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_pipelines_owner ON pipelines (owner_user_id)")
+        # Add debug_enabled column to pipelines if missing (default OFF)
+        cur.execute("PRAGMA table_info(pipelines)")
+        p_cols = {row[1] for row in cur.fetchall()}
+        if "debug_enabled" not in p_cols:
+            cur.execute("ALTER TABLE pipelines ADD COLUMN debug_enabled INTEGER NOT NULL DEFAULT 0")
         # Add enabled column to users if missing
         cur.execute("PRAGMA table_info(users)")
         u_cols = {row[1] for row in cur.fetchall()}
@@ -254,21 +260,22 @@ def ensure_db() -> None:
                 cur.execute(
                     """
                     CREATE TABLE IF NOT EXISTS pipelines (
-                      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                      name         TEXT NOT NULL,
-                      enabled      INTEGER NOT NULL DEFAULT 1,
-                      description  TEXT,
-                      created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-                      updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-                      owner_user_id INTEGER
+                      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                      name          TEXT NOT NULL,
+                      enabled       INTEGER NOT NULL DEFAULT 1,
+                      description   TEXT,
+                      created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+                      updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+                      owner_user_id INTEGER,
+                      debug_enabled INTEGER NOT NULL DEFAULT 0
                     )
                     """
                 )
                 # Copy data across
                 cur.execute(
                     """
-                    INSERT INTO pipelines (id, name, enabled, description, created_at, updated_at, owner_user_id)
-                    SELECT id, name, enabled, description, created_at, updated_at, owner_user_id
+                    INSERT INTO pipelines (id, name, enabled, description, created_at, updated_at, owner_user_id, debug_enabled)
+                    SELECT id, name, enabled, description, created_at, updated_at, owner_user_id, 0 as debug_enabled
                     FROM pipelines_old
                     """
                 )
@@ -468,7 +475,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
           FROM pipeline_writers
           GROUP BY pipeline_id
         )
-        SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id,
+        SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id, p.debug_enabled,
                u.name AS owner_user_name, u.email AS owner_user_email,
                w.type AS writer_type, w.hours AS writer_hours,
                CASE WHEN e.pipeline_id IS NOT NULL THEN 'email'
@@ -498,6 +505,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
             "writer_type": r["writer_type"],
             "writer_hours": r["writer_hours"],
             "delivery_kind": r["delivery_kind"],
+            "debug_enabled": int(r["debug_enabled"]) if r["debug_enabled"] is not None else 0,
         })
     return result
 
@@ -505,7 +513,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
 def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
     cur = conn.cursor()
     p = cur.execute(
-        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id FROM pipelines WHERE id=?",
+        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id, COALESCE(debug_enabled,0) AS debug_enabled FROM pipelines WHERE id=?",
         (pid,),
     ).fetchone()
     if not p:
@@ -596,6 +604,7 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             "enabled": int(p["enabled"]),
             "description": p["description"],
             "owner_user_id": int(p["owner_user_id"]) if p["owner_user_id"] is not None else None,
+            "debug_enabled": int(p["debug_enabled"]) if p["debug_enabled"] is not None else 0,
         },
         "filters": filters,
         "writer": writer,
@@ -625,6 +634,16 @@ def create_or_update_pipeline(
     # Name is optional and can be duplicated; store empty string if omitted
     name = str(base.get("name") or "").strip()
     enabled = 1 if base.get("enabled", 1) else 0
+    # Only update debug flag when explicitly provided; default OFF for new
+    raw_debug = base.get("debug_enabled")
+    debug_enabled_param: Optional[int]
+    if raw_debug is None:
+        debug_enabled_param = None
+    else:
+        try:
+            debug_enabled_param = 1 if int(raw_debug) else 0
+        except (TypeError, ValueError):
+            debug_enabled_param = 0
     description = str(base.get("description") or "")
     # Prefer explicit owner in payload, fallback to parameter
     raw_owner = base.get("owner_user_id")
@@ -639,14 +658,14 @@ def create_or_update_pipeline(
 
     if pid is None:
         cur.execute(
-            "INSERT INTO pipelines (name, enabled, description, owner_user_id) VALUES (?, ?, ?, ?)",
-            (name, enabled, description, owner_id),
+            "INSERT INTO pipelines (name, enabled, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?)",
+            (name, enabled, description, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
         )
         pid = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
     else:
         cur.execute(
-            "UPDATE pipelines SET name=?, enabled=?, description=?, owner_user_id=COALESCE(?, owner_user_id), updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (name, enabled, description, owner_id, pid),
+            "UPDATE pipelines SET name=?, enabled=?, description=?, owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (name, enabled, description, owner_id, debug_enabled_param, pid),
         )
 
     # filters
@@ -905,7 +924,7 @@ def fetch_pipeline_list_by_owner(conn: sqlite3.Connection, owner_user_id: int) -
             FROM pipeline_writers
         )
         SELECT
-            p.id, p.name, p.enabled, p.updated_at, p.owner_user_id,
+            p.id, p.name, p.enabled, p.updated_at, p.owner_user_id, p.debug_enabled,
             w.type AS writer_type, w.hours AS writer_hours,
             CASE WHEN e.id IS NOT NULL THEN 'email'
                  WHEN f.id IS NOT NULL THEN 'feishu'
@@ -934,6 +953,7 @@ def fetch_pipeline_list_by_owner(conn: sqlite3.Connection, owner_user_id: int) -
                 "writer_type": r["writer_type"],
                 "writer_hours": r["writer_hours"],
                 "delivery_kind": r["delivery_kind"],
+                "debug_enabled": int(r["debug_enabled"]) if r["debug_enabled"] is not None else 0,
             }
         )
     return result

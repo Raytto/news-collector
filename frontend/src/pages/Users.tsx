@@ -187,6 +187,7 @@ export default function Users() {
                 { title: '名称', dataIndex: 'name' },
                 { title: 'Writer', dataIndex: 'writer_type', width: 120 },
                 { title: '方式', dataIndex: 'delivery_kind', width: 120 },
+                { title: 'Debug', dataIndex: 'debug_enabled', width: 100, render: (v) => (v === 1 ? <Tag color="gold">ON</Tag> : <Tag>OFF</Tag>) },
                 { title: '更新时间', dataIndex: 'updated_at', width: 180 }
               ]}
             />

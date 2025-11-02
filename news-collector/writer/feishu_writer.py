@@ -23,6 +23,27 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
 DEFAULT_LIMIT_PER_CATEGORY = 10
 DEFAULT_PER_SOURCE_CAP = 3
 
+# Helpers for presentation in Feishu message
+# Use emoji/text star for better visibility in Feishu
+STAR_FILLED = os.getenv("STAR_FULL_CHAR", "⭐")  # full star
+# Default half indicator uses sparkles for visibility; override with HALF_STAR_CHAR if needed.
+HALF_STAR = os.getenv("HALF_STAR_CHAR", "✨")
+
+def score_to_stars(score: float) -> str:
+    """Convert numeric score (1.0–5.0) to star string.
+
+    - Full stars: floor(score)
+    - Half star: append one half glyph if fractional part >= 0.5
+    """
+    try:
+        s = float(score)
+    except Exception:
+        s = 0.0
+    s = max(0.0, min(5.0, s))
+    full = int(s)
+    has_half = (s - full) >= 0.5 and full < 5
+    return (STAR_FILLED * full) + (HALF_STAR if has_half else "")
+
 
 @dataclass(frozen=True)
 class MetricDefinition:
@@ -164,6 +185,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
                    limit_per_category, per_source_cap
             FROM pipeline_writers
             WHERE pipeline_id=?
+            ORDER BY rowid DESC
+            LIMIT 1
             """,
             (pipeline_id,),
         ).fetchone()
@@ -173,6 +196,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
             SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'')
             FROM pipeline_writers
             WHERE pipeline_id=?
+            ORDER BY rowid DESC
+            LIMIT 1
             """,
             (pipeline_id,),
         ).fetchone()
@@ -181,6 +206,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         SELECT all_categories, COALESCE(categories_json,'')
         FROM pipeline_filters
         WHERE pipeline_id=?
+        ORDER BY rowid DESC
+        LIMIT 1
         """,
         (pipeline_id,),
     ).fetchone()
@@ -389,18 +416,15 @@ def format_section(title: str, items: List[Dict[str, Any]]) -> str:
     lines: List[str] = [f"**{title}**"]
     for idx, item in enumerate(items, start=1):
         score = float(item.get("score", 0.0))
-        bonus = float(item.get("bonus") or 0.0)
-        score_label = f"{score:.2f}"
-        if bonus:
-            sign = "+" if bonus > 0 else ""
-            score_label = f"{score_label}({sign}{bonus:g})"
+        # Show stars instead of numeric score; star count == floor(score)
+        stars = score_to_stars(score)
         source = item.get("source", "")
         title_txt = item.get("title", "")
         link = item.get("link", "")
         if len(title_txt) > 100:
             title_txt = title_txt[:100] + "…"
         source_label = source or "查看原文"
-        line = f"{idx}. (AI推荐:{score_label}) {title_txt} ([{source_label}]({link}))"
+        line = f"{idx}. (AI推荐:{stars}) {title_txt} ([{source_label}]({link}))"
         lines.append(line)
     lines.append("")
     return "\n".join(lines)
@@ -465,6 +489,7 @@ def main() -> None:
                 except json.JSONDecodeError:
                     pass
 
+        print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
         weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, args.weights)
 
         if args.source_bonus.strip():

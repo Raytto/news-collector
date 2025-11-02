@@ -11,6 +11,7 @@ import requests
 import smtplib
 import subprocess
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 from email.header import Header
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,7 @@ class PipelineBase(BaseModel):
     name: str | None = None
     enabled: int = Field(1, ge=0, le=1)
     description: str | None = None
+    debug_enabled: Optional[int] = Field(None, ge=0, le=1)
 
 
 class PipelineFilters(BaseModel):
@@ -163,7 +165,7 @@ SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
 SMTP_USE_SSL = _get_env_bool("SMTP_USE_SSL", False)
 SMTP_USE_TLS = _get_env_bool("SMTP_USE_TLS", False)
-MAIL_FROM = os.getenv("MAIL_FROM", "noreply@localhost").strip() or "noreply@localhost"
+MAIL_FROM = os.getenv("MAIL_FROM", "noreply@email.pangruitao.com").strip() or "noreply@email.pangruitao.com"
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "[情报鸭]").strip() or "[情报鸭]"
 
 
@@ -298,8 +300,20 @@ def _try_send_via_sendmail(msg: MIMEText) -> bool:
     if not os.path.exists(sendmail):
         return False
     try:
+        verbose = str(os.getenv("MAIL_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
+        # Derive recipients from headers to make envelope rcpt explicit
+        rcpts: list[str] = []
+        for key in ("To", "Cc", "Bcc"):
+            raw = (msg.get(key) or "").strip()
+            if raw:
+                rcpts.extend([a.strip() for a in raw.split(",") if a.strip()])
+        cmd = [sendmail, "-oi", "-t"]
+        if verbose:
+            cmd.append("-v")
+        cmd += ["-f", msg["From"]]
+        cmd += rcpts
         proc = subprocess.run(
-            [sendmail, "-oi", "-t", "-f", msg["From"]],
+            cmd,
             input=msg.as_string().encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -329,8 +343,18 @@ def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
     msg["From"] = MAIL_FROM
     msg["To"] = to_email
     msg["Subject"] = Header(subject, "utf-8")
+    try:
+        msg["Date"] = formatdate(localtime=True)
+        domain = MAIL_FROM.split("@", 1)[1] if "@" in MAIL_FROM else None
+        msg["Message-ID"] = make_msgid(domain=domain)
+    except Exception:
+        pass
 
-    # Preferred: explicit SMTP config
+    # Prefer local sendmail when available (works with tuned Postfix)
+    if _try_send_via_sendmail(msg):
+        return True
+
+    # Next: explicit SMTP config
     if SMTP_HOST:
         if _try_send_via_smtp(
             msg,
@@ -342,14 +366,33 @@ def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
             use_tls=SMTP_USE_TLS,
         ):
             return True
-    # Fallback: local MTA
+
+    # Finally: local SMTP listener
     for host in ("127.0.0.1", "localhost"):
         if _try_send_via_smtp(msg, host=host, port=25):
             return True
-    # Final: sendmail
-    if _try_send_via_sendmail(msg):
-        return True
     return False
+
+
+def _send_verification_email_task(to_email: str, code: str, purpose: str) -> None:
+    """Background task wrapper that logs result clearly.
+
+    This makes it easier to diagnose why users don't receive codes
+    (e.g., missing SMTP_HOST or no local MTA).
+    """
+    masked = _mask_email(to_email)
+    method = (
+        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}"
+        if SMTP_HOST
+        else "local SMTP 127.0.0.1:25/sendmail"
+    )
+    ok = _send_verification_email(to_email, code, purpose)
+    if ok:
+        print(f"[auth] email sent to {masked} via {method}")
+    else:
+        print(
+            f"[WARN] email NOT sent to {masked}. Configure SMTP_HOST/PORT/USER/PASS or local MTA."
+        )
 
 
 @app.get("/health")
@@ -472,9 +515,16 @@ def auth_login_code(payload: AuthEmailPayload, request: Request, background: Bac
         )
     # Send email asynchronously (best effort)
     masked = _mask_email(email)
-    background.add_task(_send_verification_email, email, code, "login")
-    print(f"[auth] login code scheduled for {masked}")
-    return {"ok": True}
+    # Send synchronously so we can surface failure to client
+    method = (
+        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}" if SMTP_HOST else "local SMTP 127.0.0.1:25/sendmail"
+    )
+    if _send_verification_email(email, code, "login"):
+        print(f"[auth] login code sent to {masked} via {method}")
+        return {"ok": True}
+    else:
+        print(f"[WARN] login code NOT sent to {masked}. Check SMTP or MTA config.")
+        raise HTTPException(status_code=502, detail="验证码发送失败，请稍后再试")
 
 
 @app.post("/auth/signup/code")
@@ -522,9 +572,15 @@ def auth_signup_code(payload: AuthEmailPayload, request: Request, background: Ba
             user_id=None,
         )
     masked = _mask_email(email)
-    background.add_task(_send_verification_email, email, code, "signup")
-    print(f"[auth] signup code scheduled for {masked}")
-    return {"ok": True}
+    method = (
+        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}" if SMTP_HOST else "local SMTP 127.0.0.1:25/sendmail"
+    )
+    if _send_verification_email(email, code, "signup"):
+        print(f"[auth] signup code sent to {masked} via {method}")
+        return {"ok": True}
+    else:
+        print(f"[WARN] signup code NOT sent to {masked}. Check SMTP or MTA config.")
+        raise HTTPException(status_code=502, detail="验证码发送失败，请稍后再试")
 
 
 @app.post("/auth/login/verify")

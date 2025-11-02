@@ -159,6 +159,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
                    limit_per_category, per_source_cap
             FROM pipeline_writers
             WHERE pipeline_id=?
+            ORDER BY rowid DESC
+            LIMIT 1
             """,
             (pipeline_id,),
         ).fetchone()
@@ -168,6 +170,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
             SELECT hours, COALESCE(weights_json,''), COALESCE(bonus_json,'')
             FROM pipeline_writers
             WHERE pipeline_id=?
+            ORDER BY rowid DESC
+            LIMIT 1
             """,
             (pipeline_id,),
         ).fetchone()
@@ -176,6 +180,8 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         SELECT all_categories, COALESCE(categories_json,'')
         FROM pipeline_filters
         WHERE pipeline_id=?
+        ORDER BY rowid DESC
+        LIMIT 1
         """,
         (pipeline_id,),
     ).fetchone()
@@ -465,25 +471,49 @@ def render_html(
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>最近 {hours} 小时资讯汇总</title>
   <style>
-    body {{ font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; margin: 24px auto; padding: 0 12px; color: #1f2937; max-width: 880px; background: #f6f7fb; }}
-    h1 {{ font-size: 22px; margin: 0 0 4px; }}
-    .meta {{ color: #6b7280; margin: 0 0 18px; }}
-    h2 {{ font-size: 18px; margin: 26px 0 12px; padding-top: 8px; border-top: 2px solid #eef2f7; color: #334155; }}
-    .article-card {{ border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; background: #fff; box-shadow: 0 1px 3px rgba(2, 6, 23, 0.06); }}
-    .article-title {{ font-size: 17px; font-weight: 600; color: #0b5ed7; text-decoration: none; display: inline-block; margin-bottom: 6px; }}
+    /* Dense, compact, email-friendly styles */
+    body {{
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+            'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC',
+            'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+      margin: 12px auto;             /* 两边留白更小 */
+      padding: 0 8px;                 /* 减少内边距 */
+      color: #1f2937;
+      max-width: 760px;               /* 页面更窄以提升密度 */
+      background: #fafbfc;
+    }}
+    h1 {{ font-size: 16px; margin: 0 0 2px; }}
+    .meta {{ color: #6b7280; margin: 0 0 10px; font-size: 12px; }}
+    h2 {{ font-size: 14px; margin: 18px 0 8px; padding-top: 6px; border-top: 1px solid #eef2f7; color: #334155; }}
+    .article-card {{
+      border: 1px solid #e5e7eb; border-radius: 8px;
+      padding: 10px 12px; margin-bottom: 8px; background: #fff;
+    }}
+    .article-title {{
+      font-size: 14px; font-weight: 600; color: #0b5ed7;
+      text-decoration: none; display: block; margin: 0 0 4px;
+    }}
     .article-title:hover {{ text-decoration: underline; }}
-    .article-meta {{ color: #6b7280; font-size: 13px; margin-bottom: 10px; }}
-    .ai-summary {{ background: #f8fafc; border-radius: 8px; padding: 12px 14px; line-height: 1.55; color: #1f2937; }}
-    .ai-summary + .ai-summary {{ margin-top: 8px; }}
-    .ai-missing {{ background: #fff4e6; border: 1px dashed #f59e0b; color: #b45309; }}
-    .subsec-title {{ font-size: 12px; color: #6b7280; margin: 8px 0 6px; font-weight: 600; }}
-    .ai-rating {{ display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; margin: 0 0 6px; color: #b45309; }}
-    .stars {{ font-size: 14px; letter-spacing: 1px; color: #f59e0b; }}
-    .score-number {{ color: #b45309; font-size: 12px; }}
-    .chips {{ margin: 2px 0 2px; }}
-    .chip {{ display: inline-block; padding: 3px 8px; margin: 2px 6px 2px 0; font-size: 12px; color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 999px; }}
-    .brief {{ margin-top: 6px; background: #f8fafc; border-radius: 8px; padding: 10px 12px; color: #334155; font-size: 12px; line-height: 1.6; }}
-    time {{ color: #6b7280; font-size: 12px; }}
+    .article-meta {{
+      color: #6b7280; font-size: 11px; margin: 0 0 6px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    }}
+    /* Inline, compact AI block: stars + number + chips occupy a single row when possible */
+    .ai-summary {{
+      display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
+      background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px;
+      padding: 6px 8px; line-height: 1.45; color: #1f2937;
+    }}
+    .ai-missing {{ background: #fff7ed; border: 1px dashed #f59e0b; color: #b45309; }}
+    .ai-label {{ font-size: 11px; color: #64748b; font-weight: 600; margin-right: 2px; }}
+    .ai-rating {{ display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: #b45309; margin: 0; }}
+    .stars {{ font-size: 12px; letter-spacing: .5px; color: #f59e0b; }}
+    .score-number {{ color: #b45309; font-size: 11px; }}
+    .bonus {{ color: #b45309; font-size: 11px; opacity: .9; }}
+    .chips {{ display: inline-flex; flex-wrap: wrap; gap: 4px 6px; margin: 0; }}
+    .chip {{ display: inline-block; padding: 1px 6px; font-size: 11px; color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 999px; }}
+    .brief {{ flex-basis: 100%; margin-top: 4px; background: #f8fafc; border-radius: 6px; padding: 6px 8px; color: #334155; font-size: 12px; line-height: 1.5; }}
+    time {{ color: #6b7280; font-size: 11px; }}
   </style>
   </head>
 <body>
@@ -565,13 +595,20 @@ def render_html(
                 sc = scores.get(m.key)
                 if sc is None:
                     continue
-                metric_chip_items.append(f"<span class=\\"chip\\">{escape(m.label_zh)} {int(sc)}</span>")
+                metric_chip_items.append(f'<span class="chip">{escape(m.label_zh)} {int(sc)}</span>')
             metric_chips_html = "".join(metric_chip_items)
+
+            # Dense, inline layout: stars + number + metric chips in one row when possible
+            bonus_compact = ""
+            if bonus:
+                sign = "+" if bonus > 0 else ""
+                bonus_compact = f"<span class=\"bonus\">{sign}{bonus:g}</span>"
 
             rating_html = (
                 "<div class=\"ai-summary\">"
-                f"<div class=\"subsec-title\">AI评分</div>"
-                f"<div class=\"ai-rating\"><span class=\"stars\">{stars}</span><span class=\"score-number\">{final_score:.2f}/5</span><span class=\"score-number\">{escape(bonus_note)}</span></div>"
+                f"<span class=\"ai-label\">AI</span>"
+                f"<span class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
+                f"<span class=\"score-number\">{final_score:.2f}/5</span>{bonus_compact}</span>"
                 f"<div class=\"chips\">{metric_chips_html}</div>"
                 f"{concepts_html}{brief_html}"
                 "</div>"
@@ -682,6 +719,7 @@ def main() -> None:
                 except (TypeError, ValueError):
                     pass
 
+        print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
         weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, weights_cli_override)
 
         if bonus_cli_override.strip():
@@ -750,6 +788,13 @@ def main() -> None:
         return
 
     entries = apply_limits(entries, limit_map, limit_default, per_source_cap)
+    # Optional global cap to reduce size/link density for deliverability
+    try:
+        max_items = int(os.getenv("EMAIL_MAX_ITEMS", "0") or 0)
+    except Exception:
+        max_items = 0
+    if max_items and max_items > 0 and len(entries) > max_items:
+        entries = entries[:max_items]
     if not entries:
         print("没有符合条件的资讯，未生成文件")
         return

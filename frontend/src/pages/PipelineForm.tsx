@@ -189,6 +189,8 @@ export default function PipelineForm() {
     metrics: FALLBACK_METRICS
   })
   const [deliveryKind, setDeliveryKind] = useState<DeliveryKind>('email')
+  // 保持当前选中的分页标签，避免保存后回到“基础”
+  const [activeTab, setActiveTab] = useState<string>('base')
   const [feishuChats, setFeishuChats] = useState<FeishuChat[]>([])
   const [fetchingFeishuChats, setFetchingFeishuChats] = useState(false)
   const [optionsReady, setOptionsReady] = useState(false)
@@ -470,13 +472,15 @@ export default function PipelineForm() {
         delivery: deliveryValues ? { kind: deliveryKind, ...deliveryValues } : undefined
       }
       if (editing) {
+        // 在编辑模式下，保存后留在当前页
         await updatePipeline(Number(id), payload)
         message.success('已更新')
       } else {
+        // 新建完成后仍返回列表页（保留原行为）
         await createPipeline(payload)
         message.success('已创建')
+        navigate('/')
       }
-      navigate('/')
     } catch (e) {
       message.error('保存失败')
     } finally {
@@ -611,6 +615,8 @@ export default function PipelineForm() {
     <Form form={form} layout="vertical" initialValues={initialFormValues}>
       <Card loading={loading}>
         <Tabs
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k)}
           items={[
             {
               key: 'base',
@@ -686,28 +692,47 @@ export default function PipelineForm() {
                     <Space direction="vertical" style={{ width: '100%' }}>
                       <Typography.Text type="secondary">覆盖默认值，为特定类别设置不同上限。</Typography.Text>
                       <Form.List name={["writer", "limit_per_category_overrides"]}>
-                        {(fields, { add, remove }) => (
-                          <Space direction="vertical" style={{ width: '100%' }} size="small">
-                            {fields.map((field) => {
-                              const overridesValue = limitOverrides ?? []
-                              const currentCategory = overridesValue?.[field.name]?.category
-                              const usedCategories = new Set(
-                                (overridesValue || [])
-                                  .map((entry, idx) => (idx === field.name ? undefined : entry?.category))
-                                  .filter((cat): cat is string => !!cat)
-                              )
-                              const categoryOptions = options.categories.map((category) => ({
-                                value: category,
-                                label: category,
-                                disabled: usedCategories.has(category) && category !== currentCategory
-                              }))
-                              return (
-                                <Space key={field.key} align="baseline" wrap>
+                        {(fields, { add, remove }) => {
+                          const overridesValue = (limitOverrides ?? []) as LimitOverride[]
+                          const selectedCategories = new Set(
+                            overridesValue
+                              .map((entry) => (entry?.category ? String(entry.category).trim() : undefined))
+                              .filter((v): v is string => !!v)
+                          )
+
+                          const dataSource = fields.map((field) => ({ key: field.key, field }))
+
+                          const columns: ColumnsType<{ field: FormListFieldData }> = [
+                            {
+                              title: '类别',
+                              dataIndex: 'field',
+                              key: 'category',
+                              render: (_, { field }) => {
+                                const currentCategory =
+                                  overridesValue?.[field.name] && overridesValue?.[field.name]?.category
+                                    ? String(overridesValue?.[field.name]?.category).trim()
+                                    : undefined
+                                const usedByOthers = new Set<string>()
+                                overridesValue.forEach((entry, idx) => {
+                                  if (idx === field.name) return
+                                  const cat = entry?.category ? String(entry.category).trim() : ''
+                                  if (cat) usedByOthers.add(cat)
+                                })
+                                const categoryOptions = options.categories
+                                  .map((cat) => ({ value: cat, label: cat }))
+                                  .filter((opt) => opt.value === currentCategory || !usedByOthers.has(opt.value))
+                                if (
+                                  currentCategory &&
+                                  !categoryOptions.some((opt) => opt.value === currentCategory)
+                                ) {
+                                  categoryOptions.unshift({ value: currentCategory, label: currentCategory })
+                                }
+                                return (
                                   <Form.Item
-                                    {...field}
                                     name={[field.name, 'category']}
-                                    fieldKey={`${field.fieldKey}-category`}
+                                    fieldKey={`${field.key}-category`}
                                     rules={[{ required: true, message: '请选择类别' }]}
+                                    style={{ marginBottom: 0 }}
                                   >
                                     <Select
                                       showSearch
@@ -716,39 +741,73 @@ export default function PipelineForm() {
                                       style={{ minWidth: 200 }}
                                     />
                                   </Form.Item>
-                                  <Form.Item
-                                    {...field}
-                                    name={[field.name, 'limit']}
-                                    fieldKey={`${field.fieldKey}-limit`}
-                                    rules={[{ required: true, message: '请输入上限' }]}
-                                  >
-                                    <InputNumber min={1} />
-                                  </Form.Item>
-                                  <Button
-                                    type="text"
-                                    danger
-                                    icon={<MinusCircleOutlined />}
-                                    onClick={() => remove(field.name)}
-                                  />
-                                </Space>
-                              )
-                            })}
-                            <Button
-                              type="dashed"
-                              icon={<PlusOutlined />}
-                              onClick={() =>
-                                add({
-                                  limit:
-                                    form.getFieldValue(["writer", "limit_per_category_default"]) ||
-                                    CATEGORY_LIMIT_DEFAULT
-                                })
+                                )
                               }
-                              style={{ width: 'fit-content' }}
-                            >
-                              添加类别上限
-                            </Button>
-                          </Space>
-                        )}
+                            },
+                            {
+                              title: '上限',
+                              dataIndex: 'field',
+                              key: 'limit',
+                              width: 140,
+                              render: (_, { field }) => (
+                                <Form.Item
+                                  name={[field.name, 'limit']}
+                                  fieldKey={`${field.key}-limit`}
+                                  rules={[{ required: true, message: '请输入上限' }]}
+                                  style={{ marginBottom: 0 }}
+                                >
+                                  <InputNumber min={1} />
+                                </Form.Item>
+                              )
+                            },
+                            {
+                              title: '操作',
+                              dataIndex: 'actions',
+                              key: 'actions',
+                              align: 'center',
+                              width: 80,
+                              render: (_, { field }) => (
+                                <Button
+                                  type="text"
+                                  danger
+                                  icon={<MinusCircleOutlined />}
+                                  onClick={() => remove(field.name)}
+                                />
+                              )
+                            }
+                          ]
+
+                          const handleAddOverride = () => {
+                            const next = options.categories.find((c) => !selectedCategories.has(c))
+                            add({
+                              category: next,
+                              limit:
+                                form.getFieldValue(["writer", "limit_per_category_default"]) || CATEGORY_LIMIT_DEFAULT
+                            })
+                          }
+
+                          return (
+                            <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                              <Table
+                                size="small"
+                                pagination={false}
+                                rowKey="key"
+                                dataSource={dataSource}
+                                columns={columns}
+                                tableLayout="fixed"
+                                locale={{ emptyText: '暂无类别上限' }}
+                              />
+                              <Button
+                                type="dashed"
+                                icon={<PlusOutlined />}
+                                onClick={handleAddOverride}
+                                style={{ width: 'fit-content' }}
+                              >
+                                添加类别上限
+                              </Button>
+                            </Space>
+                          )
+                        }}
                       </Form.List>
                     </Space>
                   </Form.Item>

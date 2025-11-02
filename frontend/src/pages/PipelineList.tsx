@@ -75,6 +75,16 @@ export default function PipelineList() {
       width: 100,
       render: (v, record) => <Switch checked={v === 1} onChange={(val) => onToggle(record, val)} />
     },
+    ...(isAdmin
+      ? ([
+          {
+            title: 'Debug',
+            dataIndex: 'debug_enabled',
+            width: 100,
+            render: (v) => (v === 1 ? <Tag color="gold">ON</Tag> : <Tag>OFF</Tag>)
+          }
+        ] as ColumnsType<PipelineListItem>)
+      : ([] as ColumnsType<PipelineListItem>)),
     {
       title: 'Writer',
       render: (_, r) => {

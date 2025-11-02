@@ -17,4 +17,14 @@ variables:
   FEISHU_DEFAULT_CHAT_ID: ""
   # Optional: Feishu Open API base
   FEISHU_API_BASE: "https://open.feishu.cn"
+  # Collector concurrency and HTTP controls
+  COLLECTOR_SOURCE_CONCURRENCY: "10"              # max sources in parallel
+  COLLECTOR_PER_SOURCE_CONCURRENCY: "1"           # per-source detail concurrency (1 = serial)
+  COLLECTOR_GLOBAL_HTTP_CONCURRENCY: "16"         # global in-flight HTTP requests limit
+  COLLECTOR_PER_HOST_MIN_INTERVAL_MS: "500"       # min interval per host with jitter
+  COLLECTOR_TIMEOUT_CONNECT: "5"                  # seconds
+  COLLECTOR_TIMEOUT_READ: "10"                    # seconds
+  COLLECTOR_RETRY_MAX: "3"                        # simple retry attempts for transient errors
+  COLLECTOR_RETRY_BACKOFF_BASE: "0.6"             # base seconds for exponential backoff
+  COLLECTOR_DISABLE_CONCURRENCY: ""               # set to 1/true to force serial execution
 prefix: /home/pp/miniconda3/envs/news-collector

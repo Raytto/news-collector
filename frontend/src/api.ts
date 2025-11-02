@@ -52,6 +52,7 @@ export type PipelineListItem = {
   id: number
   name: string
   enabled: number
+  debug_enabled?: number
   description?: string
   updated_at?: string
   writer_type?: string

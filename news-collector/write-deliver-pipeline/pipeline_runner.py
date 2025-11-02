@@ -7,6 +7,8 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
+import re
+import html as htmllib
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -41,7 +43,7 @@ def _fetchone_dict(cur: sqlite3.Cursor, sql: str, args: Tuple[Any, ...]) -> Dict
     return {cols[i]: row[i] for i in range(len(cols))}
 
 
-def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool) -> list[Pipeline]:
+def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool, debug_only: bool = False) -> list[Pipeline]:
     cur = conn.cursor()
     rows: list[tuple] = []
     if name:
@@ -50,9 +52,19 @@ def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool
             (name,),
         ).fetchall()
     elif all_flag:
-        rows = cur.execute(
-            "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
-        ).fetchall()
+        # When debug_only is set, select by debug flag instead of enabled
+        if debug_only:
+            # If debug_enabled column is missing, treat as empty set to avoid crashing
+            try:
+                rows = cur.execute(
+                    "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE debug_enabled=1 ORDER BY id",
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        else:
+            rows = cur.execute(
+                "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
+            ).fetchall()
     else:
         raise SystemExit("必须指定 --name 或 --all")
     return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3])) for r in rows]
@@ -102,6 +114,8 @@ def run_writer(
             str(WRITER_DIR / "feishu_writer.py"),
             "--output",
             str(out_path),
+            "--hours",
+            str(hours),
         ]
     elif wtype in {"info_html", "wenhao_html"}:
         # Unified email writer for all HTML digests
@@ -111,6 +125,8 @@ def run_writer(
             str(WRITER_DIR / "email_writer.py"),
             "--output",
             str(out_path),
+            "--hours",
+            str(hours),
         ]
     else:
         raise SystemExit(f"未知 writer 类型: {wtype}")
@@ -132,8 +148,38 @@ def deliver_email(html_file: Path, pipeline_id: int) -> None:
     ]
     env = os.environ.copy()
     env["PIPELINE_ID"] = str(pipeline_id)
+    # If caller enforces plain-only mode, pass explicit flag and dump RFC message
+    plain_only = (env.get("MAIL_PLAIN_ONLY", "").strip().lower() in {"1", "true", "yes", "on"})
+    if plain_only:
+        cmd.append("--plain-only")
+        dump_path = str(html_file.with_suffix(".eml"))
+        cmd.extend(["--dump-msg", dump_path])
     print(f"[DELIVER] email via DB (pipeline={pipeline_id}): {' '.join(cmd)}")
     subprocess.run(cmd, check=True, env=env)
+
+
+def _write_plain_copy_if_needed(html_file: Path) -> Path | None:
+    """When MAIL_PLAIN_ONLY is enabled, write a .txt copy derived from HTML.
+
+    This mirrors the actual sent content in plain-text mode so that the
+    recorded artifact matches delivery format.
+    """
+    if os.getenv("MAIL_PLAIN_ONLY", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return None
+    try:
+        body = html_file.read_text(encoding="utf-8", errors="ignore")
+        tmp = re.sub(r"<script[\s\S]*?</script>", " ", body, flags=re.IGNORECASE)
+        tmp = re.sub(r"<style[\s\S]*?</style>", " ", tmp, flags=re.IGNORECASE)
+        tmp = re.sub(r"<[^>]+>", " ", tmp)
+        tmp = htmllib.unescape(tmp)
+        tmp = re.sub(r"\s+", " ", tmp).strip()
+        txt_path = html_file.with_suffix(".txt")
+        txt_path.write_text(tmp, encoding="utf-8")
+        print(f"[DELIVER] wrote plain copy: {txt_path}")
+        return txt_path
+    except Exception as e:
+        print(f"[WARN] failed to write plain copy for {html_file}: {e}")
+        return None
 
 
 def deliver_feishu(md_file: Path, pipeline_id: int, delivery: Dict[str, Any]) -> None:
@@ -173,12 +219,14 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
 
     filters = _fetchone_dict(
         cur,
-        "SELECT all_categories, categories_json, all_src, include_src_json FROM pipeline_filters WHERE pipeline_id=?",
+        "SELECT all_categories, categories_json, all_src, include_src_json "
+        "FROM pipeline_filters WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
         (p.id,),
     )
     writer = _fetchone_dict(
         cur,
-        "SELECT type, hours, weights_json, bonus_json FROM pipeline_writers WHERE pipeline_id=?",
+        "SELECT type, hours, weights_json, bonus_json "
+        "FROM pipeline_writers WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
         (p.id,),
     )
     if not writer:
@@ -221,6 +269,9 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
 
     out_path = run_writer(p.id, writer, filters, out_dir, ts)
 
+    # If configured to send plain-only, also persist a .txt copy next to HTML
+    _write_plain_copy_if_needed(out_path)
+
     if has_email:
         deliver_email(out_path, p.id)
     else:
@@ -233,6 +284,11 @@ def parse_args() -> argparse.Namespace:
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--name", default="", help="Run pipeline by name")
     g.add_argument("--all", action="store_true", help="Run all enabled pipelines sequentially")
+    p.add_argument(
+        "--debug-only",
+        action="store_true",
+        help="Run pipelines marked debug_enabled=1 instead of enabled=1 when used with --all",
+    )
     return p.parse_args()
 
 
@@ -241,7 +297,7 @@ def main() -> None:
     if not DB_PATH.exists():
         raise SystemExit(f"未找到数据库: {DB_PATH}")
     with sqlite3.connect(str(DB_PATH)) as conn:
-        ps = load_pipelines(conn, args.name or None, args.all)
+        ps = load_pipelines(conn, args.name or None, args.all, debug_only=bool(getattr(args, "debug_only", False)))
         if not ps:
             print("没有匹配的管线可执行")
             return

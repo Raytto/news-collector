@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ingest (collect + evaluate) then run all DB-backed pipelines sequentially.
-# Sleep until next 09:30 and repeat.
+# Run once: collect + AI evaluate, then execute all enabled DB pipelines.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
 ENV_NAME="news-collector"
+
+# Timestamped logging (Asia/Shanghai) to log/<ts>-auto-once-log.txt
+TS="$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')"
+LOG_DIR="$ROOT_DIR/log"
+LOG_FILE="$LOG_DIR/${TS}-auto-once-log.txt"
+mkdir -p "$LOG_DIR"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[INFO] Log file: $LOG_FILE"
 
 check_pipeline_config() {
   local db_path="$ROOT_DIR/data/info.db"
@@ -152,26 +159,6 @@ activate_runtime() {
 
   echo "[ERROR] Unable to locate a Python interpreter; set PYTHON env var or install Python." >&2
   return 1
-}
-
-sleep_until_next_0930() {
-  now_epoch=$(date +%s)
-  today_target=$(date -d "today 09:30" +%s)
-  if [ "$now_epoch" -lt "$today_target" ]; then
-    target_epoch="$today_target"
-    label="today 09:30"
-  else
-    target_epoch=$(date -d "tomorrow 09:30" +%s)
-    label="tomorrow 09:30"
-  fi
-  sleep_secs=$(( target_epoch - now_epoch ))
-  if [ "$sleep_secs" -lt 0 ]; then
-    sleep_secs=0
-  fi
-  echo "[INFO] Sleeping until $label (${sleep_secs}s)" >&2
-  if [ "$sleep_secs" -gt 0 ]; then
-    sleep "$sleep_secs"
-  fi
 }
 
 run_once() {
