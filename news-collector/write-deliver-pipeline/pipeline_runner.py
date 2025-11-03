@@ -31,6 +31,30 @@ WRITER_DIR = ROOT / "news-collector" / "writer"
 DELIVER_DIR = ROOT / "news-collector" / "deliver"
 PY = os.environ.get("PYTHON") or sys.executable or "python3"
 
+# Weekday helpers (runner-local domain module)
+try:
+    # If executed as a package module
+    from .weekday import (
+        coerce as weekday_coerce,
+        is_allowed as weekday_is_allowed,
+        normalize as weekday_normalize,
+    )
+except Exception:  # executed as a script; fall back to path import
+    try:
+        import importlib.util as _importlib_util
+        _wk_path = Path(__file__).with_name("weekday.py")
+        _spec = _importlib_util.spec_from_file_location("_runner_weekday", str(_wk_path))
+        if _spec and _spec.loader:
+            _mod = _importlib_util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)  # type: ignore[arg-type]
+            weekday_coerce = _mod.coerce  # type: ignore[attr-defined]
+            weekday_is_allowed = _mod.is_allowed  # type: ignore[attr-defined]
+            weekday_normalize = _mod.normalize  # type: ignore[attr-defined]
+        else:  # pragma: no cover
+            raise ImportError("cannot load weekday helpers")
+    except Exception as _e:  # pragma: no cover
+        raise SystemExit(f"Failed to load weekday helpers: {_e}")
+
 
 @dataclass
 class Pipeline:
@@ -104,27 +128,9 @@ def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool
 
 
 def _allowed_today(weekdays_json_text: Optional[str]) -> tuple[bool, str]:
-    """Return (allowed, debug_msg), interpreting NULL as no restriction.
-
-    - NULL/None: allowed
-    - []: disallowed
-    - [1..7]: allowed iff today in list (Asia/Shanghai by default or PIPELINE_TZ)
-    """
+    """Return (allowed, debug_msg) using unified weekday helpers."""
     if weekdays_json_text is None or str(weekdays_json_text).strip() == "":
         return True, "no weekday restriction"
-    try:
-        parsed = json.loads(str(weekdays_json_text))
-    except json.JSONDecodeError:
-        return True, "invalid weekdays_json -> ignore"
-    if not isinstance(parsed, list):
-        return True, "non-list weekdays_json -> ignore"
-    # Normalize to ints in 1..7
-    vals: list[int] = []
-    for x in parsed:
-        if isinstance(x, (int, float)):
-            xi = int(x)
-            if 1 <= xi <= 7:
-                vals.append(xi)
     tz_name = os.getenv("PIPELINE_TZ", "Asia/Shanghai")
     if ZoneInfo is not None:
         try:
@@ -133,11 +139,12 @@ def _allowed_today(weekdays_json_text: Optional[str]) -> tuple[bool, str]:
             today = datetime.now().isoweekday()
     else:
         today = datetime.now().isoweekday()
-    if not vals:
+    days = weekday_normalize(weekday_coerce(weekdays_json_text)) or []
+    if not days:
         return False, f"weekday not allowed (today={today}; allowed=[] )"
-    if today not in vals:
-        return False, f"weekday not allowed (today={today}; allowed={vals})"
-    return True, f"weekday allowed (today={today}; allowed={vals})"
+    if not weekday_is_allowed(days, tz=tz_name):
+        return False, f"weekday not allowed (today={today}; allowed={days})"
+    return True, f"weekday allowed (today={today}; allowed={days})"
 
 
 def ensure_output_dir(pipeline_id: int) -> Path:
@@ -402,6 +409,9 @@ def main() -> None:
                 if not ok:
                     print(f"[SKIP] {p.name}: {why}")
                     continue
+                # Emit debug line when allowed if DEBUG_WEEKDAY is enabled
+                if str(os.getenv("DEBUG_WEEKDAY", "")).strip().lower() in {"1", "true", "yes", "on"}:
+                    print(f"[DEBUG] {p.name}: {why}")
             print(f"[RUN] {p.name} (id={p.id})")
             try:
                 run_one(conn, p)

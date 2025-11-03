@@ -13,6 +13,27 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "info.db"
 
+"""Weekday helpers import
+Support both package execution (python -m ...) and script execution
+(python path/to/file.py) by falling back to file-location import.
+"""
+try:
+    from .weekday import coerce as weekday_coerce, normalize as weekday_normalize
+except Exception:
+    try:
+        import importlib.util as _importlib_util
+        _wk_path = Path(__file__).with_name("weekday.py")
+        _spec = _importlib_util.spec_from_file_location("_admin_weekday", str(_wk_path))
+        if _spec and _spec.loader:
+            _mod = _importlib_util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)  # type: ignore[arg-type]
+            weekday_coerce = _mod.coerce  # type: ignore[attr-defined]
+            weekday_normalize = _mod.normalize  # type: ignore[attr-defined]
+        else:  # pragma: no cover
+            raise ImportError("cannot load weekday helpers")
+    except Exception as _e:  # pragma: no cover
+        raise SystemExit(f"Failed to load weekday helpers: {_e}")
+
 
 SCHEMA_SQL = """
 -- 管线定义
@@ -310,15 +331,8 @@ def _export_one(conn: sqlite3.Connection, pid: int) -> dict:
             (pid,),
         ).fetchone()
         if wrow and wrow[0] is not None:
-            try:
-                parsed = json.loads(str(wrow[0]))
-                if isinstance(parsed, list):
-                    # keep only 1..7 ints
-                    weekdays = [int(x) for x in parsed if isinstance(x, (int, float)) and 1 <= int(x) <= 7]
-                else:
-                    weekdays = None
-            except json.JSONDecodeError:
-                weekdays = None
+            arr = weekday_coerce(wrow[0])
+            weekdays = weekday_normalize(arr)
     except sqlite3.OperationalError:
         # Column missing; ignore for backward compatibility
         weekdays = None
@@ -521,24 +535,12 @@ def cmd_import(args: argparse.Namespace) -> None:
             if raw_weekdays is None or raw_weekdays == "":
                 weekdays_norm = None
             else:
-                # accept list or JSON string; normalize and filter to 1..7 ints
-                arr: Optional[list[int]] = None
-                if isinstance(raw_weekdays, str):
-                    try:
-                        parsed = json.loads(raw_weekdays)
-                    except json.JSONDecodeError:
-                        parsed = None
-                else:
-                    parsed = raw_weekdays
-                if isinstance(parsed, list):
-                    try:
-                        vals = [int(x) for x in parsed if isinstance(x, (int, float))]
-                    except Exception:
-                        vals = []
-                    arr = [v for v in vals if 1 <= v <= 7]
-                    weekdays_norm = json.dumps(arr, ensure_ascii=False)
-                else:
-                    weekdays_norm = None
+                arr = weekday_coerce(raw_weekdays)
+                # Warn on non-array inputs during transition
+                if isinstance(raw_weekdays, (str, bytes, bytearray)):
+                    print("[WARN] weekdays_json provided as string; coerced for compatibility")
+                days = weekday_normalize(arr) or []
+                weekdays_norm = json.dumps(days, ensure_ascii=False)
             # Prefer matching by id when provided and valid; otherwise, fall back to name
             pid: Optional[int] = None
             if isinstance(raw_id, int):

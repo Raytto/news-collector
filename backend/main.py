@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 from . import db
+from .domain.weekday import coerce as weekday_coerce
 
 FEISHU_CHAT_MAX_PAGE_SIZE = 100  # Per Feishu docs, current hard limit is 100
 
@@ -34,51 +35,8 @@ class PipelineBase(BaseModel):
     @field_validator("weekdays_json", mode="before")
     @classmethod
     def _coerce_weekdays(cls, v):  # type: ignore[override]
-        # Accept list[int], list[str], JSON-string, CSV, empty string → normalize to list[int] or None
-        if v is None:
-            return None
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode("utf-8", errors="ignore")
-        if isinstance(v, str):
-            s = v.strip()
-            if not s:
-                return None
-            # Try JSON first
-            try:
-                import json as _json
-                parsed = _json.loads(s)
-            except Exception:
-                # Try CSV like "1,2,3"
-                parts = [p.strip() for p in s.split(",") if p.strip()]
-                try:
-                    vals = [int(p) for p in parts]
-                except Exception:
-                    return None
-                return [x for x in vals if 1 <= int(x) <= 7]
-            else:
-                if isinstance(parsed, list):
-                    vals: list[int] = []
-                    for x in parsed:
-                        try:
-                            xi = int(x)
-                        except Exception:
-                            continue
-                        if 1 <= xi <= 7:
-                            vals.append(xi)
-                    return vals
-                return None
-        if isinstance(v, list):
-            vals: list[int] = []
-            for x in v:
-                try:
-                    xi = int(x)
-                except Exception:
-                    continue
-                if 1 <= xi <= 7:
-                    vals.append(xi)
-            return vals
-        # Unknown type: let pydantic handle or drop
-        return v
+        # Transition-friendly: accept JSON string / CSV / list; normalize via domain helper
+        return weekday_coerce(v)
 
 
 class PipelineFilters(BaseModel):
@@ -723,33 +681,8 @@ def options(user: dict = Depends(_require_user)) -> dict:
 
 
 def _parse_weekday_string(value: str) -> list[int] | None:
-    s = (value or "").strip()
-    if not s:
-        return []
-    import json as _json
-
-    try:
-        parsed = _json.loads(s)
-    except Exception:
-        # Try comma-separated fallback
-        parts = [p.strip() for p in s.split(",") if p.strip()]
-        try:
-            return [int(p) for p in parts if 1 <= int(p) <= 7]
-        except Exception:
-            return None
-    else:
-        if isinstance(parsed, list):
-            try:
-                return [int(p) for p in parsed if 1 <= int(p) <= 7]
-            except Exception:
-                return None
-        if isinstance(parsed, (int, float)):
-            try:
-                pi = int(parsed)
-                return [pi] if 1 <= pi <= 7 else []
-            except Exception:
-                return None
-        return None
+    # Keep for compatibility; delegate to domain coerce
+    return weekday_coerce(value)
 
 
 @app.get("/categories")
@@ -1103,11 +1036,12 @@ async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, 
     except Exception:
         pass
     with db.get_conn() as conn:
-        try:
-            p_dump = payload.pipeline.model_dump(exclude_unset=False) if payload.pipeline is not None else None
-            print(f"[DEBUG] update_pipeline pid={pid} payload.pipeline={p_dump}; raw={raw_body}")
-        except Exception as _e:
-            print(f"[DEBUG] update_pipeline pid={pid} dump err={_e}; raw={raw_body}")
+        if _get_env_bool("DEBUG_PAYLOAD", False):
+            try:
+                p_dump = payload.pipeline.model_dump(exclude_unset=False) if payload.pipeline is not None else None
+                print(f"[DEBUG] update_pipeline pid={pid} payload.pipeline={p_dump}; raw={raw_body}")
+            except Exception as _e:
+                print(f"[DEBUG] update_pipeline pid={pid} dump err={_e}; raw={raw_body}")
         existed = db.fetch_pipeline(conn, pid)
         if not existed:
             raise HTTPException(status_code=404, detail="Pipeline not found")
@@ -1117,10 +1051,11 @@ async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, 
                 raise HTTPException(status_code=403, detail="无权修改该投递")
         # exclude_unset 避免未在请求中出现的字段被重置为 None
         result = payload.model_dump(exclude_unset=True)
-        try:
-            print(f"[DEBUG] update_pipeline pid={pid} model_dump_before_merge={result}")
-        except Exception:
-            pass
+        if _get_env_bool("DEBUG_PAYLOAD", False):
+            try:
+                print(f"[DEBUG] update_pipeline pid={pid} model_dump_before_merge={result}")
+            except Exception:
+                pass
         # Ensure weekdays_json propagates even if excluded by Pydantic
         raw_weekdays = None
         raw_has_weekdays = False
@@ -1149,10 +1084,11 @@ async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, 
                     normalized_weekdays = None
             result_pipeline = result.setdefault("pipeline", {})
             result_pipeline["weekdays_json"] = normalized_weekdays
-        try:
-            print(f"[DEBUG] update_pipeline pid={pid} model_dump_after_merge={result}")
-        except Exception:
-            pass
+        if _get_env_bool("DEBUG_PAYLOAD", False):
+            try:
+                print(f"[DEBUG] update_pipeline pid={pid} model_dump_after_merge={result}")
+            except Exception:
+                pass
         db.create_or_update_pipeline(conn, result, pid=pid)
         return {"id": pid}
 
