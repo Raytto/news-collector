@@ -14,6 +14,7 @@ from email.mime.text import MIMEText
 from email.utils import formatdate, make_msgid
 from email.header import Header
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
@@ -407,6 +408,38 @@ def _send_verification_email_task(to_email: str, code: str, purpose: str) -> Non
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/unsubscribe", response_class=HTMLResponse)
+def http_unsubscribe(
+    email: str = Query(..., description="收件人邮箱"),
+    pipeline_id: Optional[int] = Query(None, description="可选：只退订某个管线"),
+    reason: Optional[str] = Query(None, description="可选：退订原因"),
+) -> HTMLResponse:
+    addr = (email or "").strip().lower()
+    if not addr or "@" not in addr:
+        return HTMLResponse("<h3>退订失败：邮箱格式不正确</h3>", status_code=400)
+    with db.get_conn() as conn:
+        if pipeline_id is not None:
+            try:
+                db.unsubscribe_pipeline_email(conn, pipeline_id=int(pipeline_id), email=addr)
+            except Exception:
+                pass
+        # Always record global unsubscribe as well
+        try:
+            db.unsubscribe_email(conn, email=addr, reason=reason)
+        except Exception:
+            pass
+    body = (
+        "<div style='font:14px/1.6 -apple-system, BlinkMacSystemFont,\n"
+        "\t'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', sans-serif;\n"
+        "\tmax-width:720px;margin:24px auto;padding:0 12px;color:#334155'>"
+        f"<h2>退订成功</h2>"
+        f"<p>我们已不再向 <strong>{addr}</strong> 发送{('该管线的' if pipeline_id is not None else '')}邮件。</p>"
+        "<p>如有误操作，您可以在系统内重新订阅或联系管理员恢复。</p>"
+        "</div>"
+    )
+    return HTMLResponse(body)
 
 
 @app.get("/me")

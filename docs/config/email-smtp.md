@@ -15,6 +15,17 @@
 
 任一成功配置的 SMTP 会被优先使用；否则后备尝试本地 MTA（`127.0.0.1:25` 或 `sendmail`），大多服务器默认没有配置，本步骤往往失败。
 
+在 DB 管线投递（`news-collector/deliver/mail_deliver.py`）里也支持同样的环境变量：
+
+- `MAIL_FROM`：覆盖发件人（默认 `news@email.pangruitao.com`）。
+- `MAIL_FORCE_SMTP=1`：强制走显式 SMTP（跳过 `sendmail`）。
+- `MAIL_PREFER_SENDMAIL=1`：在设置了 `SMTP_HOST` 的情况下仍优先走 `sendmail`。
+- `MAIL_VERBOSE=1`：调试输出（包含 `sendmail -v` 输出）。
+- `MAIL_PLAIN_ONLY=1`：仅发送 `text/plain`（无 HTML 部分）。
+- `MAIL_DUMP_MSG=<path>`：将 RFC822 原始邮件 dump 到指定路径用于排查。
+
+若配置了 `SMTP_HOST` 且未设置 `MAIL_PREFER_SENDMAIL`，投递脚本将优先使用显式 SMTP；否则默认优先 `sendmail`，失败后回退到本地 `127.0.0.1:25`。
+
 ## 快速配置（.env）
 
 将以下内容写入仓库根目录的 `.env`（`scripts/start-backend.sh` 会自动加载）：
@@ -81,4 +92,3 @@ curl -sS -X POST http://127.0.0.1:8000/auth/login/code \
 
 - 不要将 `.env` 提交到版本库；仅在服务器上配置。
 - 授权码/密码仅供后台使用；如需共享配置，使用变量占位并在部署环境填充。
-

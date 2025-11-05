@@ -128,6 +128,22 @@ CREATE TABLE IF NOT EXISTS pipeline_deliveries_feishu (
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
 
+-- Unsubscribe registries
+CREATE TABLE IF NOT EXISTS unsubscribed_emails (
+  email      TEXT PRIMARY KEY,
+  reason     TEXT,
+  meta_json  TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_unsubscribed (
+  pipeline_id INTEGER NOT NULL,
+  email       TEXT    NOT NULL,
+  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (pipeline_id, email),
+  FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
+);
+
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   pipeline_id  INTEGER NOT NULL,
@@ -309,6 +325,47 @@ def get_conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def unsubscribe_email(conn: sqlite3.Connection, *, email: str, reason: str | None = None, meta_json: str | None = None) -> None:
+    norm = _normalize_email(email)
+    conn.execute(
+        "INSERT OR IGNORE INTO unsubscribed_emails (email, reason, meta_json) VALUES (?, ?, ?)",
+        (norm, reason, meta_json),
+    )
+    conn.commit()
+
+
+def unsubscribe_pipeline_email(conn: sqlite3.Connection, *, pipeline_id: int, email: str) -> None:
+    norm = _normalize_email(email)
+    conn.execute(
+        "INSERT OR IGNORE INTO pipeline_unsubscribed (pipeline_id, email) VALUES (?, ?)",
+        (int(pipeline_id), norm),
+    )
+    # Remove from configured deliveries to avoid future sends
+    conn.execute(
+        "DELETE FROM pipeline_deliveries_email WHERE pipeline_id=? AND email=?",
+        (int(pipeline_id), norm),
+    )
+    conn.commit()
+
+
+def is_unsubscribed(conn: sqlite3.Connection, *, email: str) -> bool:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        "SELECT 1 FROM unsubscribed_emails WHERE email=?",
+        (norm,),
+    ).fetchone()
+    return bool(row)
+
+
+def is_pipeline_unsubscribed(conn: sqlite3.Connection, *, pipeline_id: int, email: str) -> bool:
+    norm = _normalize_email(email)
+    row = conn.execute(
+        "SELECT 1 FROM pipeline_unsubscribed WHERE pipeline_id=? AND email=?",
+        (int(pipeline_id), norm),
+    ).fetchone()
+    return bool(row)
 
 
 def _normalize_limit_map(value: Any) -> Optional[Dict[str, int]]:

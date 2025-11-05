@@ -454,6 +454,8 @@ def render_html(
     hours: int,
     weights: Dict[str, float],
     metrics: Sequence[MetricDefinition],
+    recipient_email: Optional[str] = None,
+    unsubscribe_url: Optional[str] = None,
 ) -> str:
     from collections import defaultdict
 
@@ -470,58 +472,29 @@ def render_html(
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>最近 {hours} 小时资讯汇总</title>
-  <style>
-    /* Dense, compact, email-friendly styles */
-    body {{
-      font: 14px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-            'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC',
-            'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-      margin: 12px auto;             /* 两边留白更小 */
-      padding: 0 8px;                 /* 减少内边距 */
-      color: #1f2937;
-      max-width: 760px;               /* 页面更窄以提升密度 */
-      background: #fafbfc;
-    }}
-    h1 {{ font-size: 16px; margin: 0 0 2px; }}
-    .meta {{ color: #6b7280; margin: 0 0 10px; font-size: 12px; }}
-    h2 {{ font-size: 14px; margin: 18px 0 8px; padding-top: 6px; border-top: 1px solid #eef2f7; color: #334155; }}
-    .article-card {{
-      border: 1px solid #e5e7eb; border-radius: 8px;
-      padding: 10px 12px; margin-bottom: 8px; background: #fff;
-    }}
-    .article-title {{
-      font-size: 14px; font-weight: 600; color: #0b5ed7;
-      text-decoration: none; display: block; margin: 0 0 4px;
-    }}
-    .article-title:hover {{ text-decoration: underline; }}
-    .article-meta {{
-      color: #6b7280; font-size: 11px; margin: 0 0 6px;
-      display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    }}
-    /* Inline, compact AI block: stars + number + chips occupy a single row when possible */
-    .ai-summary {{
-      display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
-      background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 6px;
-      padding: 6px 8px; line-height: 1.45; color: #1f2937;
-    }}
-    .ai-missing {{ background: #fff7ed; border: 1px dashed #f59e0b; color: #b45309; }}
-    .ai-label {{ font-size: 11px; color: #64748b; font-weight: 600; margin-right: 2px; }}
-    .ai-rating {{ display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 600; color: #b45309; margin: 0; }}
-    .stars {{ font-size: 12px; letter-spacing: .5px; color: #f59e0b; }}
-    .score-number {{ color: #b45309; font-size: 11px; }}
-    .bonus {{ color: #b45309; font-size: 11px; opacity: .9; }}
-    .chips {{ display: inline-flex; flex-wrap: wrap; gap: 4px 6px; margin: 0; }}
-    .chip {{ display: inline-block; padding: 1px 6px; font-size: 11px; color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 999px; }}
-    .brief {{ flex-basis: 100%; margin-top: 4px; background: #f8fafc; border-radius: 6px; padding: 6px 8px; color: #334155; font-size: 12px; line-height: 1.5; }}
-    time {{ color: #6b7280; font-size: 11px; }}
-  </style>
-  </head>
-<body>
+</head>
+<body style=\"margin:0;padding:12px 8px;background:#ffffff;color:#111111;font:15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC','Hiragino Sans GB','Microsoft YaHei', sans-serif;\">
 """
 
+    # Compliance: salutation + intro (unsubscribe removed)
+    salutation = "尊敬的订阅用户"
+    if recipient_email:
+        try:
+            local = str(recipient_email).split("@", 1)[0]
+            if local:
+                salutation = f"尊敬的 {escape(local)} 用户"
+        except Exception:
+            pass
+    # Unsubscribe link suppressed per request
+
     header = f"""
-<h1>最近 {hours} 小时资讯汇总</h1>
-<p class=\"meta\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计：{count} 条</p>
+<h1 style=\"font-size:18px;margin:0 0 6px;\">最近 {hours} 小时资讯汇总</h1>
+<p style=\"color:#6b7280;font-size:13px;margin:0 0 12px;\">生成时间：{now_bj.strftime('%Y-%m-%d %H:%M 北京时间')} · 合计：{count} 条</p>
+<div style=\"border:1px solid #e2e8f0;background:#f8fafc;color:#334155;padding:10px 12px;border-radius:8px;margin:8px 0 12px;font-size:13px;\">
+  <p style=\"margin:0 0 6px;\">{salutation}，您好！</p>
+  <p style=\"margin:0 0 6px;\">本邮件为 {hours} 小时资讯简报，由情报鸭自动整理公开来源资讯（不含商业广告与诱导），仅用于学习与行业参考。</p>
+  
+</div>
 """
 
     active_metrics = [m for m in metrics if weights.get(m.key, 0.0) > 0]
@@ -541,7 +514,7 @@ def render_html(
         link = escape(entry.get("link", ""))
         source = entry.get("source", "") or ""
         raw_title = entry.get("title", "") or ""
-        title = escape(f"{source}:{raw_title}")
+        title = escape(raw_title)
         scores = entry.get("scores") or {}
         # Retain fields for later use if present
         comment = entry.get("ai_comment", "")
@@ -580,14 +553,20 @@ def render_html(
             if len(concept_items) > 5:
                 concept_items = concept_items[:5]
 
-            concepts_html = ""
+            # One-line concept and summary blocks (no extra line breaks)
+            concept_line_html = ""
             if concept_items:
-                chips = "".join(f"<span class=\"chip\">{escape(it)}</span>" for it in concept_items)
-                concepts_html = f"<div class=\"subsec-title\">AI关键概念提取</div><div class=\"chips\">{chips}</div>"
+                tags = " ".join(f"#{escape(it)}" for it in concept_items)
+                concept_line_html = (
+                    f"<p style=\"margin:6px 0 0;\"><span style=\"font-weight:600;\">关键概念：</span>{tags}</p>"
+                )
 
-            brief_html = ""
+            brief_line_html = ""
             if summary_long.strip():
-                brief_html = f"<div class=\"subsec-title\">AI摘要</div><div class=\"brief\">{escape(summary_long.strip())}</div>"
+                one_line = " ".join(summary_long.strip().split())
+                brief_line_html = (
+                    f"<p style=\"margin:6px 0 0;\"><span style=\"font-weight:600;\">摘要：</span>{escape(one_line)}</p>"
+                )
 
             # Build metric chips "label score" without colon
             metric_chip_items = []
@@ -605,23 +584,30 @@ def render_html(
                 bonus_compact = f"<span class=\"bonus\">{sign}{bonus:g}</span>"
 
             rating_html = (
-                "<div class=\"ai-summary\">"
-                f"<span class=\"ai-label\">AI</span>"
-                f"<span class=\"ai-rating\"><span class=\"stars\">{stars}</span>"
-                f"<span class=\"score-number\">{final_score:.2f}/5</span>{bonus_compact}</span>"
-                f"<div class=\"chips\">{metric_chips_html}</div>"
-                f"{concepts_html}{brief_html}"
+                "<div style=\"background:#fff8e6;border:1px solid #f5d7a7;border-radius:6px;"
+                "padding:6px 8px;color:#7c3e07;font-size:14px;line-height:1.5;\">"
+                f"<span style=\"color:#f59e0b;\">{stars}</span> "
+                f"<span style=\"color:#7c3e07;\">{final_score:.2f}/5</span>"
+                f"<span style=\"color:#7c3e07;\">{bonus_compact}</span>"
+                f"{concept_line_html}{brief_line_html}"
                 "</div>"
             )
         else:
-            rating_html = "<div class=\"ai-summary ai-missing\">AI 评估：暂无数据</div>"
-        return (
-            "<article class=\"article-card\">"
-            f"<a class=\"article-title\" href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\">{title}</a>"
-            f"<div class=\"article-meta\"><time datetime=\"{iso}\">{shown}</time></div>"
-            f"{rating_html}"
-            "</article>"
-        )
+            rating_html = "<div style=\"background:#fff7ed;border:1px dashed #f59e0b;color:#b45309;border-radius:6px;padding:6px 8px;font-size:14px;\">评分：暂无数据</div>"
+        card = [
+            "<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"border:1px solid #e5e7eb;border-radius:8px;background:#ffffff;margin:0 0 12px;\">",
+            "<tr><td style=\"padding:10px 12px 4px;\">",
+            f"<a href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"display:block;font-size:16px;font-weight:600;color:#1a73e8;text-decoration:none;\">{title}</a>",
+            "</td></tr>",
+            "<tr><td style=\"padding:0 12px 6px;color:#6b7280;font-size:12px;\">",
+            f"<time datetime=\"{iso}\">{shown}</time> <span style=\"color:#6b7280;\">From: {escape(source)}</span>",
+            "</td></tr>",
+            "<tr><td style=\"padding:6px 12px;\">",
+            rating_html,
+            "</td></tr>",
+            "</table>"
+        ]
+        return "".join(card)
 
     categories = list(by_cat.keys())
 
@@ -637,7 +623,7 @@ def render_html(
     sections: List[str] = []
     for cat in categories:
         label = cat or "(未分类)"
-        sections.append(f"<h2>{escape(label)}</h2>")
+        sections.append(f"<h2 style=\"font-size:15px;margin:18px 0 8px;padding-top:6px;border-top:1px solid #eef2f7;color:#334155;\">{escape(label)}</h2>")
         cat_entries = sorted(
             by_cat[cat],
             key=lambda e: (
@@ -676,6 +662,9 @@ def main() -> None:
     effective_hours = max(1, int(args.hours))
 
     pid = _env_pipeline_id()
+    recipient_email: Optional[str] = None
+    # Unsubscribe URL no longer used in content; keep var for signature compatibility
+    unsubscribe_url: str = ""
 
     with sqlite3.connect(str(db_path)) as conn:
         metrics = load_active_metrics(conn)
@@ -684,6 +673,18 @@ def main() -> None:
         metric_weight_rows: Optional[List[Dict[str, Any]]] = None
         pipeline_weights_json = ""
         source_bonus = DEFAULT_SOURCE_BONUS.copy()
+
+        def _load_delivery_email(conn: sqlite3.Connection, pipeline_id: int) -> Optional[str]:
+            try:
+                row = conn.execute(
+                    "SELECT email FROM pipeline_deliveries_email WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
+                    (pipeline_id,),
+                ).fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip()
+            except Exception:
+                pass
+            return None
 
         if pid is not None:
             cfg = _load_pipeline_cfg(conn, pid)
@@ -718,6 +719,7 @@ def main() -> None:
                     per_source_cap = int(cfg["per_source_cap"])
                 except (TypeError, ValueError):
                     pass
+            recipient_email = _load_delivery_email(conn, pid)
 
         print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
         weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, weights_cli_override)
@@ -799,7 +801,7 @@ def main() -> None:
         print("没有符合条件的资讯，未生成文件")
         return
 
-    html = render_html(entries, effective_hours, weights, metrics)
+    html = render_html(entries, effective_hours, weights, metrics, recipient_email, unsubscribe_url)
     out_path.write_text(html, encoding="utf-8")
     print(f"已生成: {out_path}")
 
