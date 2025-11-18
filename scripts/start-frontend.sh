@@ -2,6 +2,21 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION_NAME="${FRONTEND_SCREEN_SESSION:-news-collector-frontend}"
+
+if [ "${1-}" != "__run_frontend" ]; then
+  if ! command -v screen >/dev/null 2>&1; then
+    echo "screen is required but not installed." >&2
+    exit 1
+  fi
+  # Stop existing session with the same name, if any
+  screen -S "$SESSION_NAME" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$SESSION_NAME" bash -lc "cd '$ROOT_DIR' && scripts/start-frontend.sh __run_frontend"
+  echo "Frontend starting in screen session '$SESSION_NAME'."
+  exit 0
+fi
+shift
+
 cd "$ROOT_DIR/frontend"
 
 NODE_BIN=""

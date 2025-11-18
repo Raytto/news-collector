@@ -21,6 +21,23 @@ function AppShell() {
   const { user, signOut, setLoginVisible } = useAuth()
   const isAdmin = (user?.is_admin || 0) === 1
 
+  // 未登录：只显示登录弹窗，不渲染其它内容
+  if (!user) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Content
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}
+        >
+          <LoginModal />
+        </Content>
+      </Layout>
+    )
+  }
+
   let selectedKey = 'pipelines'
   if (pathname.startsWith('/infos')) {
     selectedKey = 'infos'
@@ -120,7 +137,6 @@ function AppShell() {
           <Route path="/users" element={<Users />} />
         </Routes>
       </Content>
-      <LoginModal />
     </Layout>
   )
 }

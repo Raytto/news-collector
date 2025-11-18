@@ -132,7 +132,7 @@ class AiMetricUpdatePayload(BaseModel):
     active: Optional[int] = Field(None, ge=0, le=1)
 
 
-app = FastAPI(title="Pipelines Admin API", version="0.1.0")
+app = FastAPI(title="情报鸭 API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -341,10 +341,10 @@ def _try_send_via_sendmail(msg: MIMEText) -> bool:
 
 
 def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
-    """Send verification code email via Resend API (preferred).
+    """Send verification code email.
 
-    发件人优先使用 RESEND_FROM，其次退回 MAIL_FROM。
-    若缺少 RESEND_API_KEY，则直接返回 False。
+    优先尝试 Resend，其次回退到 SMTP，再回退到本地 sendmail。
+    这样即便 Resend 在当前网络环境中不可用，也尽可能保证验证码可达。
     """
     subject = f"{MAIL_SUBJECT_PREFIX} 验证码 {code}（10 分钟内有效）"
     purpose_text = "登录" if purpose == "login" else "注册"
@@ -356,46 +356,82 @@ def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
     )
 
     sender = (os.getenv("RESEND_FROM") or MAIL_FROM).strip()
-    resend_api = (os.getenv("RESEND_API_KEY") or "").strip()
-    if not resend_api:
-        print("[WARN] RESEND_API_KEY 未配置，验证码邮件无法发送")
-        return False
-
     verbose = str(os.getenv("MAIL_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
-    if verbose:
-        print(f"[DEBUG] sending verification mail via Resend: from={sender} to={to_email} subject={subject}")
+    last_error: str | None = None
 
-    try:
-        url = "https://api.resend.com/emails"
-        data = {
-            "from": sender,
-            "to": [to_email],
-            "subject": subject,
-            "text": body,
-        }
-        resp = requests.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {resend_api}",
-                "Content-Type": "application/json",
-            },
-            json=data,
-            timeout=20,
-        )
-        if resp.status_code // 100 == 2:
-            msg_id = ""
-            try:
-                msg_id = str((resp.json() or {}).get("id") or "")
-            except Exception:
+    # --- 1) Try Resend HTTP API ---
+    resend_api = (os.getenv("RESEND_API_KEY") or "").strip()
+    if resend_api:
+        if verbose:
+            print(f"[DEBUG] sending verification mail via Resend: from={sender} to={to_email} subject={subject}")
+        try:
+            url = "https://api.resend.com/emails"
+            data = {
+                "from": sender,
+                "to": [to_email],
+                "subject": subject,
+                "text": body,
+            }
+            resp = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {resend_api}",
+                    "Content-Type": "application/json",
+                },
+                json=data,
+                timeout=20,
+            )
+            if resp.status_code // 100 == 2:
                 msg_id = ""
-            if verbose:
-                print(f"[DEBUG] verification mail sent via Resend, id={msg_id}")
+                try:
+                    msg_id = str((resp.json() or {}).get("id") or "")
+                except Exception:
+                    msg_id = ""
+                if verbose:
+                    print(f"[DEBUG] verification mail sent via Resend, id={msg_id}")
+                return True
+            last_error = f"Resend http {resp.status_code}: {resp.text[:200]}"
+            print(f"[WARN] Resend 发送验证码失败: {last_error}")
+        except Exception as exc:  # pragma: no cover - 外部 HTTP 依赖
+            last_error = f"Resend 调用异常: {exc}"
+            print(f"[WARN] {last_error}")
+    else:
+        last_error = "RESEND_API_KEY 未配置"
+        print("[INFO] RESEND_API_KEY 未配置，改用 SMTP/sendmail 发送验证码")
+
+    # 构造 MIME 邮件，供 SMTP / sendmail 共用
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = str(Header(subject, "utf-8"))
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+
+    # --- 2) Fallback: explicit SMTP (if configured) ---
+    if SMTP_HOST:
+        if verbose:
+            print(
+                f"[DEBUG] sending verification mail via SMTP: host={SMTP_HOST} port={SMTP_PORT} "
+                f"use_ssl={SMTP_USE_SSL} use_tls={SMTP_USE_TLS}"
+            )
+        if _try_send_via_smtp(
+            msg,
+            host=SMTP_HOST,
+            port=SMTP_PORT,
+            user=SMTP_USER,
+            password=SMTP_PASS,
+            use_ssl=SMTP_USE_SSL,
+            use_tls=SMTP_USE_TLS,
+        ):
             return True
-        print(f"[WARN] Resend 发送验证码失败: http {resp.status_code}: {resp.text[:200]}")
-        return False
-    except Exception as exc:
-        print(f"[WARN] Resend 调用异常: {exc}")
-        return False
+        last_error = (last_error or "") + " | SMTP 发送失败"
+
+    # --- 3) Fallback: local sendmail (best-effort) ---
+    if _try_send_via_sendmail(msg):
+        return True
+
+    print(f"[WARN] 验证码邮件发送失败，所有通道均不可用。last_error={last_error!r}")
+    return False
 
 
 def _send_verification_email_task(to_email: str, code: str, purpose: str) -> None:

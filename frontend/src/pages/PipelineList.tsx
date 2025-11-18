@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Button, Popconfirm, Space, Switch, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
@@ -13,7 +13,9 @@ export default function PipelineList() {
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
-  const load = async () => {
+  const load = useCallback(async () => {
+    // 只有在已登录时才拉取数据
+    if (!user) return
     setLoading(true)
     try {
       const data = await fetchPipelines()
@@ -21,11 +23,12 @@ export default function PipelineList() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [user])
 
   useEffect(() => {
+    // 用户变化（例如刚登录成功）时自动刷新列表
     load()
-  }, [])
+  }, [load])
 
   const onToggle = async (item: PipelineListItem, enabled: boolean) => {
     try {

@@ -61,6 +61,8 @@ export default function LoginModal() {
       setUser(u)
       setLoginVisible(false)
       message.success('登录成功')
+      // 登录成功后刷新页面，以便重新拉取数据
+      window.location.reload()
     } catch (err: any) {
       const detail = err?.response?.data?.detail || '校验失败'
       message.error(detail)
@@ -72,10 +74,17 @@ export default function LoginModal() {
   return (
     <Modal
       destroyOnClose
-      title={tab === 'login' ? '登录' : '注册'}
+      title={
+        <span style={{ fontSize: 22, fontWeight: 600 }}>
+          {tab === 'login' ? '登录' : '注册'}
+        </span>
+      }
       open={loginVisible}
       onCancel={() => setLoginVisible(false)}
       footer={null}
+      centered
+      width={640}
+      bodyStyle={{ padding: 32 }}
     >
       <Tabs
         activeKey={tab}
@@ -90,31 +99,31 @@ export default function LoginModal() {
         ]}
       />
       <Form form={form} layout="vertical">
-        <Form.Item name="email" label="邮箱" rules={[{ required: true, message: '请输入邮箱' }]}> 
-          <Input placeholder="you@example.com" />
+        <Form.Item name="email" label="邮箱" rules={[{ required: true, message: '请输入邮箱' }]}>
+          <Input size="large" placeholder="you@example.com" />
         </Form.Item>
         {tab === 'signup' && (
-          <Form.Item name="name" label="昵称" rules={[{ required: true, message: '请输入昵称' }]}> 
-            <Input placeholder="你的昵称" />
+          <Form.Item name="name" label="昵称" rules={[{ required: true, message: '请输入昵称' }]}>
+            <Input size="large" placeholder="你的昵称" />
           </Form.Item>
         )}
         {codeSent && (
-          <Form.Item name="code" label="验证码" rules={[{ required: true, message: '请输入验证码' }]}> 
-            <Input placeholder="4位数字" maxLength={6} />
+          <Form.Item name="code" label="验证码" rules={[{ required: true, message: '请输入验证码' }]}>
+            <Input size="large" placeholder="4位数字" maxLength={6} />
           </Form.Item>
         )}
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
           {!codeSent ? (
-            <Button type="primary" onClick={onSendCode} loading={loading}>
+            <Button type="primary" size="large" onClick={onSendCode} loading={loading} style={{ minWidth: 160 }}>
               发送验证码
             </Button>
           ) : (
-            <Button type="primary" onClick={onVerify} loading={loading}>
+            <Button type="primary" size="large" onClick={onVerify} loading={loading} style={{ minWidth: 180 }}>
               校验并登录
             </Button>
           )}
           {codeSent && (
-            <Button onClick={onSendCode} disabled={loading}>
+            <Button size="large" onClick={onSendCode} disabled={loading}>
               重新发送
             </Button>
           )}
@@ -123,4 +132,3 @@ export default function LoginModal() {
     </Modal>
   )
 }
-

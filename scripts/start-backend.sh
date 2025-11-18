@@ -2,6 +2,21 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SESSION_NAME="${BACKEND_SCREEN_SESSION:-news-collector-backend}"
+
+if [ "${1-}" != "__run_backend" ]; then
+  if ! command -v screen >/dev/null 2>&1; then
+    echo "screen is required but not installed." >&2
+    exit 1
+  fi
+  # Stop existing session with the same name, if any
+  screen -S "$SESSION_NAME" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$SESSION_NAME" bash -lc "cd '$ROOT_DIR' && scripts/start-backend.sh __run_backend"
+  echo "Backend starting in screen session '$SESSION_NAME'."
+  exit 0
+fi
+shift
+
 cd "$ROOT_DIR"
 
 # Load .env if present to configure SMTP and other settings

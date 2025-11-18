@@ -16,16 +16,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loginVisible, setLoginVisible] = useState(false)
 
   useEffect(() => {
-    // Try fetch current user on mount
-    getMe()
-      .then((u) => setUser(u))
-      .catch(() => {})
-  }, [])
-
-  useEffect(() => {
     const onAuthRequired = () => setLoginVisible(true)
     window.addEventListener('auth:required', onAuthRequired as EventListener)
     return () => window.removeEventListener('auth:required', onAuthRequired as EventListener)
+  }, [])
+
+  useEffect(() => {
+    // Try fetch current user on mount
+    getMe()
+      .then((u) => setUser(u))
+      .catch(() => {
+        // If fetching current user fails (e.g. 401), show login modal
+        setLoginVisible(true)
+      })
   }, [])
 
   const signOut = async () => {
@@ -50,4 +53,3 @@ export function useAuth(): AuthContextType {
   if (!ctx) throw new Error('useAuth must be used within <AuthProvider>')
   return ctx
 }
-

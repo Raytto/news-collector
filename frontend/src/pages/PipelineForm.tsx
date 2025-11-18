@@ -184,8 +184,8 @@ export default function PipelineForm() {
     metrics: MetricOption[]
   }>({
     categories: [],
-    writer_types: [],
-    delivery_kinds: [],
+    writer_types: ['feishu_md', 'info_html'],
+    delivery_kinds: ['email', 'feishu'],
     metrics: FALLBACK_METRICS
   })
   const [deliveryKind, setDeliveryKind] = useState<DeliveryKind>('email')
@@ -214,9 +214,10 @@ export default function PipelineForm() {
 
   const initialFormValues = useMemo(
     () => ({
-      pipeline: { enabled: 1 },
+      pipeline: { enabled: 1, name: '我的推送管线' },
       filters: { all_categories: 1 },
       writer: {
+        type: 'info_html',
         hours: 24,
         limit_per_category_default: CATEGORY_LIMIT_DEFAULT,
         limit_per_category_overrides: [],
@@ -316,20 +317,30 @@ export default function PipelineForm() {
           delivery_kinds: Array.isArray(data.delivery_kinds) ? data.delivery_kinds : [],
           metrics: sortedMetrics
         })
-        if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
-          form.setFieldsValue({
-            writer: {
-              weights_entries: normalizeWeightsForForm(undefined, sortedMetrics)
+        if (!editing) {
+          if (!form.isFieldsTouched(['writer', 'weights_entries'])) {
+            form.setFieldsValue({
+              writer: {
+                weights_entries: normalizeWeightsForForm(undefined, sortedMetrics)
+              }
+            })
+          }
+          const currentWriterType = form.getFieldValue(['writer', 'type'])
+          if (!currentWriterType) {
+            const emailWriterType =
+              data.writer_types?.find((w: string) => w === 'info_html') ?? data.writer_types?.[0]
+            if (emailWriterType) {
+              form.setFieldValue(['writer', 'type'], emailWriterType)
             }
-          })
+          }
         }
       })
       .catch(() => {
         if (!mounted) return
         setOptions({
           categories: [],
-          writer_types: [],
-          delivery_kinds: [],
+          writer_types: ['feishu_md', 'info_html'],
+          delivery_kinds: ['email', 'feishu'],
           metrics: FALLBACK_METRICS
         })
         if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
@@ -349,6 +360,18 @@ export default function PipelineForm() {
       mounted = false
     }
   }, [editing, form])
+
+  useEffect(() => {
+    if (editing || !optionsReady) return
+    const currentWriterType = form.getFieldValue(["writer", "type"])
+    if (currentWriterType) return
+    const types = Array.isArray(options.writer_types) ? options.writer_types : []
+    if (!types.length) return
+    const emailWriterType = types.find((w) => w === "info_html") ?? types[0]
+    if (emailWriterType) {
+      form.setFieldValue(["writer", "type"], emailWriterType)
+    }
+  }, [editing, optionsReady, options.writer_types, form])
 
   const applyPipelineData = (data: any) => {
     // Normalize pipeline for form consumption (esp. weekdays array)
@@ -442,8 +465,9 @@ export default function PipelineForm() {
 
   useEffect(() => {
     if (!editing) {
-      setWeekdaySelection(null)
-      form.setFieldValue(["pipeline", "weekdays_json"], null)
+      const preset = [1, 2, 3, 4, 5, 6, 7]
+      setWeekdaySelection(preset)
+      form.setFieldValue(["pipeline", "weekdays_json"], preset)
     }
   }, [editing, form])
 
