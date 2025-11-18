@@ -10,3 +10,15 @@ __pycache__/
 
 # Local env config (do not commit secrets)
 environment.yml
+
+# Python virtual envs / Conda
+.venv/
+.miniconda/
+
+# Local process artifacts
+*.pid
+*.log
+
+# Frontend build artifacts and dependencies
+frontend/node_modules/
+frontend/dist/

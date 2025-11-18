@@ -341,6 +341,11 @@ def _try_send_via_sendmail(msg: MIMEText) -> bool:
 
 
 def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
+    """Send verification code email via Resend API (preferred).
+
+    发件人优先使用 RESEND_FROM，其次退回 MAIL_FROM。
+    若缺少 RESEND_API_KEY，则直接返回 False。
+    """
     subject = f"{MAIL_SUBJECT_PREFIX} 验证码 {code}（10 分钟内有效）"
     purpose_text = "登录" if purpose == "login" else "注册"
     body = (
@@ -349,59 +354,64 @@ def _send_verification_email(to_email: str, code: str, purpose: str) -> bool:
         "如非本人操作，请忽略本邮件。\n"
         "—— 情报鸭团队"
     )
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["From"] = MAIL_FROM
-    msg["To"] = to_email
-    msg["Subject"] = Header(subject, "utf-8")
+
+    sender = (os.getenv("RESEND_FROM") or MAIL_FROM).strip()
+    resend_api = (os.getenv("RESEND_API_KEY") or "").strip()
+    if not resend_api:
+        print("[WARN] RESEND_API_KEY 未配置，验证码邮件无法发送")
+        return False
+
+    verbose = str(os.getenv("MAIL_VERBOSE", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if verbose:
+        print(f"[DEBUG] sending verification mail via Resend: from={sender} to={to_email} subject={subject}")
+
     try:
-        msg["Date"] = formatdate(localtime=True)
-        domain = MAIL_FROM.split("@", 1)[1] if "@" in MAIL_FROM else None
-        msg["Message-ID"] = make_msgid(domain=domain)
-    except Exception:
-        pass
-
-    # Prefer local sendmail when available (works with tuned Postfix)
-    if _try_send_via_sendmail(msg):
-        return True
-
-    # Next: explicit SMTP config
-    if SMTP_HOST:
-        if _try_send_via_smtp(
-            msg,
-            host=SMTP_HOST,
-            port=SMTP_PORT,
-            user=SMTP_USER,
-            password=SMTP_PASS,
-            use_ssl=SMTP_USE_SSL,
-            use_tls=SMTP_USE_TLS,
-        ):
+        url = "https://api.resend.com/emails"
+        data = {
+            "from": sender,
+            "to": [to_email],
+            "subject": subject,
+            "text": body,
+        }
+        resp = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {resend_api}",
+                "Content-Type": "application/json",
+            },
+            json=data,
+            timeout=20,
+        )
+        if resp.status_code // 100 == 2:
+            msg_id = ""
+            try:
+                msg_id = str((resp.json() or {}).get("id") or "")
+            except Exception:
+                msg_id = ""
+            if verbose:
+                print(f"[DEBUG] verification mail sent via Resend, id={msg_id}")
             return True
-
-    # Finally: local SMTP listener
-    for host in ("127.0.0.1", "localhost"):
-        if _try_send_via_smtp(msg, host=host, port=25):
-            return True
-    return False
+        print(f"[WARN] Resend 发送验证码失败: http {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as exc:
+        print(f"[WARN] Resend 调用异常: {exc}")
+        return False
 
 
 def _send_verification_email_task(to_email: str, code: str, purpose: str) -> None:
     """Background task wrapper that logs result clearly.
 
     This makes it easier to diagnose why users don't receive codes
-    (e.g., missing SMTP_HOST or no local MTA).
+    (e.g., missing RESEND_API_KEY / RESEND_FROM).
     """
     masked = _mask_email(to_email)
-    method = (
-        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}"
-        if SMTP_HOST
-        else "local SMTP 127.0.0.1:25/sendmail"
-    )
+    method = "Resend API"
     ok = _send_verification_email(to_email, code, purpose)
     if ok:
         print(f"[auth] email sent to {masked} via {method}")
     else:
         print(
-            f"[WARN] email NOT sent to {masked}. Configure SMTP_HOST/PORT/USER/PASS or local MTA."
+            f"[WARN] email NOT sent to {masked}. Configure RESEND_API_KEY/RESEND_FROM."
         )
 
 
@@ -558,14 +568,12 @@ def auth_login_code(payload: AuthEmailPayload, request: Request, background: Bac
     # Send email asynchronously (best effort)
     masked = _mask_email(email)
     # Send synchronously so we can surface failure to client
-    method = (
-        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}" if SMTP_HOST else "local SMTP 127.0.0.1:25/sendmail"
-    )
+    method = "Resend API"
     if _send_verification_email(email, code, "login"):
         print(f"[auth] login code sent to {masked} via {method}")
         return {"ok": True}
     else:
-        print(f"[WARN] login code NOT sent to {masked}. Check SMTP or MTA config.")
+        print(f"[WARN] login code NOT sent to {masked}. Check RESEND_API_KEY/RESEND_FROM config.")
         raise HTTPException(status_code=502, detail="验证码发送失败，请稍后再试")
 
 
@@ -614,14 +622,12 @@ def auth_signup_code(payload: AuthEmailPayload, request: Request, background: Ba
             user_id=None,
         )
     masked = _mask_email(email)
-    method = (
-        f"SMTP {SMTP_HOST}:{SMTP_PORT or ('465(ssl)' if SMTP_USE_SSL else '25/587')}" if SMTP_HOST else "local SMTP 127.0.0.1:25/sendmail"
-    )
+    method = "Resend API"
     if _send_verification_email(email, code, "signup"):
         print(f"[auth] signup code sent to {masked} via {method}")
         return {"ok": True}
     else:
-        print(f"[WARN] signup code NOT sent to {masked}. Check SMTP or MTA config.")
+        print(f"[WARN] signup code NOT sent to {masked}. Check RESEND_API_KEY/RESEND_FROM config.")
         raise HTTPException(status_code=502, detail="验证码发送失败，请稍后再试")
 
 
