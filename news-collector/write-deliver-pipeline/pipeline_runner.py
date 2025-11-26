@@ -400,7 +400,8 @@ def main() -> None:
             print("没有匹配的管线可执行")
             return
         for p in ps:
-            if int(p.enabled) != 1:
+            # In debug-only mode, allow running pipelines even if enabled=0.
+            if not getattr(args, "debug_only", False) and int(p.enabled) != 1:
                 print(f"[SKIP] {p.name} (disabled)")
                 continue
             # Weekday gating (unless overridden)

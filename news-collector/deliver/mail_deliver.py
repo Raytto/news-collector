@@ -15,6 +15,7 @@ from email.mime.multipart import MIMEMultipart
 from email.utils import formatdate, make_msgid
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlencode
 
 
 DATE_PLACEHOLDER_VARIANTS = ("${date_zh}", "$(date_zh)", "${data_zh}", "$(data_zh)")
@@ -23,6 +24,20 @@ TS_PLACEHOLDER_VARIANTS = ("${ts}", "$(ts)")
 
 DEFAULT_SENDER = "news@news.pangruitao.com"
 DEFAULT_RECEIVERS = ["306483372@qq.com"]
+
+
+def _build_frontend_links(base: str, email: str | None, pipeline_id: int | None) -> tuple[str | None, str | None]:
+    base_clean = (base or "").strip().rstrip("/")
+    if not base_clean:
+        return (None, None)
+    manage_url = base_clean + "/"
+    unsubscribe_url: str | None = None
+    if email:
+        qs = {"email": email.strip(), "reason": "email_footer"}
+        if pipeline_id is not None:
+            qs["pipeline_id"] = pipeline_id
+        unsubscribe_url = f"{base_clean}/unsubscribe?{urlencode(qs)}"
+    return (manage_url, unsubscribe_url)
 
 
 def parse_args() -> argparse.Namespace:
@@ -281,6 +296,7 @@ def main() -> None:
     subject = args.subject.strip()
     sender = args.sender.strip()
     receivers = [addr.strip() for addr in args.to.split(",") if addr.strip()]
+    frontend_base = (os.getenv("FRONTEND_BASE_URL") or "").strip()
 
     pid = _env_pipeline_id()
     # Locate db at repo data/info.db by walking relative paths (this script lives in news-collector/deliver)
@@ -302,6 +318,10 @@ def main() -> None:
         subject = f"整合{date_zh}"
 
     body = html_path.read_text(encoding="utf-8")
+    manage_url: str | None = None
+    unsubscribe_url: str | None = None
+    if receivers:
+        manage_url, unsubscribe_url = _build_frontend_links(frontend_base, receivers[0], pid)
 
     # Build multipart/alternative to improve deliverability
     # Convert HTML to readable wrapped text (lines <= 78 chars, paragraphs preserved)
@@ -358,6 +378,13 @@ def main() -> None:
             return "(digest content)"
 
     text_fallback = _html_to_wrapped_text(body)
+    footer_lines: list[str] = []
+    if unsubscribe_url:
+        footer_lines.append(f"退订：{unsubscribe_url}")
+    if manage_url:
+        footer_lines.append(f"管理：{manage_url}")
+    if footer_lines:
+        text_fallback = f"{text_fallback}\n\n" + "\n".join(footer_lines)
 
     # Build message according to mode
     if args.plain_only:
@@ -386,11 +413,13 @@ def main() -> None:
         msg["Message-ID"] = make_msgid(domain=domain)
     except Exception:
         pass
+    list_unsub_url = ""
     try:
-        lu = (os.getenv("MAIL_LIST_UNSUBSCRIBE") or "").strip()
-        if lu:
-            msg["List-Unsubscribe"] = f"<{lu}>"
-            if lu.startswith("http"):
+        lu_env = (os.getenv("MAIL_LIST_UNSUBSCRIBE") or "").strip()
+        list_unsub_url = lu_env or unsubscribe_url or ""
+        if list_unsub_url:
+            msg["List-Unsubscribe"] = f"<{list_unsub_url}>"
+            if list_unsub_url.startswith("http"):
                 msg["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     except Exception:
         pass
@@ -419,8 +448,11 @@ def main() -> None:
     if not resend_api:
         raise SystemExit("发送失败：缺少 RESEND_API_KEY 环境变量")
 
-    # Do not include List-Unsubscribe headers (removed per request)
     extra_headers: dict = {}
+    if list_unsub_url:
+        extra_headers["List-Unsubscribe"] = f"<{list_unsub_url}>"
+        if list_unsub_url.startswith("http"):
+            extra_headers["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
 
     html_payload: Optional[str] = None if args.plain_only else body
     text_payload: Optional[str] = text_fallback

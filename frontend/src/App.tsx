@@ -7,6 +7,7 @@ import SourceList from './pages/SourceList'
 import CategoryList from './pages/CategoryList'
 import InfoList from './pages/InfoList'
 import AiMetrics from './pages/AiMetrics'
+import UnsubscribePage from './pages/Unsubscribe'
 import { AuthProvider, useAuth } from './auth'
 import LoginModal from './LoginModal'
 import Users from './pages/Users'
@@ -20,6 +21,17 @@ function AppShell() {
   const { pathname } = useLocation()
   const { user, signOut, setLoginVisible } = useAuth()
   const isAdmin = (user?.is_admin || 0) === 1
+
+  // Public unsubscribe page: allow访问无需登录
+  if (pathname.startsWith('/unsubscribe')) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Content style={{ padding: 24, background: colorBgContainer }}>
+          <UnsubscribePage />
+        </Content>
+      </Layout>
+    )
+  }
 
   // 未登录：只显示登录弹窗，不渲染其它内容
   if (!user) {

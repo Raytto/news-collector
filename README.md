@@ -61,6 +61,12 @@
 - 启动前端：`scripts/start-frontend.sh`
 - 管线表结构、运行器与完整操作命令详见 `docs/pipelines-guide.md`。
 
+### 前端构建与部署（当前线上方式）
+- 本地/服务器构建：`cd frontend && npm install && npm run build`，产物在 `frontend/dist/`。
+- Nginx 静态目录：`/var/www/news-collector-jp`（`sites-enabled/jp.pangruitao.com` 中的 `root`），只需同步静态文件，无需常驻 Node 进程。
+- 部署更新：`rsync -av --delete frontend/dist/ /var/www/news-collector-jp/`，然后强制刷新浏览器/清缓存（文件名带 hash，便于长缓存）。
+- 开发调试：`scripts/start-frontend.sh` 会起 Vite dev server（当前监听 5180），仅用于本地调试，线上访问走上述静态目录。
+
 ## 关键环境变量
 - 采集限速与并发（可按站点限流、全局并发、重试等）：
   - `COLLECTOR_SOURCE_CONCURRENCY`、`COLLECTOR_PER_SOURCE_CONCURRENCY`、`COLLECTOR_GLOBAL_HTTP_CONCURRENCY`

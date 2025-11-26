@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { AutoComplete, Button, Card, Checkbox, Divider, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
+import { AutoComplete, Button, Card, Checkbox, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
 import { createPipeline, fetchFeishuChats, fetchOptions, fetchPipeline, updatePipeline } from '../api'
 import type { FeishuChat, MetricOption } from '../api'
@@ -8,6 +8,12 @@ import type { ColumnsType } from 'antd/es/table'
 import type { FormListFieldData } from 'antd/es/form/FormList'
 
 type DeliveryKind = 'email' | 'feishu'
+
+function writerTypeForDelivery(kind?: DeliveryKind | null, fallback?: string) {
+  if (kind === 'feishu') return 'feishu_md'
+  if (kind === 'email') return 'info_html'
+  return typeof fallback === 'string' && fallback ? fallback : 'info_html'
+}
 
 type LimitOverride = { category?: string; limit?: number }
 type WeightEntry = { metric?: string; weight?: number }
@@ -46,20 +52,6 @@ const filterAutoCompleteOption = (input: string, option?: { value: string; label
   return option.value.toLowerCase().includes(normalized) || labelText.includes(normalized)
 }
 
-const SUBJECT_DATE_TOKENS = ['${date_zh}', '$(date_zh)', '${data_zh}', '$(data_zh)'] as const
-const DEFAULT_SUBJECT_DATE_TOKEN = '${date_zh}'
-
-function stripDateToken(value: unknown): string {
-  if (typeof value !== 'string') return ''
-  const withoutTokens = SUBJECT_DATE_TOKENS.reduce((acc, token) => acc.split(token).join(''), value)
-  return withoutTokens.trim()
-}
-
-function buildSubjectTemplate(value: unknown): string {
-  const stripped = stripDateToken(value)
-  return stripped ? `${stripped}${DEFAULT_SUBJECT_DATE_TOKEN}` : DEFAULT_SUBJECT_DATE_TOKEN
-}
-
 function toNumber(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string') {
@@ -69,6 +61,13 @@ function toNumber(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed
   }
   return undefined
+}
+
+function buildEmailSubject(hours: unknown): string {
+  const numeric = toNumber(hours)
+  const value = typeof numeric === 'number' && numeric > 0 ? numeric : 24
+  const rounded = Math.round(value)
+  return `情报鸭${rounded}小时精选`
 }
 
 function normalizeLimitForForm(limit: unknown): { defaultValue: number; overrides: LimitOverride[] } {
@@ -179,12 +178,10 @@ export default function PipelineForm() {
   const [loading, setLoading] = useState(false)
   const [options, setOptions] = useState<{
     categories: string[]
-    writer_types: string[]
     delivery_kinds: string[]
     metrics: MetricOption[]
   }>({
     categories: [],
-    writer_types: ['feishu_md', 'info_html'],
     delivery_kinds: ['email', 'feishu'],
     metrics: FALLBACK_METRICS
   })
@@ -217,7 +214,7 @@ export default function PipelineForm() {
       pipeline: { enabled: 1, name: '我的推送管线' },
       filters: { all_categories: 1 },
       writer: {
-        type: 'info_html',
+        type: writerTypeForDelivery(deliveryKind),
         hours: 24,
         limit_per_category_default: CATEGORY_LIMIT_DEFAULT,
         limit_per_category_overrides: [],
@@ -229,7 +226,7 @@ export default function PipelineForm() {
         to_all_chat: 1
       }
     }),
-    [metrics]
+    [deliveryKind, metrics]
   )
   const weightSuggestions = useMemo(
     () =>
@@ -313,33 +310,21 @@ export default function PipelineForm() {
           : FALLBACK_METRICS
         setOptions({
           categories: Array.isArray(data.categories) ? data.categories : [],
-          writer_types: Array.isArray(data.writer_types) ? data.writer_types : [],
           delivery_kinds: Array.isArray(data.delivery_kinds) ? data.delivery_kinds : [],
           metrics: sortedMetrics
         })
-        if (!editing) {
-          if (!form.isFieldsTouched(['writer', 'weights_entries'])) {
-            form.setFieldsValue({
-              writer: {
-                weights_entries: normalizeWeightsForForm(undefined, sortedMetrics)
-              }
-            })
-          }
-          const currentWriterType = form.getFieldValue(['writer', 'type'])
-          if (!currentWriterType) {
-            const emailWriterType =
-              data.writer_types?.find((w: string) => w === 'info_html') ?? data.writer_types?.[0]
-            if (emailWriterType) {
-              form.setFieldValue(['writer', 'type'], emailWriterType)
+        if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
+          form.setFieldsValue({
+            writer: {
+              weights_entries: normalizeWeightsForForm(undefined, sortedMetrics)
             }
-          }
+          })
         }
       })
       .catch(() => {
         if (!mounted) return
         setOptions({
           categories: [],
-          writer_types: ['feishu_md', 'info_html'],
           delivery_kinds: ['email', 'feishu'],
           metrics: FALLBACK_METRICS
         })
@@ -362,16 +347,9 @@ export default function PipelineForm() {
   }, [editing, form])
 
   useEffect(() => {
-    if (editing || !optionsReady) return
-    const currentWriterType = form.getFieldValue(["writer", "type"])
-    if (currentWriterType) return
-    const types = Array.isArray(options.writer_types) ? options.writer_types : []
-    if (!types.length) return
-    const emailWriterType = types.find((w) => w === "info_html") ?? types[0]
-    if (emailWriterType) {
-      form.setFieldValue(["writer", "type"], emailWriterType)
-    }
-  }, [editing, optionsReady, options.writer_types, form])
+    const nextWriterType = writerTypeForDelivery(deliveryKind, form.getFieldValue(["writer", "type"]))
+    form.setFieldValue(["writer", "type"], nextWriterType)
+  }, [deliveryKind, form])
 
   const applyPipelineData = (data: any) => {
     // Normalize pipeline for form consumption (esp. weekdays array)
@@ -414,9 +392,6 @@ export default function PipelineForm() {
       writerPatched.hours = 24
     }
     const deliveryForForm = data.delivery ? { ...data.delivery } : undefined
-    if (deliveryForForm?.kind === 'email') {
-      deliveryForForm.subject_tpl = stripDateToken(deliveryForForm.subject_tpl)
-    }
     const patchedDelivery =
       deliveryForForm?.kind === 'feishu'
         ? {
@@ -428,6 +403,8 @@ export default function PipelineForm() {
             chat_id: deliveryForForm.chat_id || undefined
           }
         : deliveryForForm
+    const writerType = writerTypeForDelivery(patchedDelivery?.kind as DeliveryKind | undefined, writerPatched.type)
+    writerPatched.type = writerType
     form.setFieldsValue({
       pipeline: pipelinePatched,
       filters: data.filters || { all_categories: 1 },
@@ -525,51 +502,48 @@ export default function PipelineForm() {
       } else {
         delete pipelinePayload.weekdays_json
       }
-      let writerValues = values.writer ? { ...values.writer } as any : undefined
-      if (writerValues) {
-        // If writer.type not selected, drop writer to avoid 422 validation
-        const wtype = typeof writerValues.type === 'string' ? writerValues.type.trim() : ''
-        if (!wtype) {
-          writerValues = undefined
-        }
+      const writerValues = { ...(values.writer || {}) } as any
+      writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type)
+      const limitMap = buildLimitPayload(
+        toNumber(writerValues.limit_per_category_default),
+        writerValues.limit_per_category_overrides
+      )
+      if (limitMap) {
+        writerValues.limit_per_category = limitMap
       }
-      if (writerValues) {
-        const limitMap = buildLimitPayload(
-          toNumber(writerValues.limit_per_category_default),
-          writerValues.limit_per_category_overrides
-        )
-        if (limitMap) {
-          writerValues.limit_per_category = limitMap
-        }
-        delete writerValues.limit_per_category_default
-        delete writerValues.limit_per_category_overrides
+      delete writerValues.limit_per_category_default
+      delete writerValues.limit_per_category_overrides
 
-        const weightRecord = buildNumericRecord(
-          (writerValues.weights_entries || []).map((entry: WeightEntry) => ({
-            key: entry.metric,
-            value: entry.weight
-          }))
-        )
-        if (weightRecord) {
-          writerValues.weights_json = weightRecord
-        }
-        delete writerValues.weights_entries
-
-        const bonusRecord = buildNumericRecord(
-          (writerValues.bonus_entries || []).map((entry: BonusEntry) => ({
-            key: entry.source,
-            value: entry.bonus
-          }))
-        )
-        if (bonusRecord) {
-          writerValues.bonus_json = bonusRecord
-        }
-        delete writerValues.bonus_entries
+      const weightRecord = buildNumericRecord(
+        (writerValues.weights_entries || []).map((entry: WeightEntry) => ({
+          key: entry.metric,
+          value: entry.weight
+        }))
+      )
+      if (weightRecord) {
+        writerValues.weights_json = weightRecord
       }
+      delete writerValues.weights_entries
 
-      const deliveryValues = values.delivery ? { ...values.delivery } : undefined
-      if (deliveryValues && deliveryKind === 'email') {
-        deliveryValues.subject_tpl = buildSubjectTemplate(deliveryValues.subject_tpl)
+      const bonusRecord = buildNumericRecord(
+        (writerValues.bonus_entries || []).map((entry: BonusEntry) => ({
+          key: entry.source,
+          value: entry.bonus
+        }))
+      )
+      if (bonusRecord) {
+        writerValues.bonus_json = bonusRecord
+      }
+      delete writerValues.bonus_entries
+
+      let deliveryValues = values.delivery ? { ...values.delivery } : undefined
+      if (deliveryKind === 'email') {
+        const subject = buildEmailSubject(writerValues.hours)
+        if (deliveryValues) {
+          deliveryValues.subject_tpl = subject
+        } else {
+          deliveryValues = { subject_tpl: subject }
+        }
       }
 
       const payload = {
@@ -618,13 +592,6 @@ export default function PipelineForm() {
         <Space direction="vertical" style={{ width: '100%' }}>
           <Form.Item name={["delivery", "email"]} label="收件邮箱" rules={[{ required: true }]}>
             <Input placeholder="example@domain.com" />
-          </Form.Item>
-          <Form.Item
-            name={["delivery", "subject_tpl"]}
-            label="邮件标题"
-            extra="系统会在末尾自动追加当天日期，无需手动填写变量"
-          >
-            <Input placeholder="整合" />
           </Form.Item>
         </Space>
       )
@@ -866,14 +833,6 @@ export default function PipelineForm() {
               label: 'Writer',
               children: (
                 <Space direction="vertical" style={{ width: '100%' }}>
-                  <Form.Item name={["writer", "type"]} label="类型" rules={[{ required: true }]}>
-                    <Select
-                      options={options.writer_types.map((w) => ({
-                        value: w,
-                        label: w === 'feishu_md' ? 'feishu' : w === 'info_html' ? 'email' : w
-                      }))}
-                    />
-                  </Form.Item>
                   <Form.Item name={["writer", "hours"]} label="回溯小时" initialValue={24}>
                     <InputNumber min={1} />
                   </Form.Item>

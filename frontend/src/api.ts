@@ -20,6 +20,14 @@ http.interceptors.response.use(
 )
 
 export type Me = { id: number; email: string; name: string; is_admin: number }
+export type UnsubscribeResult = {
+  ok: boolean
+  email: string
+  pipeline_id?: number | null
+  pipeline_name?: string | null
+  owner_name?: string | null
+  owner_email?: string | null
+}
 
 export async function getMe(): Promise<Me> {
   const { data } = await http.get('/me')
@@ -28,6 +36,18 @@ export async function getMe(): Promise<Me> {
 
 export async function logout(): Promise<void> {
   await http.post('/auth/logout')
+}
+
+export async function unsubscribeEmail(email: string, pipelineId?: number | null, reason?: string | null): Promise<UnsubscribeResult> {
+  const params: Record<string, any> = { email }
+  if (pipelineId !== undefined && pipelineId !== null && !Number.isNaN(pipelineId)) {
+    params.pipeline_id = pipelineId
+  }
+  if (reason) {
+    params.reason = reason
+  }
+  const { data } = await http.get('/unsubscribe', { params })
+  return data
 }
 
 export async function requestLoginCode(email: string): Promise<void> {
@@ -213,7 +233,7 @@ export async function updateUser(
 
 export async function fetchOptions(): Promise<{
   categories: string[]
-  writer_types: string[]
+  writer_types?: string[]
   delivery_kinds: string[]
   metrics: MetricOption[]
 }> {

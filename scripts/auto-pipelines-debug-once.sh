@@ -63,6 +63,13 @@ with conn:
     if missing_tables:
         fail("Pipeline DB missing tables: " + ", ".join(missing_tables), code=2)
 
+    cur.execute("PRAGMA table_info(pipeline_writers)")
+    writer_cols = {row[1] for row in cur.fetchall()}
+    required_writer_cols = ("limit_per_category", "per_source_cap")
+    missing_writer_cols = [col for col in required_writer_cols if col not in writer_cols]
+    if missing_writer_cols:
+        fail("Pipeline writers table missing columns: " + ", ".join(missing_writer_cols), code=5)
+
     # Ensure debug_enabled column exists; add if missing
     cur.execute("PRAGMA table_info(pipelines)")
     pcols = {row[1] for row in cur.fetchall()}
@@ -180,8 +187,8 @@ run_once() {
   echo "[INFO] Collecting latest into SQLite..." >&2
   $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
 
-  echo "[INFO] Running AI evaluation for recent 40h..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 40 --limit 400 || true
+  echo "[INFO] Running AI evaluation for recent 72h..." >&2
+  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 72 --limit 400 || true
 
   echo "[INFO] Running debug pipelines sequentially..." >&2
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_runner.py" --all --debug-only

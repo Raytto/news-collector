@@ -205,8 +205,8 @@ run_once() {
   echo "[INFO] Collecting latest into SQLite..." >&2
   $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
 
-  echo "[INFO] Running AI evaluation for recent 40h..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 40 --limit 400 || true
+  echo "[INFO] Running AI evaluation for recent 72h..." >&2
+  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 72 --limit 400 || true
 
   echo "[INFO] Running all pipelines sequentially..." >&2
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_runner.py" --all

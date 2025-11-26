@@ -185,7 +185,27 @@ export default function Users() {
               columns={[
                 { title: 'ID', dataIndex: 'id', width: 80 },
                 { title: '名称', dataIndex: 'name' },
-                { title: 'Writer', dataIndex: 'writer_type', width: 120 },
+                {
+                  title: 'Writer',
+                  dataIndex: 'writer_type',
+                  width: 120,
+                  render: (_value, record) => {
+                    const deliveryLabel =
+                      record.delivery_kind === 'feishu'
+                        ? 'feishu'
+                        : record.delivery_kind === 'email'
+                        ? 'email'
+                        : null
+                    const writerLabel =
+                      record.writer_type === 'feishu_md'
+                        ? 'feishu'
+                        : record.writer_type === 'info_html'
+                        ? 'email'
+                        : record.writer_type
+                    const label = deliveryLabel || writerLabel
+                    return label ? <Tag>{label}</Tag> : '—'
+                  }
+                },
                 { title: '方式', dataIndex: 'delivery_kind', width: 120 },
                 { title: 'Debug', dataIndex: 'debug_enabled', width: 100, render: (v) => (v === 1 ? <Tag color="gold">ON</Tag> : <Tag>OFF</Tag>) },
                 { title: '更新时间', dataIndex: 'updated_at', width: 180 }

@@ -30,6 +30,23 @@ export default function PipelineList() {
     load()
   }, [load])
 
+  const onToggleDebug = async (item: PipelineListItem, enabled: boolean) => {
+    try {
+      await updatePipeline(item.id, {
+        pipeline: {
+          name: item.name,
+          enabled: item.enabled,
+          description: item.description || '',
+          debug_enabled: enabled ? 1 : 0
+        }
+      })
+      message.success('已更新 Debug 状态')
+      load()
+    } catch {
+      message.error('更新 Debug 状态失败')
+    }
+  }
+
   const onToggle = async (item: PipelineListItem, enabled: boolean) => {
     try {
       await updatePipeline(item.id, {
@@ -84,14 +101,19 @@ export default function PipelineList() {
             title: 'Debug',
             dataIndex: 'debug_enabled',
             width: 100,
-            render: (v) => (v === 1 ? <Tag color="gold">ON</Tag> : <Tag>OFF</Tag>)
+            render: (v, record) => (
+              <Switch checked={(v ?? 0) === 1} onChange={(val) => onToggleDebug(record, val)} />
+            )
           }
         ] as ColumnsType<PipelineListItem>)
       : ([] as ColumnsType<PipelineListItem>)),
     {
       title: 'Writer',
       render: (_, r) => {
-        const label = r.writer_type === 'feishu_md' ? 'feishu' : r.writer_type === 'info_html' ? 'email' : r.writer_type
+        const deliveryLabel = r.delivery_kind === 'feishu' ? 'feishu' : r.delivery_kind === 'email' ? 'email' : null
+        const writerLabel =
+          r.writer_type === 'feishu_md' ? 'feishu' : r.writer_type === 'info_html' ? 'email' : r.writer_type
+        const label = deliveryLabel || writerLabel
         return (
           <Space size={4}>
             {label && <Tag>{label}</Tag>}

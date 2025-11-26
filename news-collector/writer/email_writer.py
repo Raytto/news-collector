@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
 from pathlib import Path
+from urllib.parse import urlencode
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 DEFAULT_HOURS = 24
@@ -456,6 +457,7 @@ def render_html(
     metrics: Sequence[MetricDefinition],
     recipient_email: Optional[str] = None,
     unsubscribe_url: Optional[str] = None,
+    manage_url: Optional[str] = None,
 ) -> str:
     from collections import defaultdict
 
@@ -476,7 +478,7 @@ def render_html(
 <body style=\"margin:0;padding:12px 8px;background:#ffffff;color:#111111;font:15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC','Hiragino Sans GB','Microsoft YaHei', sans-serif;\">
 """
 
-    # Compliance: salutation + intro (unsubscribe removed)
+    # Compliance: salutation + intro (unsubscribe links are placed in footer)
     salutation = "尊敬的订阅用户"
     if recipient_email:
         try:
@@ -635,8 +637,26 @@ def render_html(
         for entry in cat_entries:
             sections.append(_render_article_card(entry))
 
+    footer_block = ""
+    footer_lines: List[str] = []
+    if unsubscribe_url:
+        footer_lines.append(
+            f"<p style=\"margin:4px 0;\"><a style=\"color:#64748b;text-decoration:underline;\" href=\"{escape(unsubscribe_url)}\" target=\"_blank\" rel=\"noopener noreferrer\">退订本邮件</a></p>"
+        )
+    if manage_url:
+        footer_lines.append(
+            f"<p style=\"margin:4px 0;\"><a style=\"color:#64748b;text-decoration:underline;\" href=\"{escape(manage_url)}\" target=\"_blank\" rel=\"noopener noreferrer\">管理我的订阅</a></p>"
+        )
+    if footer_lines:
+        footer_block = (
+            "<div style=\"border-top:1px solid #e5e7eb;margin:18px 0 0;padding:12px 4px 0;color:#475569;font-size:13px;\">"
+            "<p style=\"margin:0 0 6px;color:#94a3b8;font-size:12px;\">如果不想再收到此类邮件：</p>"
+            + "".join(footer_lines)
+            + "</div>"
+        )
+
     tail = "\n</body>\n</html>\n"
-    return head + header + "\n".join(sections) + tail
+    return head + header + "\n".join(sections) + footer_block + tail
 
 
 def main() -> None:
@@ -663,8 +683,10 @@ def main() -> None:
 
     pid = _env_pipeline_id()
     recipient_email: Optional[str] = None
-    # Unsubscribe URL no longer used in content; keep var for signature compatibility
+    # Frontend links
+    frontend_base = (os.getenv("FRONTEND_BASE_URL") or "").strip().rstrip("/")
     unsubscribe_url: str = ""
+    manage_url: str = ""
 
     with sqlite3.connect(str(db_path)) as conn:
         metrics = load_active_metrics(conn)
@@ -740,6 +762,14 @@ def main() -> None:
 
         articles = load_article_scores(conn)
 
+    if frontend_base:
+        manage_url = frontend_base + "/"
+        if recipient_email:
+            qs = {"email": recipient_email, "reason": "email_footer"}
+            if pid is not None:
+                qs["pipeline_id"] = pid
+            unsubscribe_url = f"{frontend_base}/unsubscribe?{urlencode(qs)}"
+
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, effective_hours))
     entries: List[Dict[str, Any]] = []
     seen_links: Set[str] = set()
@@ -801,7 +831,7 @@ def main() -> None:
         print("没有符合条件的资讯，未生成文件")
         return
 
-    html = render_html(entries, effective_hours, weights, metrics, recipient_email, unsubscribe_url)
+    html = render_html(entries, effective_hours, weights, metrics, recipient_email, unsubscribe_url or None, manage_url or None)
     out_path.write_text(html, encoding="utf-8")
     print(f"已生成: {out_path}")
 

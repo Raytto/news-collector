@@ -5,6 +5,7 @@ import os
 import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from html import escape
 from typing import Any, Optional
 
 import requests
@@ -178,6 +179,14 @@ SMTP_USE_TLS = _get_env_bool("SMTP_USE_TLS", False)
 MAIL_FROM = os.getenv("MAIL_FROM", "noreply@email.pangruitao.com").strip() or "noreply@email.pangruitao.com"
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "[情报鸭]").strip() or "[情报鸭]"
 
+SIGNUP_DEFAULT_METRIC_WEIGHTS: tuple[tuple[str, float], ...] = (
+    ("timeliness", 0.2),
+    ("quality", 0.2),
+    ("insight", 0.2),
+    ("depth", 0.2),
+    ("novelty", 0.2),
+)
+
 
 def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -219,6 +228,56 @@ def _clear_session_cookie(resp: Response) -> None:
     resp.delete_cookie(key="sid", path="/")
 
 
+def _seed_default_pipelines_for_user(conn: sqlite3.Connection, *, user_id: int, user_email: str) -> None:
+    """Create default pipelines for a newly registered user."""
+    existing = db.fetch_pipeline_list_by_owner(conn, user_id)
+    if existing:
+        return
+
+    normalized_email = (user_email or "").strip().lower()
+    if not normalized_email:
+        return
+
+    metric_weights = [{"key": key, "weight": weight, "enabled": 1} for key, weight in SIGNUP_DEFAULT_METRIC_WEIGHTS]
+
+    def _build_payload(name: str, hours: int, weekdays: list[int], limit_default: int) -> dict:
+        allowed_days = sorted({int(day) for day in weekdays if 1 <= int(day) <= 7})
+        return {
+            "pipeline": {
+                "name": name,
+                "enabled": 1,
+                "weekdays_json": allowed_days or None,
+            },
+            "filters": {
+                "all_categories": 1,
+                "categories_json": None,
+                "all_src": 1,
+                "include_src_json": None,
+            },
+            "writer": {
+                "type": "info_html",
+                "hours": max(1, int(hours)),
+                "limit_per_category": {"default": int(limit_default)},
+                "metric_weights": [mw.copy() for mw in metric_weights],
+                "bonus_json": db.DEFAULT_SOURCE_BONUS.copy(),
+                "per_source_cap": 3,
+            },
+            "delivery": {
+                "kind": "email",
+                "email": normalized_email,
+                "subject_tpl": name,
+            },
+        }
+
+    defaults = [
+        _build_payload("星期二至星期五的24小时咨询", 24, [2, 3, 4, 5], 5),
+        _build_payload("每周一的72小时咨询", 72, [1], 8),
+    ]
+
+    for payload in defaults:
+        db.create_or_update_pipeline(conn, payload, owner_user_id=user_id)
+
+
 class AuthEmailPayload(BaseModel):
     email: str
     name: Optional[str] = None
@@ -247,7 +306,8 @@ async def _require_user(request: Request) -> dict:
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    if path == "/health" or path.startswith("/auth/"):
+    # Public endpoints that should not require login
+    if path == "/health" or path.startswith("/auth/") or path.startswith("/unsubscribe"):
         return await call_next(request)
     sid = request.cookies.get("sid")
     if not sid:
@@ -456,36 +516,108 @@ def health() -> dict:
     return {"ok": True}
 
 
+def _process_unsubscribe(email: str, pipeline_id: Optional[int], reason: Optional[str]) -> dict:
+    addr = (email or "").strip().lower()
+    if not addr or "@" not in addr:
+        return {"ok": False, "error": "邮箱格式不正确"}
+
+    pipeline_name: Optional[str] = None
+    owner_name: Optional[str] = None
+    owner_email: Optional[str] = None
+    pid: Optional[int] = None
+
+    with db.get_conn() as conn:
+        if pipeline_id is not None:
+            try:
+                pid = int(pipeline_id)
+            except Exception:
+                pid = None
+            if pid is not None:
+                try:
+                    info = db.fetch_pipeline(conn, pid)
+                except Exception:
+                    info = None
+                if info and info.get("pipeline"):
+                    p = info["pipeline"]
+                    pipeline_name = p.get("name")
+                    owner_id = p.get("owner_user_id")
+                    if owner_id is not None:
+                        try:
+                            user = db.get_user_by_id(conn, int(owner_id))
+                        except Exception:
+                            user = None
+                        if user:
+                            owner_email = user.get("email")
+                            owner_name = user.get("name") or owner_email
+                    try:
+                        # Disable the pipeline to prevent future sends as requested
+                        conn.execute("UPDATE pipelines SET enabled=0 WHERE id=?", (pid,))
+                        conn.commit()
+                    except Exception:
+                        pass
+                try:
+                    db.unsubscribe_pipeline_email(conn, pipeline_id=pid, email=addr)
+                except Exception:
+                    pass
+
+        # Always record global unsubscribe as well
+        try:
+            db.unsubscribe_email(conn, email=addr, reason=reason)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "email": addr,
+        "pipeline_id": pid,
+        "pipeline_name": pipeline_name,
+        "owner_name": owner_name,
+        "owner_email": owner_email,
+    }
+
+
 @app.get("/unsubscribe", response_class=HTMLResponse)
 def http_unsubscribe(
     email: str = Query(..., description="收件人邮箱"),
     pipeline_id: Optional[int] = Query(None, description="可选：只退订某个管线"),
     reason: Optional[str] = Query(None, description="可选：退订原因"),
 ) -> HTMLResponse:
-    addr = (email or "").strip().lower()
-    if not addr or "@" not in addr:
+    result = _process_unsubscribe(email, pipeline_id, reason)
+    if not result.get("ok"):
         return HTMLResponse("<h3>退订失败：邮箱格式不正确</h3>", status_code=400)
-    with db.get_conn() as conn:
-        if pipeline_id is not None:
-            try:
-                db.unsubscribe_pipeline_email(conn, pipeline_id=int(pipeline_id), email=addr)
-            except Exception:
-                pass
-        # Always record global unsubscribe as well
-        try:
-            db.unsubscribe_email(conn, email=addr, reason=reason)
-        except Exception:
-            pass
+
+    manage_base = (os.getenv("FRONTEND_BASE_URL") or "/").strip()
+    manage_url = (manage_base.rstrip("/") or "") + "/"
+    creator = result.get("owner_name") or "创建者"
+    pipeline_title = result.get("pipeline_name") or "该管线"
+    email_safe = escape(result.get("email") or "")
+
     body = (
-        "<div style='font:14px/1.6 -apple-system, BlinkMacSystemFont,\n"
-        "\t'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', sans-serif;\n"
-        "\tmax-width:720px;margin:24px auto;padding:0 12px;color:#334155'>"
-        f"<h2>退订成功</h2>"
-        f"<p>我们已不再向 <strong>{addr}</strong> 发送{('该管线的' if pipeline_id is not None else '')}邮件。</p>"
-        "<p>如有误操作，您可以在系统内重新订阅或联系管理员恢复。</p>"
+        "<div style='font:14px/1.6 -apple-system, BlinkMacSystemFont, "
+        "\"Segoe UI\", Roboto, \"Helvetica Neue\", Arial, \"PingFang SC\", sans-serif; "
+        "max-width:720px;margin:24px auto;padding:0 12px;color:#334155'>"
+        "<h2 style='margin:0 0 8px;'>退订成功</h2>"
+        f"<p style='margin:6px 0;'>我们已收到 <strong>{email_safe}</strong> 的退订请求。</p>"
+        f"<p style='margin:6px 0;'>已成功退订 “{escape(creator)}” 的管线 “{escape(pipeline_title)}”。</p>"
+        "<p style='margin:6px 0;color:#64748b;'>如需重新订阅，可登录后在“我的推送”中恢复。</p>"
+        f"<div style='margin:14px 0;'><a href='{escape(manage_url)}' "
+        "style='display:inline-block;padding:10px 16px;border-radius:8px;background:#2563eb;"
+        "color:#fff;text-decoration:none;font-weight:600;'>前往管理</a></div>"
         "</div>"
     )
     return HTMLResponse(body)
+
+
+@app.get("/api/unsubscribe")
+def api_unsubscribe(
+    email: str = Query(..., description="收件人邮箱"),
+    pipeline_id: Optional[int] = Query(None, description="可选：只退订某个管线"),
+    reason: Optional[str] = Query(None, description="可选：退订原因"),
+) -> dict:
+    result = _process_unsubscribe(email, pipeline_id, reason)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "unsubscribe_failed")
+    return result
 
 
 @app.get("/me")
@@ -710,6 +842,8 @@ def auth_signup_verify(payload: AuthVerifyPayload, response: Response) -> dict:
     if not email or not code:
         raise HTTPException(status_code=400, detail="参数错误")
     code_hash = _sha256(code + AUTH_CODE_PEPPER)
+    created_new_user = False
+    uid: Optional[int] = None
     with db.get_conn() as conn:
         ok, _ = db.verify_email_code(conn, email=email, purpose="signup", input_hash=code_hash)
         if not ok:
@@ -717,6 +851,7 @@ def auth_signup_verify(payload: AuthVerifyPayload, response: Response) -> dict:
         # Create user then session
         try:
             uid = db.create_user(conn, email=email, name=name, is_admin=0, verified=True)
+            created_new_user = True
         except sqlite3.IntegrityError:
             # Race-condition: user was created in-between
             existing = db.get_user_by_email(conn, email)
@@ -724,6 +859,8 @@ def auth_signup_verify(payload: AuthVerifyPayload, response: Response) -> dict:
         if not uid:
             raise HTTPException(status_code=500, detail="创建用户失败")
         user = db.get_user_by_id(conn, int(uid))
+        if created_new_user:
+            _seed_default_pipelines_for_user(conn, user_id=int(uid), user_email=email)
         sid = secrets.token_hex(32)
         token_hash = _sha256(sid)
         db.create_session(

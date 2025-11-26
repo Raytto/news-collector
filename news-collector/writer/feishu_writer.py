@@ -480,7 +480,11 @@ def main() -> None:
                     per_source_cap = int(cfg["per_source_cap"])
                 except (TypeError, ValueError):
                     pass
-            all_cats = int(cfg.get("all_categories", 1) or 1)
+            # Respect explicit whitelist flag from DB: 0 = use categories_json, 1 = all categories.
+            try:
+                all_cats = int(cfg.get("all_categories", 1))
+            except (TypeError, ValueError):
+                all_cats = 1
             if all_cats == 0:
                 try:
                     cats = json.loads(cfg.get("categories_json") or "[]")
