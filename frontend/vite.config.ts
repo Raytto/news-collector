@@ -7,6 +7,7 @@ const backendTarget = `http://127.0.0.1:${backendPort}`
 
 export default defineConfig({
   plugins: [react()],
+  envPrefix: ['VITE_', 'FRONTEND_'],
   server: {
     port: frontendPort,
     strictPort: true,

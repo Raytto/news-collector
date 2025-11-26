@@ -191,6 +191,44 @@ sleep_until_next_0930() {
   fi
 }
 
+cleanup_old_outputs() {
+  local output_dir="$ROOT_DIR/data/output"
+  local ttl_days=7
+  local removed=0
+  local info_db="$ROOT_DIR/data/info.db"
+
+  if [ ! -d "$output_dir" ]; then
+    echo "[INFO] Output directory not found at $output_dir; skipping cleanup." >&2
+    return 0
+  fi
+
+  # Safety guard: never touch the pipeline database.
+  if [ -f "$info_db" ] && [ ! -O "$info_db" ]; then
+    echo "[WARN] info.db ownership unexpected; skipping cleanup to be safe." >&2
+    return 0
+  fi
+
+  echo "[INFO] Cleaning output files older than ${ttl_days} days in $output_dir" >&2
+  while IFS= read -r file; do
+    if [ "$file" = "$info_db" ]; then
+      echo "[WARN] Skipping protected file: $file" >&2
+      continue
+    fi
+    if rm -- "$file"; then
+      echo "[INFO] Removed stale file: $file" >&2
+      removed=$((removed + 1))
+    else
+      echo "[WARN] Failed to remove stale file: $file" >&2
+    fi
+  done < <(find "$output_dir" -type f -mtime +"$ttl_days" -print 2>/dev/null)
+
+  if [ "$removed" -gt 0 ]; then
+    echo "[INFO] Removed $removed stale file(s) from $output_dir" >&2
+  else
+    echo "[INFO] No stale output files found (older than ${ttl_days} days)." >&2
+  fi
+}
+
 run_once() {
   if ! activate_runtime; then
     return 1
@@ -215,4 +253,5 @@ run_once() {
 while true; do
   sleep_until_next_0930
   run_once || true
+  cleanup_old_outputs || true
 done

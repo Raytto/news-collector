@@ -2,10 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_DIR="$ROOT_DIR/frontend"
-DEPLOY_DIR="${FRONTEND_DEPLOY_DIR:-/var/www/news-collector-jp}"
+SESSION_NAME="${FRONTEND_SCREEN_SESSION:-news-collector-frontend}"
 
-cd "$FRONTEND_DIR"
+if [ "${1-}" != "__run_frontend" ]; then
+  if ! command -v screen >/dev/null 2>&1; then
+    echo "screen is required but not installed." >&2
+    exit 1
+  fi
+  # Stop existing session with the same name, if any
+  screen -S "$SESSION_NAME" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$SESSION_NAME" bash -lc "cd '$ROOT_DIR' && scripts/start-frontend-dev.sh __run_frontend"
+  echo "Frontend dev server starting in screen session '$SESSION_NAME'."
+  exit 0
+fi
+shift
+
+cd "$ROOT_DIR/frontend"
 
 NODE_BIN=""
 if command -v node >/dev/null 2>&1; then
@@ -48,32 +60,8 @@ fi
 
 if [ "$PKG" = npm ]; then
   npm install --silent
-  npm run build
+  npm run dev
 else
   $PKG install --silent
-  $PKG run build
+  $PKG run dev
 fi
-
-if [ ! -d "$FRONTEND_DIR/dist" ]; then
-  echo "Build failed: dist directory not found." >&2
-  exit 1
-fi
-
-if [ -z "$DEPLOY_DIR" ] || [ "$DEPLOY_DIR" = "/" ]; then
-  echo "Refusing to deploy to unsafe target: '$DEPLOY_DIR'." >&2
-  exit 1
-fi
-
-mkdir -p "$DEPLOY_DIR"
-
-if command -v rsync >/dev/null 2>&1; then
-  rsync -av --delete "$FRONTEND_DIR/dist/" "$DEPLOY_DIR/"
-else
-  # Fallback when rsync is unavailable: clean target then copy over.
-  shopt -s dotglob
-  rm -rf "$DEPLOY_DIR"/*
-  cp -a "$FRONTEND_DIR/dist/." "$DEPLOY_DIR/"
-  shopt -u dotglob
-fi
-
-echo "Frontend built and deployed to $DEPLOY_DIR"

@@ -29,5 +29,6 @@ variables:
   COLLECTOR_DISABLE_CONCURRENCY: ""               # set to 1/true to force serial execution
   BACKEND_PORT: "8001"
   FRONTEND_PORT: "5180"
+  FRONTEND_SITE_ICON: "data/agentduck.png"
   FRONTEND_BASE_URL: "https://jp.pangruitao.com"
 prefix: /home/pp/miniconda3/envs/news-collector
