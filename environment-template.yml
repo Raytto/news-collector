@@ -27,5 +27,7 @@ variables:
   COLLECTOR_RETRY_MAX: "3"                        # simple retry attempts for transient errors
   COLLECTOR_RETRY_BACKOFF_BASE: "0.6"             # base seconds for exponential backoff
   COLLECTOR_DISABLE_CONCURRENCY: ""               # set to 1/true to force serial execution
+  BACKEND_PORT: "8001"
+  FRONTEND_PORT: "5180"
   FRONTEND_BASE_URL: "https://jp.pangruitao.com"
 prefix: /home/pp/miniconda3/envs/news-collector

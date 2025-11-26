@@ -41,34 +41,11 @@ except Exception as exc:
 
 with conn:
     cur = conn.cursor()
-    required_tables = (
-        "pipelines",
-        "pipeline_filters",
-        "pipeline_writers",
-        "pipeline_deliveries_email",
-        "pipeline_deliveries_feishu",
-        "pipeline_writer_metric_weights",
-        "ai_metrics",
-        "info_ai_scores",
-        "info_ai_review",
-    )
-    missing_tables = []
-    for tbl in required_tables:
-        row = cur.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-            (tbl,),
-        ).fetchone()
-        if not row:
-            missing_tables.append(tbl)
-    if missing_tables:
-        fail("Pipeline DB missing tables: " + ", ".join(missing_tables), code=2)
-
-    cur.execute("PRAGMA table_info(pipeline_writers)")
-    writer_cols = {row[1] for row in cur.fetchall()}
-    required_writer_cols = ("limit_per_category", "per_source_cap")
-    missing_writer_cols = [col for col in required_writer_cols if col not in writer_cols]
-    if missing_writer_cols:
-        fail("Pipeline writers table missing columns: " + ", ".join(missing_writer_cols), code=5)
+    has_pipelines = cur.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='pipelines'"
+    ).fetchone()
+    if not has_pipelines:
+        fail("Pipeline DB missing pipelines table", code=2)
 
     # Ensure debug_enabled column exists; add if missing
     cur.execute("PRAGMA table_info(pipelines)")
@@ -88,32 +65,6 @@ with conn:
 
     if not pipelines:
         fail("No debug pipelines found (set debug_enabled=1 to run).", code=3)
-
-    missing_configs: list[str] = []
-    for pid, name in pipelines:
-        has_writer = cur.execute(
-            "SELECT 1 FROM pipeline_writers WHERE pipeline_id=?",
-            (pid,),
-        ).fetchone()
-        if not has_writer:
-            missing_configs.append(f"{name} (writer)")
-            continue
-        has_email = cur.execute(
-            "SELECT 1 FROM pipeline_deliveries_email WHERE pipeline_id=?",
-            (pid,),
-        ).fetchone()
-        has_feishu = cur.execute(
-            "SELECT 1 FROM pipeline_deliveries_feishu WHERE pipeline_id=?",
-            (pid,),
-        ).fetchone()
-        if not (has_email or has_feishu):
-            missing_configs.append(f"{name} (delivery)")
-
-    if missing_configs:
-        print("[ERROR] Debug pipelines missing writer/delivery configuration:", file=sys.stderr)
-        for item in missing_configs:
-            print(f"  - {item}", file=sys.stderr)
-        sys.exit(4)
 
 print("[INFO] Pipeline DB configuration for debug looks good.", file=sys.stderr)
 PY

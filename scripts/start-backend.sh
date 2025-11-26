@@ -46,6 +46,8 @@ if [ -f .env ]; then
   set +a
 fi
 
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+
 PY="python"
 command -v "$PY" >/dev/null 2>&1 || PY="python3"
 
@@ -54,6 +56,8 @@ if [ "$CONDA_ACTIVATED" = 1 ]; then
 else
   USE_VENV=1
 fi
+
+UVICORN_CMD=("$PY" -m uvicorn backend.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --reload-dir backend --reload-exclude .cache --reload-exclude frontend/node_modules --reload-exclude frontend/dist)
 
 # Ensure a usable venv only when conda is not active
 if [ "$USE_VENV" = 1 ]; then
@@ -71,9 +75,11 @@ if [ "$USE_VENV" = 1 ]; then
   source .venv/bin/activate
   pip install -q -r backend/requirements.txt
   export PYTHONPATH="$ROOT_DIR"
-  exec "$PY" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir backend --reload-exclude .cache --reload-exclude frontend/node_modules --reload-exclude frontend/dist
+  echo "[INFO] Starting backend on port $BACKEND_PORT"
+  exec "${UVICORN_CMD[@]}"
 else
   pip install -q -r backend/requirements.txt
   export PYTHONPATH="$ROOT_DIR"
-  exec "$PY" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir backend --reload-exclude .cache --reload-exclude frontend/node_modules --reload-exclude frontend/dist
+  echo "[INFO] Starting backend on port $BACKEND_PORT"
+  exec "${UVICORN_CMD[@]}"
 fi

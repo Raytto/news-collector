@@ -550,21 +550,11 @@ def _process_unsubscribe(email: str, pipeline_id: Optional[int], reason: Optiona
                             owner_email = user.get("email")
                             owner_name = user.get("name") or owner_email
                     try:
-                        # Disable the pipeline to prevent future sends as requested
+                        # Disable the pipeline; unsubscribe no longer mutates delivery records
                         conn.execute("UPDATE pipelines SET enabled=0 WHERE id=?", (pid,))
                         conn.commit()
                     except Exception:
                         pass
-                try:
-                    db.unsubscribe_pipeline_email(conn, pipeline_id=pid, email=addr)
-                except Exception:
-                    pass
-
-        # Always record global unsubscribe as well
-        try:
-            db.unsubscribe_email(conn, email=addr, reason=reason)
-        except Exception:
-            pass
 
     return {
         "ok": True,

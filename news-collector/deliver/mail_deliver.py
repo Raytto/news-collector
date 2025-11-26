@@ -82,30 +82,6 @@ def _load_email_delivery_from_db(db_path: Path, pipeline_id: int) -> tuple[str |
         return (None, None)
 
 
-def _is_unsubscribed(db_path: Path, email: str, pipeline_id: int | None) -> bool:
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(db_path))
-        with conn:
-            norm = (email or "").strip().lower()
-            if not norm:
-                return False
-            if pipeline_id is not None:
-                row = conn.execute(
-                    "SELECT 1 FROM pipeline_unsubscribed WHERE pipeline_id=? AND email=?",
-                    (int(pipeline_id), norm),
-                ).fetchone()
-                if row:
-                    return True
-            row = conn.execute(
-                "SELECT 1 FROM unsubscribed_emails WHERE email=?",
-                (norm,),
-            ).fetchone()
-            return bool(row)
-    except Exception:
-        return False
-
-
 def _render_subject_from_tpl(tpl: str | None) -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     date_zh = datetime.now().strftime("%Y年%m月%d日")
@@ -306,10 +282,6 @@ def main() -> None:
         email_addr, subject_tpl = _load_email_delivery_from_db(db_path, pid)
         if email_addr:
             receivers = [email_addr]
-            # Honor unsubscribe registry and skip sending if necessary
-            if _is_unsubscribed(db_path, email_addr, pid):
-                print(f"[SKIP] email delivery unsubscribed: pipeline={pid} email={email_addr}")
-                return
         # When DB present, always use its subject template if available
         if subject_tpl:
             subject = _render_subject_from_tpl(subject_tpl)

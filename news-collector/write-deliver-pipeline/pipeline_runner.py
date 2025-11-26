@@ -400,12 +400,13 @@ def main() -> None:
             print("没有匹配的管线可执行")
             return
         for p in ps:
-            # In debug-only mode, allow running pipelines even if enabled=0.
-            if not getattr(args, "debug_only", False) and int(p.enabled) != 1:
+            debug_only = bool(getattr(args, "debug_only", False))
+            # In debug-only mode, run purely by debug flag; otherwise respect enabled toggle.
+            if not debug_only and int(p.enabled) != 1:
                 print(f"[SKIP] {p.name} (disabled)")
                 continue
-            # Weekday gating (unless overridden)
-            if not getattr(args, "ignore_weekday", False) and os.getenv("FORCE_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            # Weekday gating is ignored for debug runs.
+            if not debug_only and not getattr(args, "ignore_weekday", False) and os.getenv("FORCE_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}:
                 ok, why = _allowed_today(p.weekdays_json)
                 if not ok:
                     print(f"[SKIP] {p.name}: {why}")
@@ -417,6 +418,8 @@ def main() -> None:
             try:
                 run_one(conn, p)
                 print(f"[DONE] {p.name}")
+            except SystemExit as e:
+                print(f"[FAIL] {p.name}: {e}")
             except Exception as e:
                 print(f"[FAIL] {p.name}: {e}")
 
