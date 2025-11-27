@@ -177,6 +177,7 @@ DEFAULT_CATEGORY_LABELS = {
     "game": "游戏",
     "tech": "科技",
     "humanities": "人文",
+    "general": "综合",
 }
 
 SOURCE_LABEL_FIELDS = ("SOURCE_LABEL_ZH", "SOURCE_LABEL", "SOURCE_NAME")
