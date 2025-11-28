@@ -83,6 +83,14 @@ export type PipelineListItem = {
   weekday_tag?: string | null
 }
 
+export type ManualPushResponse = {
+  ok: boolean
+  pipeline_id: number
+  count_today: number
+  remaining_today: number
+  cooldown_seconds: number
+}
+
 // --- Users (admin) ---
 export type UserItem = {
   id: number
@@ -200,6 +208,11 @@ export type AiMetric = {
 
 export async function fetchPipelines(): Promise<PipelineListItem[]> {
   const { data } = await http.get('/pipelines')
+  return data
+}
+
+export async function pushPipelineNow(id: number): Promise<ManualPushResponse> {
+  const { data } = await http.post(`/pipelines/${id}/push`)
   return data
 }
 

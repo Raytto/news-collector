@@ -1,0 +1,5 @@
+{
+  "name": "SLG Scout & Analyst",
+  "description": "A market intelligence tool that scouts for new soft-launch Android games via YouTube and analyzes their mechanics for potential adaptation as 'side-games' in SLG titles like Rise of Kingdoms.",
+  "requestFramePermissions": []
+}

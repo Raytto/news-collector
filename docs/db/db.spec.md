@@ -331,6 +331,32 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 );
 ```
 
+### Auth & Users
+
+#### Table: `users`
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  email          TEXT NOT NULL UNIQUE,
+  name           TEXT NOT NULL,
+  is_admin       INTEGER NOT NULL DEFAULT 0,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  avatar_url     TEXT,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  verified_at    TEXT,
+  last_login_at  TEXT,
+  manual_push_count    INTEGER NOT NULL DEFAULT 0, -- 当日手动推送计数
+  manual_push_date     TEXT,                       -- 计数对应的日期（YYYY-MM-DD）
+  manual_push_last_at  TEXT                        -- 最近一次手动推送时间戳
+);
+```
+
+Semantics:
+
+- `manual_push_count` / `manual_push_date` / `manual_push_last_at` track per-user manual “立即推送”使用频率。服务端默认限制：10 秒冷却、每日最多 20 次（见 `MANUAL_PUSH_COOLDOWN_SECONDS` / `MANUAL_PUSH_DAILY_LIMIT` 环境变量）。
+- `enabled=0` 会阻止登录与手动推送。
+
 ### Relationships & Access Patterns
 
 - `info_ai_review.info_id` → `info.id` (1:1).

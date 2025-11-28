@@ -73,10 +73,29 @@ def _fetchone_dict(cur: sqlite3.Cursor, sql: str, args: Tuple[Any, ...]) -> Dict
     return {cols[i]: row[i] for i in range(len(cols))}
 
 
-def load_pipelines(conn: sqlite3.Connection, name: Optional[str], all_flag: bool, debug_only: bool = False) -> list[Pipeline]:
+def load_pipelines(
+    conn: sqlite3.Connection,
+    name: Optional[str],
+    all_flag: bool,
+    debug_only: bool = False,
+    pid: Optional[int] = None,
+) -> list[Pipeline]:
     cur = conn.cursor()
     rows: list[tuple] = []
-    if name:
+    if pid is not None:
+        try:
+            rows = cur.execute(
+                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE id=?",
+                (int(pid),),
+            ).fetchall()
+            with_weekdays = True
+        except sqlite3.OperationalError:
+            rows = cur.execute(
+                "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE id=?",
+                (int(pid),),
+            ).fetchall()
+            with_weekdays = False
+    elif name:
         # Try selecting weekdays_json; fallback if column missing
         try:
             rows = cur.execute(
@@ -376,6 +395,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run write/deliver pipelines from SQLite configuration")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--name", default="", help="Run pipeline by name")
+    g.add_argument("--id", type=int, help="Run pipeline by id")
     g.add_argument("--all", action="store_true", help="Run all enabled pipelines sequentially")
     p.add_argument(
         "--debug-only",
@@ -395,7 +415,13 @@ def main() -> None:
     if not DB_PATH.exists():
         raise SystemExit(f"未找到数据库: {DB_PATH}")
     with sqlite3.connect(str(DB_PATH)) as conn:
-        ps = load_pipelines(conn, args.name or None, args.all, debug_only=bool(getattr(args, "debug_only", False)))
+        ps = load_pipelines(
+            conn,
+            args.name or None,
+            args.all,
+            debug_only=bool(getattr(args, "debug_only", False)),
+            pid=getattr(args, "id", None),
+        )
         if not ps:
             print("没有匹配的管线可执行")
             return

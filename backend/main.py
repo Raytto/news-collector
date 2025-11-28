@@ -4,8 +4,10 @@ import hashlib
 import os
 import secrets
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from html import escape
+from pathlib import Path
 from typing import Any, Optional
 
 import requests
@@ -178,6 +180,12 @@ SMTP_USE_SSL = _get_env_bool("SMTP_USE_SSL", False)
 SMTP_USE_TLS = _get_env_bool("SMTP_USE_TLS", False)
 MAIL_FROM = os.getenv("MAIL_FROM", "noreply@email.pangruitao.com").strip() or "noreply@email.pangruitao.com"
 MAIL_SUBJECT_PREFIX = os.getenv("MAIL_SUBJECT_PREFIX", "[情报鸭]").strip() or "[情报鸭]"
+MANUAL_PUSH_COOLDOWN_SECONDS = int(os.getenv("MANUAL_PUSH_COOLDOWN_SECONDS", "10") or 10)
+MANUAL_PUSH_DAILY_LIMIT = int(os.getenv("MANUAL_PUSH_DAILY_LIMIT", "20") or 20)
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+PIPELINE_RUNNER = ROOT_DIR / "news-collector" / "write-deliver-pipeline" / "pipeline_runner.py"
+PYTHON_BIN = os.getenv("PYTHON") or sys.executable or "python3"
 
 SIGNUP_DEFAULT_METRIC_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("timeliness", 0.2),
@@ -208,6 +216,20 @@ def _mask_email(email: str) -> str:
         return f"{masked}@{host}"
     except Exception:
         return "***"
+
+
+def _parse_sqlite_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
 
 
 def _set_session_cookie(resp: Response, sid: str) -> None:
@@ -1180,6 +1202,35 @@ def list_pipelines(user: dict = Depends(_require_user)) -> list[dict]:
         return [it for it in items if (it.get("owner_user_id") == uid)]
 
 
+def _validate_manual_push(conn: sqlite3.Connection, uid: int) -> tuple[int, str]:
+    """Return (current_count_today, today_str) or raise HTTPException on limit breach."""
+    now = datetime.utcnow()
+    today_str = now.strftime("%Y-%m-%d")
+    state = db.get_user_push_state(conn, uid) or {}
+    count_today = int(state.get("manual_push_count") or 0) if state.get("manual_push_date") == today_str else 0
+    if count_today >= MANUAL_PUSH_DAILY_LIMIT:
+        raise HTTPException(status_code=429, detail=f"今日手动推送次数已达上限（{MANUAL_PUSH_DAILY_LIMIT}次）")
+    last_at = _parse_sqlite_ts(state.get("manual_push_last_at"))
+    if last_at is not None:
+        delta = (now - last_at).total_seconds()
+        if delta < MANUAL_PUSH_COOLDOWN_SECONDS:
+            remaining = int(MANUAL_PUSH_COOLDOWN_SECONDS - delta) or 1
+            raise HTTPException(status_code=429, detail=f"操作过于频繁，请 {remaining} 秒后再试")
+    return count_today, today_str
+
+
+def _start_pipeline_process(pid: int) -> None:
+    if not PIPELINE_RUNNER.exists():
+        raise HTTPException(status_code=500, detail="未找到 pipeline_runner 脚本")
+    cmd = [PYTHON_BIN, str(PIPELINE_RUNNER), "--id", str(pid), "--ignore-weekday"]
+    env = os.environ.copy()
+    env.setdefault("FORCE_RUN", "1")  # 覆盖周几限制
+    try:
+        subprocess.Popen(cmd, env=env)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"触发执行失败: {exc}") from exc
+
+
 @app.get("/pipelines/{pid}")
 def get_pipeline(pid: int, user: dict = Depends(_require_user)) -> dict:
     with db.get_conn() as conn:
@@ -1293,6 +1344,38 @@ async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, 
                 pass
         db.create_or_update_pipeline(conn, result, pid=pid)
         return {"id": pid}
+
+
+@app.post("/pipelines/{pid}/push", status_code=202)
+def manual_push_pipeline(pid: int, user: dict = Depends(_require_user)) -> dict:
+    uid = int(user["id"])
+    with db.get_conn() as conn:
+        existed = db.fetch_pipeline(conn, pid)
+        if not existed:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        pipeline_obj = existed.get("pipeline") or {}
+        owner_id = pipeline_obj.get("owner_user_id")
+        if int(user.get("is_admin", 0)) != 1:
+            if owner_id is None or int(owner_id) != uid:
+                raise HTTPException(status_code=403, detail="无权操作该投递")
+        if int(pipeline_obj.get("enabled", 0)) != 1:
+            raise HTTPException(status_code=400, detail="请先启用该推送再执行")
+        if not existed.get("writer"):
+            raise HTTPException(status_code=400, detail="该推送缺少 writer 配置，无法执行")
+        if not existed.get("delivery"):
+            raise HTTPException(status_code=400, detail="该推送缺少投递配置，无法执行")
+        count_today, today_str = _validate_manual_push(conn, uid)
+    _start_pipeline_process(pid)
+    with db.get_conn() as conn:
+        db.update_user_push_state(conn, uid, count=count_today + 1, date_str=today_str)
+    remaining = max(MANUAL_PUSH_DAILY_LIMIT - (count_today + 1), 0)
+    return {
+        "ok": True,
+        "pipeline_id": pid,
+        "count_today": count_today + 1,
+        "remaining_today": remaining,
+        "cooldown_seconds": MANUAL_PUSH_COOLDOWN_SECONDS,
+    }
 
 
 @app.delete("/pipelines/{pid}")

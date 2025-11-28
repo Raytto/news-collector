@@ -3,7 +3,7 @@ import { Button, Popconfirm, Space, Switch, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { deletePipeline, fetchPipelines, updatePipeline, type PipelineListItem } from '../api'
+import { deletePipeline, fetchPipelines, pushPipelineNow, updatePipeline, type PipelineListItem } from '../api'
 import { useAuth } from '../auth'
 
 export default function PipelineList() {
@@ -11,6 +11,8 @@ export default function PipelineList() {
   const isAdmin = (user?.is_admin || 0) === 1
   const [list, setList] = useState<PipelineListItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [pushingId, setPushingId] = useState<number | null>(null)
+  const [cooling, setCooling] = useState<Record<number, number>>({})
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
@@ -66,6 +68,28 @@ export default function PipelineList() {
       load()
     } catch {
       message.error('删除失败')
+    }
+  }
+
+  const onPushNow = async (item: PipelineListItem) => {
+    setPushingId(item.id)
+    try {
+      const res = await pushPipelineNow(item.id)
+      const cooldownMs = Math.max((res?.cooldown_seconds ?? 10) * 1000, 0)
+      message.success('已触发立即推送')
+      setCooling((prev) => ({ ...prev, [item.id]: Date.now() + cooldownMs }))
+      window.setTimeout(() => {
+        setCooling((prev) => {
+          const next = { ...prev }
+          delete next[item.id]
+          return next
+        })
+      }, cooldownMs)
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      message.error(detail || '触发失败')
+    } finally {
+      setPushingId(null)
     }
   }
 
@@ -146,14 +170,32 @@ export default function PipelineList() {
     },
     {
       title: '操作',
-      width: 200,
+      width: 260,
       render: (_, r) => (
-        <Space>
-          <Button type="link" onClick={() => navigate(`/edit/${r.id}`)}>
+        <Space size={8} wrap>
+          <Button size="small" type="primary" onClick={() => navigate(`/edit/${r.id}`)}>
             编辑
           </Button>
+          {(() => {
+            const coolingUntil = cooling[r.id] || 0
+            const now = Date.now()
+            const remain = coolingUntil > now ? Math.ceil((coolingUntil - now) / 1000) : 0
+            const disabled = pushingId === r.id || remain > 0
+            const label = remain > 0 ? `冷却中(${remain}s)` : '立即推送'
+            return (
+              <Button
+                size="small"
+                type="primary"
+                loading={pushingId === r.id}
+                disabled={disabled}
+                onClick={() => onPushNow(r)}
+              >
+                {label}
+              </Button>
+            )
+          })()}
           <Popconfirm title="确定删除?" onConfirm={() => onDelete(r.id)}>
-            <Button type="link" danger>
+            <Button size="small" type="primary" danger>
               删除
             </Button>
           </Popconfirm>
@@ -165,7 +207,10 @@ export default function PipelineList() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>我的推送</div>
+        <div>
+          <div style={{ fontSize: 18, fontWeight: 500 }}>我的推送</div>
+          <div style={{ color: '#6b7280', marginTop: 4 }}>启用后将每天9:30自动推送</div>
+        </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/new')}>
           新建推送
         </Button>
@@ -175,7 +220,7 @@ export default function PipelineList() {
         columns={columns}
         dataSource={list}
         loading={loading}
-        pagination={{ pageSize: 10 }}
+        pagination={{ pageSize: 20 }}
         locale={{
           emptyText: (
             <div style={{ textAlign: 'center', padding: '48px 0' }}>

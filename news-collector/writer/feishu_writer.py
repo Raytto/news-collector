@@ -22,6 +22,7 @@ DEFAULT_SOURCE_BONUS: Dict[str, float] = {
 
 DEFAULT_LIMIT_PER_CATEGORY = 10
 DEFAULT_PER_SOURCE_CAP = 3
+DEFAULT_CATEGORIES = "game,tech"
 
 # Helpers for presentation in Feishu message
 # Use emoji/text star for better visibility in Feishu
@@ -150,7 +151,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=f"每个来源在同一分类内的最大条目数（默认 {DEFAULT_PER_SOURCE_CAP}；<=0 表示不限制）",
     )
-    p.add_argument("--categories", default="game,tech", help="要输出的分类，逗号分隔（默认 game,tech）")
+    p.add_argument("--categories", default=DEFAULT_CATEGORIES, help="要输出的分类，逗号分隔（默认 game,tech）")
     p.add_argument("--min-score", type=float, default=0.0, help="最小推荐分阈值，低于此值将被过滤（默认 0）")
     p.add_argument("--weights", default="", help="覆盖权重的 JSON，例如 {\"timeliness\":0.2,...}")
     p.add_argument("--output", default="", help="输出文件路径，默认 data/feishu-msg/YYYYMMDD-feishu-msg.md")
@@ -238,6 +239,20 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
             for row in metric_rows
         ]
     return out
+
+
+def load_enabled_categories(conn: sqlite3.Connection) -> List[str]:
+    """Return enabled category keys to honor the 'all categories' toggle."""
+    try:
+        rows = conn.execute("SELECT key FROM categories WHERE enabled=1 ORDER BY id").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    cats: List[str] = []
+    for row in rows:
+        key = str(row[0] or "").strip()
+        if key:
+            cats.append(key)
+    return cats
 
 
 def try_parse_dt(value: str) -> Optional[datetime]:
@@ -434,7 +449,9 @@ def main() -> None:
     args = parse_args()
     effective_hours = max(1, int(args.hours))
     cutoff = datetime.now(timezone.utc) - timedelta(hours=effective_hours)
-    categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+    categories_arg = (args.categories or "").strip()
+    categories_from_cli = bool(categories_arg) and categories_arg != DEFAULT_CATEGORIES
+    categories = [c.strip() for c in categories_arg.split(",") if c.strip()]
     limit_map: Dict[str, int] = {}
     limit_default = DEFAULT_LIMIT_PER_CATEGORY
     per_source_cap = DEFAULT_PER_SOURCE_CAP
@@ -450,6 +467,7 @@ def main() -> None:
     with sqlite3.connect(str(db_path)) as conn:
         metrics = load_active_metrics(conn)
         metric_keys = {m.key for m in metrics}
+        db_categories = load_enabled_categories(conn)
 
         pid = _env_pipeline_id()
         metric_weight_rows: Optional[List[Dict[str, Any]]] = None
@@ -492,6 +510,11 @@ def main() -> None:
                         categories = [str(c).strip() for c in cats if str(c).strip()]
                 except json.JSONDecodeError:
                     pass
+            elif not categories_from_cli and db_categories:
+                categories = db_categories
+
+        if not categories and db_categories:
+            categories = db_categories
 
         print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
         weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, args.weights)

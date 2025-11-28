@@ -148,7 +148,10 @@ CREATE TABLE IF NOT EXISTS users (
   avatar_url     TEXT,
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
   verified_at    TEXT,
-  last_login_at  TEXT
+  last_login_at  TEXT,
+  manual_push_count    INTEGER NOT NULL DEFAULT 0,
+  manual_push_date     TEXT,
+  manual_push_last_at  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -260,6 +263,12 @@ def ensure_db() -> None:
         u_cols = {row[1] for row in cur.fetchall()}
         if "enabled" not in u_cols:
             cur.execute("ALTER TABLE users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        if "manual_push_count" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN manual_push_count INTEGER NOT NULL DEFAULT 0")
+        if "manual_push_date" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN manual_push_date TEXT")
+        if "manual_push_last_at" not in u_cols:
+            cur.execute("ALTER TABLE users ADD COLUMN manual_push_last_at TEXT")
         # Migrate pipelines table to drop UNIQUE constraint on name if present
         row = cur.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='pipelines'"
@@ -504,7 +513,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
         LEFT JOIN pipeline_deliveries_email AS e ON e.pipeline_id = p.id
         LEFT JOIN pipeline_deliveries_feishu AS f ON f.pipeline_id = p.id
         GROUP BY p.id
-        ORDER BY p.id
+        ORDER BY p.id DESC
         """
     ).fetchall()
     result: list[dict] = []
@@ -933,6 +942,28 @@ def get_user_by_id(conn: sqlite3.Connection, uid: int) -> Optional[dict]:
     }
 
 
+def get_user_push_state(conn: sqlite3.Connection, uid: int) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT manual_push_count, manual_push_date, manual_push_last_at FROM users WHERE id=?",
+        (uid,),
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "manual_push_count": int(row["manual_push_count"] or 0),
+        "manual_push_date": row["manual_push_date"],
+        "manual_push_last_at": row["manual_push_last_at"],
+    }
+
+
+def update_user_push_state(conn: sqlite3.Connection, uid: int, *, count: int, date_str: str) -> None:
+    conn.execute(
+        "UPDATE users SET manual_push_count=?, manual_push_date=?, manual_push_last_at=CURRENT_TIMESTAMP WHERE id=?",
+        (int(count), date_str, int(uid)),
+    )
+    conn.commit()
+
+
 def list_users(
     conn: sqlite3.Connection,
     *,
@@ -1055,7 +1086,7 @@ def fetch_pipeline_list_by_owner(conn: sqlite3.Connection, owner_user_id: int) -
         LEFT JOIN pipeline_deliveries_feishu AS f ON f.pipeline_id = p.id
         WHERE p.owner_user_id = ?
         GROUP BY p.id
-        ORDER BY p.id
+        ORDER BY p.id DESC
         """,
         (int(owner_user_id),),
     ).fetchall()

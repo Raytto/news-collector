@@ -467,6 +467,33 @@ def fetch_candidates(
     return articles
 
 
+def _extract_error_detail(response: requests.Response) -> str:
+    """Extract a short, human-readable error message from a failed AI response."""
+    detail = ""
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            error_obj = data.get("error") or {}
+            if isinstance(error_obj, dict):
+                message = error_obj.get("message")
+                code = error_obj.get("code")
+                if message:
+                    detail = message
+                    if code:
+                        detail = f"{message} ({code})"
+            elif isinstance(data.get("message"), str):
+                detail = str(data["message"])
+    except Exception:
+        # Fall back to raw text when JSON parsing fails
+        pass
+    if not detail:
+        detail = (response.text or "").strip()
+    detail = detail.replace("\n", " ")
+    if len(detail) > 500:
+        detail = detail[:500] + "..."
+    return detail
+
+
 def request_ai(config: AIConfig, system_prompt: str, user_prompt: str) -> str:
     url = f"{config.base_url.rstrip('/')}/{config.api_path.lstrip('/')}"
     headers = {
@@ -496,8 +523,15 @@ def request_ai(config: AIConfig, system_prompt: str, user_prompt: str) -> str:
                 raise AIClientError("响应中缺少 content 内容")
             return content
         except (requests.RequestException, ValueError) as exc:
+            detail = ""
+            resp = getattr(exc, "response", None)
+            if isinstance(resp, requests.Response):
+                detail = _extract_error_detail(resp)
             if attempt == config.max_retries:
-                raise AIClientError(f"调用 AI 接口失败: {exc}") from exc
+                suffix = f" | {detail}" if detail else ""
+                raise AIClientError(f"调用 AI 接口失败: {exc}{suffix}") from exc
+            if detail:
+                print(f"[WARN] AI 请求失败 (尝试 {attempt}/{config.max_retries}): {detail}")
             wait = min(2 ** (attempt - 1), 10)
             time.sleep(wait)
     raise AIClientError("无法从 AI 获取有效响应")
