@@ -436,7 +436,7 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 
 ## 提示词变更（动态指标）
 
-将现有 `prompts/ai/article_evaluation_zh.prompt` 改为模板化，保留 `<<SYS>>/<<USER>>`，新增占位：`{{metrics_block}}` 与 `{{schema_example}}`。
+将评估器的 Prompt（存储在数据库 `evaluators.prompt`）模板化，保留 `<<SYS>>/<<USER>>`，新增占位：`{{metrics_block}}` 与 `{{schema_example}}`。
 
 示例（片段）：
 
@@ -528,4 +528,4 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 - 评估：`news-collector/evaluator/ai_evaluate.py`
 - Writer：`news-collector/writer/feishu_writer.py`、`news-collector/writer/email_writer.py`
 - Pipeline：`news-collector/write-deliver-pipeline/pipeline_admin.py`、`pipeline_runner.py`
-- 提示词：`prompts/ai/article_evaluation_zh.prompt`（模板化占位）
+- 提示词：数据库 `evaluators.prompt`（模板化占位，可通过 CLI 导出调试）

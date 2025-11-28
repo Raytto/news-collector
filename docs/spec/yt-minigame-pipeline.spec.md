@@ -28,11 +28,11 @@ YouTube 频道 (RSS/ API) → collector 写入 info(category=game_yt, source=yt.
   - `key=yt.minigame`, `label_zh=YouTube Minigame Scout`, `category_key=game_yt`, `script_path=news-collector/collector/scraping/game/yt.minigame.py`, `enabled=1`
 - `source_address`：为 `yt.minigame` 插入频道列表（channel_id / feed URL），便于后期运营调整。
 
-### 3.2 可选新增 AI 评估指标（如需长表评分）
+### 3.2 AI 评估指标（长表评分）
 - 在 `ai_metrics` 插入：
-  - `rok_cod_fit`：label_zh="ROK/COD 副玩法契合度"，rate_guide_zh="5-高度适配；3-中等；1-不适配"，default_weight=1.0，sort_order 10
+  - `rok_cod_fit`：label_zh="ROK/COD 副玩法契合度"，rate_guide_zh="5-高度适配；3-中等；1-不适配"，default_weight=1.0，sort_order 10（必备，用于评分/排序，与 `final_score` 保持一致）
   - `novelty_mini`（可选）：小游戏创意新颖度，default_weight 0.2
-- Evaluator 若输出该指标的 1-5 分，写入 `info_ai_scores`；未使用可省略。
+- Evaluator 输出 `rok_cod_fit` 的 1-5 分，写入 `info_ai_scores`；可选输出其他指标。
 
 ### 3.3 新管线配置（示例）
 - `pipelines`: `name=yt-minigame-scout`, `enabled=1`

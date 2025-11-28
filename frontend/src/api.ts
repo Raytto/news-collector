@@ -206,6 +206,42 @@ export type AiMetric = {
   updated_at?: string | null
 }
 
+export type Evaluator = {
+  id: number
+  key: string
+  label_zh: string
+  description?: string | null
+  prompt?: string | null
+  active: number
+  metrics: string[]
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export type PipelineClassOption = {
+  id: number
+  key: string
+  label_zh: string
+  description?: string | null
+  enabled: number
+  categories?: string[]
+  evaluators?: string[]
+  writers?: string[]
+}
+
+export type PipelineClass = {
+  id: number
+  key: string
+  label_zh: string
+  description?: string | null
+  enabled: number
+  categories: string[]
+  evaluators: string[]
+  writers: string[]
+  created_at?: string | null
+  updated_at?: string | null
+}
+
 export async function fetchPipelines(): Promise<PipelineListItem[]> {
   const { data } = await http.get('/pipelines')
   return data
@@ -249,6 +285,8 @@ export async function fetchOptions(): Promise<{
   writer_types?: string[]
   delivery_kinds: string[]
   metrics: MetricOption[]
+  pipeline_classes?: PipelineClassOption[]
+  evaluators?: Evaluator[]
 }> {
   const { data } = await http.get('/options')
   return data
@@ -349,6 +387,45 @@ export async function deleteCategory(id: number) {
   return data
 }
 
+export async function fetchPipelineClasses(): Promise<PipelineClass[]> {
+  const { data } = await http.get('/pipeline-classes')
+  return data
+}
+
+export async function createPipelineClass(payload: {
+  key: string
+  label_zh: string
+  description?: string | null
+  enabled?: number
+  categories?: string[]
+  evaluators?: string[]
+  writers?: string[]
+}): Promise<{ id: number }> {
+  const { data } = await http.post('/pipeline-classes', payload)
+  return data
+}
+
+export async function updatePipelineClass(
+  id: number,
+  payload: Partial<{
+    key: string
+    label_zh: string
+    description: string | null
+    enabled: number
+    categories: string[]
+    evaluators: string[]
+    writers: string[]
+  }>
+): Promise<{ id: number }> {
+  const { data } = await http.put(`/pipeline-classes/${id}`, payload)
+  return data
+}
+
+export async function deletePipelineClass(id: number): Promise<{ ok: boolean }> {
+  const { data } = await http.delete(`/pipeline-classes/${id}`)
+  return data
+}
+
 export async function fetchSources(): Promise<SourceItem[]> {
   const { data } = await http.get('/sources')
   return data
@@ -419,5 +496,41 @@ export async function updateAiMetric(
 
 export async function deleteAiMetric(id: number) {
   const { data } = await http.delete(`/ai-metrics/${id}`)
+  return data
+}
+
+export async function fetchEvaluators(): Promise<Evaluator[]> {
+  const { data } = await http.get('/evaluators')
+  return data
+}
+
+export async function createEvaluator(payload: {
+  key: string
+  label_zh: string
+  description?: string | null
+  prompt?: string | null
+  active?: number
+  metrics?: string[]
+}): Promise<{ id: number }> {
+  const { data } = await http.post('/evaluators', payload)
+  return data
+}
+
+export async function updateEvaluator(
+  id: number,
+  payload: Partial<{
+    label_zh: string
+    description: string | null
+    prompt: string | null
+    active: number
+    metrics: string[]
+  }>
+): Promise<{ id: number }> {
+  const { data } = await http.put(`/evaluators/${id}`, payload)
+  return data
+}
+
+export async function deleteEvaluator(id: number): Promise<{ ok: boolean }> {
+  const { data } = await http.delete(`/evaluators/${id}`)
   return data
 }

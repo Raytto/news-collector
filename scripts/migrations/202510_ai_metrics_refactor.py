@@ -12,6 +12,13 @@ DEFAULT_DB = DATA_DIR / "info.db"
 
 DEFAULT_METRICS: List[Tuple[str, str, str, float, int]] = [
     (
+        "rok_cod_fit",
+        "ROK/COD 副玩法结合可能性",
+        "5-高度可行；3-有限可行；1-不合适",
+        1.0,
+        10,
+    ),
+    (
         "timeliness",
         "时效性",
         "5-当天/最新；3-一月内或时间无关（长期有价值）；1-过时",

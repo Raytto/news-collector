@@ -1,18 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
-import { AutoComplete, Button, Card, Checkbox, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Typography, message } from 'antd'
+import { Alert, AutoComplete, Button, Card, Checkbox, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Tree, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
-import { createPipeline, fetchFeishuChats, fetchOptions, fetchPipeline, updatePipeline } from '../api'
-import type { FeishuChat, MetricOption } from '../api'
+import { createPipeline, fetchFeishuChats, fetchOptions, fetchPipeline, fetchSources, updatePipeline } from '../api'
+import type { Evaluator, FeishuChat, MetricOption, PipelineClassOption, SourceItem } from '../api'
 import type { ColumnsType } from 'antd/es/table'
 import type { FormListFieldData } from 'antd/es/form/FormList'
 
 type DeliveryKind = 'email' | 'feishu'
 
-function writerTypeForDelivery(kind?: DeliveryKind | null, fallback?: string) {
-  if (kind === 'feishu') return 'feishu_md'
-  if (kind === 'email') return 'info_html'
-  return typeof fallback === 'string' && fallback ? fallback : 'info_html'
+function writerTypeForDelivery(kind?: DeliveryKind | null, fallback?: string, allowed?: string[]) {
+  const allowedList = normalizeStringArray(allowed ?? [])
+  const normalizedFallback = typeof fallback === 'string' ? fallback.trim() : ''
+  if (normalizedFallback && (!allowedList.length || allowedList.includes(normalizedFallback))) {
+    return normalizedFallback
+  }
+  const preferred = kind === 'feishu' ? 'feishu_md' : kind === 'email' ? 'info_html' : undefined
+  if (preferred && (!allowedList.length || allowedList.includes(preferred))) {
+    return preferred
+  }
+  if (allowedList.length) return allowedList[0]
+  return normalizedFallback || preferred || 'info_html'
 }
 
 type LimitOverride = { category?: string; limit?: number }
@@ -44,12 +52,28 @@ const DEFAULT_BONUS_VALUES: Record<string, number> = BONUS_SUGGESTIONS.reduce(
   {}
 )
 
+const ROOT_NODE_KEY = '__ALL_CATEGORIES__'
+const catKey = (cat: string) => `cat:${cat}`
+const srcKey = (sourceKey: string) => `src:${sourceKey}`
+
 const filterAutoCompleteOption = (input: string, option?: { value: string; label?: string }) => {
   if (!option) return false
   const normalized = input.trim().toLowerCase()
   if (!normalized) return true
   const labelText = option.label ? option.label.toLowerCase() : ''
   return option.value.toLowerCase().includes(normalized) || labelText.includes(normalized)
+}
+
+function normalizeStringArray(values: any): string[] {
+  if (!Array.isArray(values)) return []
+  const seen = new Set<string>()
+  values.forEach((item) => {
+    const str = typeof item === 'string' ? item.trim() : String(item ?? '').trim()
+    if (str && !seen.has(str)) {
+      seen.add(str)
+    }
+  })
+  return Array.from(seen)
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -120,16 +144,20 @@ function normalizeWeightsForForm(weights: unknown, metrics: MetricOption[]): Wei
   return result
 }
 
-function normalizeBonusForForm(bonus: unknown): BonusEntry[] {
+function normalizeBonusForForm(bonus: unknown, options?: { includeSuggestions?: boolean }): BonusEntry[] {
+  const includeSuggestions = options?.includeSuggestions !== false
   const result: BonusEntry[] = []
-  const provided = bonus && typeof bonus === 'object' ? (bonus as Record<string, unknown>) : {}
+  const provided =
+    bonus && typeof bonus === 'object' && !Array.isArray(bonus) ? (bonus as Record<string, unknown>) : {}
   const seen = new Set<string>()
 
-  BONUS_SUGGESTIONS.forEach(({ key, defaultValue }) => {
-    const numeric = toNumber(provided[key])
-    result.push({ source: key, bonus: typeof numeric === 'number' ? numeric : defaultValue })
-    seen.add(key)
-  })
+  if (includeSuggestions) {
+    BONUS_SUGGESTIONS.forEach(({ key, defaultValue }) => {
+      const numeric = toNumber(provided[key])
+      result.push({ source: key, bonus: typeof numeric === 'number' ? numeric : defaultValue })
+      seen.add(key)
+    })
+  }
 
   Object.entries(provided).forEach(([key, value]) => {
     if (seen.has(key)) return
@@ -170,31 +198,119 @@ function buildNumericRecord(entries: { key?: string; value?: unknown }[]): Recor
   return Object.keys(record).length ? record : undefined
 }
 
+type TreeNode = {
+  title: string
+  key: string
+  children?: TreeNode[]
+}
+
+const TAB_ORDER = ['base', 'filters', 'writer', 'delivery'] as const
+type TabKey = (typeof TAB_ORDER)[number]
+
+function collectAllKeys(treeData: TreeNode[]): string[] {
+  const keys: string[] = []
+  const dfs = (nodes: TreeNode[]) => {
+    nodes.forEach((node) => {
+      keys.push(node.key)
+      if (node.children?.length) {
+        dfs(node.children)
+      }
+    })
+  }
+  dfs(treeData)
+  return keys
+}
+
 export default function PipelineForm() {
   const { id } = useParams()
   const editing = !!id
   const [form] = Form.useForm()
   const navigate = useNavigate()
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(editing)
   const [options, setOptions] = useState<{
     categories: string[]
     delivery_kinds: string[]
     metrics: MetricOption[]
+    pipeline_classes: PipelineClassOption[]
+    evaluators: Evaluator[]
+    writer_types: string[]
   }>({
     categories: [],
     delivery_kinds: ['email', 'feishu'],
-    metrics: FALLBACK_METRICS
+    metrics: FALLBACK_METRICS,
+    pipeline_classes: [],
+    evaluators: [],
+    writer_types: ['feishu_md', 'info_html']
   })
+  const [sources, setSources] = useState<SourceItem[]>([])
   const [deliveryKind, setDeliveryKind] = useState<DeliveryKind>('email')
   // 保持当前选中的分页标签，避免保存后回到“基础”
-  const [activeTab, setActiveTab] = useState<string>('base')
+  const [activeTab, setActiveTab] = useState<TabKey>('base')
   const [feishuChats, setFeishuChats] = useState<FeishuChat[]>([])
   const [fetchingFeishuChats, setFetchingFeishuChats] = useState(false)
   const [optionsReady, setOptionsReady] = useState(false)
+  const [sourcesReady, setSourcesReady] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
+  const [treeCheckedKeys, setTreeCheckedKeys] = useState<string[]>([])
   const limitOverrides = Form.useWatch<LimitOverride[]>(["writer", "limit_per_category_overrides"], form)
+  const pipelineClassIdValue = Form.useWatch<number | undefined>(["pipeline", "pipeline_class_id"], form)
   const toAllChatValue = Form.useWatch<number | undefined>(["delivery", "to_all_chat"], form)
   const chatIdValue = Form.useWatch<string | undefined>(["delivery", "chat_id"], form)
-  const metrics = options.metrics.length ? options.metrics : FALLBACK_METRICS
+  const allowedMetricKeys = useMemo(() => {
+    if (!pipelineClassIdValue) return null
+    const cls = options.pipeline_classes.find((item) => Number(item.id) === Number(pipelineClassIdValue))
+    if (!cls || !Array.isArray(cls.evaluators) || !cls.evaluators.length) return null
+    const evaluatorKeys = new Set(cls.evaluators.map((k) => k.trim()).filter(Boolean))
+    if (!evaluatorKeys.size) return null
+    const union = new Set<string>()
+    options.evaluators.forEach((ev) => {
+      if (!evaluatorKeys.has(ev.key.trim())) return
+      ev.metrics?.forEach((m) => {
+        if (typeof m === 'string' && m.trim()) {
+          union.add(m.trim())
+        }
+      })
+    })
+    return union.size ? union : null
+  }, [options.evaluators, options.pipeline_classes, pipelineClassIdValue])
+  const metrics = useMemo(() => {
+    const base = options.metrics.length ? options.metrics : FALLBACK_METRICS
+    if (!allowedMetricKeys || !allowedMetricKeys.size) return base
+    const filtered = base.filter((item) => allowedMetricKeys.has(item.key))
+    if (filtered.length) return filtered
+    // 当允许指标未在 base 列表时，回退生成最小定义
+    return Array.from(allowedMetricKeys).map((key, idx) => ({
+      key,
+      label_zh: key,
+      default_weight: 1,
+      sort_order: idx * 10
+    }))
+  }, [allowedMetricKeys, options.metrics])
+  useEffect(() => {
+    const allowed = new Set(metrics.map((m) => m.key))
+    const existing = (form.getFieldValue(["writer", "weights_entries"]) as WeightEntry[] | undefined) ?? []
+    const cleaned: WeightEntry[] = []
+    const seen = new Set<string>()
+    existing.forEach((entry) => {
+      const key = typeof entry?.metric === 'string' ? entry.metric.trim() : ''
+      if (!key || !allowed.has(key) || seen.has(key)) return
+      seen.add(key)
+      cleaned.push({ metric: key, weight: entry?.weight })
+    })
+    metrics.forEach((m) => {
+      if (seen.has(m.key)) return
+      cleaned.push({
+        metric: m.key,
+        weight: typeof m.default_weight === 'number' ? m.default_weight : undefined
+      })
+      seen.add(m.key)
+    })
+    const changed = JSON.stringify(cleaned) !== JSON.stringify(existing)
+    if (changed) {
+      form.setFieldValue(["writer", "weights_entries"], cleaned)
+    }
+  }, [form, metrics])
   const [weekdaySelection, setWeekdaySelection] = useState<number[] | null>(null)
   const weekdayOptions = useMemo(
     () => [
@@ -208,6 +324,10 @@ export default function PipelineForm() {
     ],
     []
   )
+
+  const pageReady = optionsReady && sourcesReady
+  const pageLoading = loading || !pageReady
+  const actionsDisabled = pageLoading
 
   const initialFormValues = useMemo(
     () => ({
@@ -228,6 +348,175 @@ export default function PipelineForm() {
     }),
     [deliveryKind, metrics]
   )
+  const pipelineClassMap = useMemo(() => {
+    const map = new Map<number, PipelineClassOption>()
+    options.pipeline_classes.forEach((cls) => {
+      if (Number.isFinite(cls.id)) {
+        map.set(Number(cls.id), cls)
+      }
+    })
+    return map
+  }, [options.pipeline_classes])
+  const selectedPipelineClass = useMemo(() => {
+    if (pipelineClassIdValue == null) return undefined
+    const numeric = Number(pipelineClassIdValue)
+    if (!Number.isFinite(numeric)) return undefined
+    return pipelineClassMap.get(numeric)
+  }, [pipelineClassIdValue, pipelineClassMap])
+  const isLegouMinigameClass = useMemo(
+    () => selectedPipelineClass?.key === 'legou_minigame',
+    [selectedPipelineClass]
+  )
+  const allowedWriterTypes = useMemo(() => {
+    const explicit = normalizeStringArray(selectedPipelineClass?.writers || [])
+    if (explicit.length) return explicit
+    return normalizeStringArray(options.writer_types || [])
+  }, [options.writer_types, selectedPipelineClass])
+  const writerTypeOptions = useMemo(
+    () => allowedWriterTypes.map((type) => ({ value: type, label: type })),
+    [allowedWriterTypes]
+  )
+  const getAllowedWriterTypes = useCallback(
+    (classId?: number | null) => {
+      if (classId != null) {
+        const cls = pipelineClassMap.get(Number(classId))
+        const explicit = normalizeStringArray(cls?.writers || [])
+        if (explicit.length) return explicit
+      }
+      return allowedWriterTypes
+    },
+    [allowedWriterTypes, pipelineClassMap]
+  )
+  const defaultBonusEntries = useMemo(
+    () =>
+      isLegouMinigameClass
+        ? normalizeBonusForForm({}, { includeSuggestions: false })
+        : normalizeBonusForForm(DEFAULT_BONUS_VALUES),
+    [isLegouMinigameClass]
+  )
+  const allowedCategorySet = useMemo(() => {
+    const set = new Set<string>()
+    ;(selectedPipelineClass?.categories || []).forEach((cat) => {
+      if (cat) set.add(cat)
+    })
+    return set
+  }, [selectedPipelineClass])
+  const mergedCategories = useMemo(() => {
+    const ordered: string[] = []
+    const pushUnique = (value?: string | null) => {
+      const key = typeof value === 'string' ? value.trim() : ''
+      if (!key || ordered.includes(key)) return
+      ordered.push(key)
+    }
+    options.categories.forEach(pushUnique)
+    sources.forEach((src) => pushUnique(src.category_key))
+    options.pipeline_classes.forEach((cls) => (cls.categories || []).forEach(pushUnique))
+    return ordered
+  }, [options.categories, options.pipeline_classes, sources])
+  const visibleCategories = useMemo(
+    () => (allowedCategorySet.size ? mergedCategories.filter((cat) => allowedCategorySet.has(cat)) : mergedCategories),
+    [allowedCategorySet, mergedCategories]
+  )
+  const visibleSources = useMemo(
+    () => (allowedCategorySet.size ? sources.filter((item) => allowedCategorySet.has(item.category_key)) : sources),
+    [allowedCategorySet, sources]
+  )
+  const treeData = useMemo<TreeNode[]>(() => {
+    const categoryNodes = visibleCategories.map((cat) => {
+      const children = visibleSources
+        .filter((item) => item.category_key === cat)
+        .map((item) => ({
+          title: item.label_zh ? `${item.label_zh} (${item.key})` : item.key,
+          key: srcKey(item.key),
+        }))
+      return {
+        title: cat,
+        key: catKey(cat),
+        children,
+      }
+    })
+    return [
+      {
+        title: '全部类别/来源',
+        key: ROOT_NODE_KEY,
+        children: categoryNodes,
+      },
+    ]
+  }, [visibleCategories, visibleSources])
+  const allTreeKeys = useMemo(() => collectAllKeys(treeData), [treeData])
+  useEffect(() => {
+    setTreeCheckedKeys((prev) => prev.filter((key) => allTreeKeys.includes(key)))
+  }, [allTreeKeys])
+  const deriveFiltersFromChecked = useCallback(
+    (checked: string[]) => {
+      const keySet = new Set<string>(checked)
+      const categoryKeys = visibleCategories.map((c) => catKey(c))
+      const sourceKeys = visibleSources.map((s) => srcKey(s.key))
+      const hasAllCategories = categoryKeys.length > 0 && categoryKeys.every((k) => keySet.has(k))
+      const hasAllSources = sourceKeys.length > 0 ? sourceKeys.every((k) => keySet.has(k)) : hasAllCategories
+      if (keySet.has(ROOT_NODE_KEY) || (hasAllCategories && hasAllSources)) {
+        // Normalize to full selection including root
+        setTreeCheckedKeys(allTreeKeys)
+        return { all_categories: 1, categories_json: [], include_src_json: [] }
+      }
+      const categoriesSelected: string[] = []
+      visibleCategories.forEach((cat) => {
+        if (keySet.has(catKey(cat))) {
+          categoriesSelected.push(cat)
+        }
+      })
+      const categorySet = new Set(categoriesSelected)
+      const includeSrc: string[] = []
+      visibleSources.forEach((src) => {
+        const skey = srcKey(src.key)
+        if (keySet.has(skey) && !categorySet.has(src.category_key)) {
+          includeSrc.push(src.key)
+        }
+      })
+      return {
+        all_categories: 0,
+        categories_json: categoriesSelected,
+        include_src_json: includeSrc,
+      }
+    },
+    [allTreeKeys, visibleCategories, visibleSources]
+  )
+  const buildCheckedKeysFromFilters = useCallback(
+    (filters: any) => {
+      const keys = new Set<string>()
+      if (filters?.all_categories === 1) {
+        allTreeKeys.forEach((k) => keys.add(k))
+        return Array.from(keys)
+      }
+      const categories = Array.isArray(filters?.categories_json) ? filters.categories_json : []
+      categories.forEach((cat: any) => {
+        const catStr = String(cat)
+        if (!visibleCategories.includes(catStr)) return
+        keys.add(catKey(catStr))
+        visibleSources
+          .filter((s) => s.category_key === catStr)
+          .forEach((s) => {
+            keys.add(srcKey(s.key))
+          })
+      })
+      const includeSrc = Array.isArray(filters?.include_src_json) ? filters.include_src_json : []
+      const visibleSourceKeys = new Set(visibleSources.map((s) => s.key))
+      includeSrc.forEach((src: any) => {
+        const skey = String(src)
+        if (visibleSourceKeys.has(skey)) {
+          keys.add(srcKey(skey))
+        }
+      })
+      return Array.from(keys)
+    },
+    [allTreeKeys, visibleCategories, visibleSources]
+  )
+  useEffect(() => {
+    if (!optionsReady || !sourcesReady) return
+    const normalizedKeys = treeCheckedKeys.filter((key) => allTreeKeys.includes(key))
+    const filtersPayload = deriveFiltersFromChecked(normalizedKeys)
+    form.setFieldsValue({ filters: filtersPayload })
+  }, [allTreeKeys, deriveFiltersFromChecked, form, optionsReady, sourcesReady, treeCheckedKeys])
   const weightSuggestions = useMemo(
     () =>
       metrics.map((item) => ({
@@ -308,10 +597,43 @@ export default function PipelineForm() {
         const sortedMetrics = sanitizedMetrics.length
           ? [...sanitizedMetrics].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
           : FALLBACK_METRICS
+        const classes = Array.isArray(data.pipeline_classes) ? data.pipeline_classes : []
+        const evaluatorsRaw = Array.isArray(data.evaluators) ? data.evaluators : []
+        const sanitizedEvaluators: Evaluator[] = evaluatorsRaw
+          .filter((item: any) => item && typeof item === 'object')
+          .map((item: any) => ({
+            id: Number(item.id),
+            key: typeof item.key === 'string' ? item.key.trim() : '',
+            label_zh: typeof item.label_zh === 'string' ? item.label_zh : item.key,
+            description: typeof item.description === 'string' ? item.description : null,
+            prompt: typeof item.prompt === 'string' ? item.prompt : null,
+            active: typeof item.active === 'number' ? item.active : 1,
+            metrics: normalizeStringArray(item.metrics),
+            created_at: item.created_at,
+            updated_at: item.updated_at
+          }))
+          .filter((ev) => ev.id && ev.key)
+        const sanitizedClasses: PipelineClassOption[] = classes
+          .filter((item: any) => item && typeof item === 'object')
+          .map((item: any) => ({
+            id: Number(item.id),
+            key: typeof item.key === 'string' ? item.key : '',
+            label_zh: typeof item.label_zh === 'string' ? item.label_zh : item.key,
+            description: typeof item.description === 'string' ? item.description : null,
+            enabled: typeof item.enabled === 'number' ? item.enabled : 1,
+            categories: normalizeStringArray(item.categories),
+            evaluators: normalizeStringArray(item.evaluators),
+            writers: normalizeStringArray(item.writers)
+          }))
+          .filter((item) => Number.isFinite(item.id) && item.key)
+        const writerTypes = Array.isArray(data.writer_types) ? normalizeStringArray(data.writer_types) : []
         setOptions({
           categories: Array.isArray(data.categories) ? data.categories : [],
           delivery_kinds: Array.isArray(data.delivery_kinds) ? data.delivery_kinds : [],
-          metrics: sortedMetrics
+          metrics: sortedMetrics,
+          pipeline_classes: sanitizedClasses,
+          evaluators: sanitizedEvaluators,
+          writer_types: writerTypes.length ? writerTypes : ['feishu_md', 'info_html']
         })
         if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
           form.setFieldsValue({
@@ -326,7 +648,10 @@ export default function PipelineForm() {
         setOptions({
           categories: [],
           delivery_kinds: ['email', 'feishu'],
-          metrics: FALLBACK_METRICS
+          metrics: FALLBACK_METRICS,
+          pipeline_classes: [],
+          evaluators: [],
+          writer_types: ['feishu_md', 'info_html']
         })
         if (!editing && !form.isFieldsTouched(['writer', 'weights_entries'])) {
           form.setFieldsValue({
@@ -347,13 +672,46 @@ export default function PipelineForm() {
   }, [editing, form])
 
   useEffect(() => {
-    const nextWriterType = writerTypeForDelivery(deliveryKind, form.getFieldValue(["writer", "type"]))
-    form.setFieldValue(["writer", "type"], nextWriterType)
-  }, [deliveryKind, form])
+    let mounted = true
+    fetchSources()
+      .then((items) => {
+        if (!mounted) return
+        setSources(Array.isArray(items) ? items : [])
+      })
+      .catch(() => {
+        if (mounted) {
+          setSources([])
+        }
+      })
+      .finally(() => {
+        if (mounted) {
+          setSourcesReady(true)
+        }
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  useEffect(() => {
+    const currentWriterType = form.getFieldValue(["writer", "type"])
+    const nextWriterType = writerTypeForDelivery(
+      deliveryKind,
+      currentWriterType,
+      allowedWriterTypes
+    )
+    if (nextWriterType !== currentWriterType) {
+      form.setFieldValue(["writer", "type"], nextWriterType)
+    }
+  }, [allowedWriterTypes, deliveryKind, form])
 
   const applyPipelineData = (data: any) => {
     // Normalize pipeline for form consumption (esp. weekdays array)
     const pipelinePatched: any = { ...(data.pipeline || {}) }
+    if (pipelinePatched?.pipeline_class_id !== undefined && pipelinePatched?.pipeline_class_id !== null) {
+      const parsed = Number(pipelinePatched.pipeline_class_id)
+      pipelinePatched.pipeline_class_id = Number.isFinite(parsed) ? parsed : undefined
+    }
     const wdRaw = pipelinePatched?.weekdays_json
     if (Array.isArray(wdRaw)) {
       pipelinePatched.weekdays_json = wdRaw
@@ -381,7 +739,15 @@ export default function PipelineForm() {
     writerPatched.limit_per_category_default = defaultValue
     writerPatched.limit_per_category_overrides = overrides
     writerPatched.weights_entries = normalizeWeightsForForm(w?.weights_json ?? {}, metrics)
-    writerPatched.bonus_entries = normalizeBonusForForm(w?.bonus_json ?? DEFAULT_BONUS_VALUES)
+    const pipelineClassFromData =
+      pipelinePatched.pipeline_class_id != null
+        ? pipelineClassMap.get(Number(pipelinePatched.pipeline_class_id))
+        : undefined
+    const includeSuggestedBonus = pipelineClassFromData?.key !== 'legou_minigame'
+    const bonusSeed = includeSuggestedBonus ? w?.bonus_json ?? DEFAULT_BONUS_VALUES : w?.bonus_json ?? {}
+    writerPatched.bonus_entries = normalizeBonusForForm(bonusSeed, {
+      includeSuggestions: includeSuggestedBonus
+    })
     delete writerPatched.limit_per_category
     delete writerPatched.weights_json
     delete writerPatched.bonus_json
@@ -403,7 +769,11 @@ export default function PipelineForm() {
             chat_id: deliveryForForm.chat_id || undefined
           }
         : deliveryForForm
-    const writerType = writerTypeForDelivery(patchedDelivery?.kind as DeliveryKind | undefined, writerPatched.type)
+    const writerType = writerTypeForDelivery(
+      patchedDelivery?.kind as DeliveryKind | undefined,
+      writerPatched.type,
+      getAllowedWriterTypes(pipelinePatched?.pipeline_class_id)
+    )
     writerPatched.type = writerType
     form.setFieldsValue({
       pipeline: pipelinePatched,
@@ -411,6 +781,8 @@ export default function PipelineForm() {
       writer: writerPatched,
       delivery: patchedDelivery
     })
+    const computedKeys = buildCheckedKeysFromFilters(data.filters || {})
+    setTreeCheckedKeys(computedKeys)
     if (deliveryForForm?.kind === 'feishu') {
       form.setFieldValue(["delivery", "to_all_chat"], patchedDelivery?.to_all_chat ?? 0)
       form.setFieldValue(["delivery", "chat_id"], patchedDelivery?.chat_id)
@@ -433,12 +805,55 @@ export default function PipelineForm() {
   }
 
   useEffect(() => {
-    if (!editing || !optionsReady) return
+    if (!editing || !optionsReady || !sourcesReady) return
+    let cancelled = false
+    setFetchError(null)
     setLoading(true)
     fetchPipeline(Number(id))
-      .then((data) => applyPipelineData(data))
-      .finally(() => setLoading(false))
-  }, [editing, id, metrics, optionsReady])
+      .then((data) => {
+        if (cancelled) return
+        applyPipelineData(data)
+      })
+      .catch((err: any) => {
+        if (cancelled) return
+        const detail = err?.response?.data?.detail
+        const fallback = err?.message || '加载管线数据失败'
+        const msg = typeof detail === 'string' && detail.trim() ? detail : fallback
+        setFetchError(msg)
+        message.error(msg)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [editing, id, optionsReady, sourcesReady, reloadKey])
+
+  useEffect(() => {
+    if (editing || !optionsReady) return
+    const existing = form.getFieldValue(["pipeline", "pipeline_class_id"])
+    if (existing) return
+    const enabledClasses = options.pipeline_classes.filter((item) => item.enabled !== 0)
+    const first = enabledClasses[0] || options.pipeline_classes[0]
+    if (first && Number.isFinite(first.id)) {
+      form.setFieldValue(["pipeline", "pipeline_class_id"], first.id)
+    }
+  }, [editing, form, options.pipeline_classes, optionsReady])
+
+  useEffect(() => {
+    if (editing) return
+    if (!optionsReady) return
+    if (form.isFieldsTouched(['writer', 'bonus_entries'])) return
+    const current = form.getFieldValue(["writer", "bonus_entries"])
+    const normalizedCurrent = Array.isArray(current) ? current : []
+    const desired = defaultBonusEntries
+    if (JSON.stringify(normalizedCurrent) !== JSON.stringify(desired)) {
+      form.setFieldValue(["writer", "bonus_entries"], desired)
+    }
+  }, [defaultBonusEntries, editing, form, optionsReady])
 
   useEffect(() => {
     if (!editing) {
@@ -447,6 +862,15 @@ export default function PipelineForm() {
       form.setFieldValue(["pipeline", "weekdays_json"], preset)
     }
   }, [editing, form])
+
+  useEffect(() => {
+    if (editing) return
+    if (!optionsReady || !sourcesReady) return
+    setTreeCheckedKeys(allTreeKeys)
+    form.setFieldsValue({
+      filters: { all_categories: 1, categories_json: [], include_src_json: [] }
+    })
+  }, [allTreeKeys, editing, form, optionsReady, sourcesReady])
 
   useEffect(() => {
     if (deliveryKind !== 'feishu') {
@@ -482,6 +906,20 @@ export default function PipelineForm() {
     }
   }, [form])
 
+  const normalizeCheckedKeys = (checked: any): string[] => {
+    if (Array.isArray(checked)) return checked.map((k) => String(k))
+    if (checked && Array.isArray(checked.checked)) return checked.checked.map((k) => String(k))
+    return []
+  }
+
+  const handleTreeCheck = (checked: any) => {
+    const normalized = normalizeCheckedKeys(checked)
+    const filtersPayload = deriveFiltersFromChecked(normalized)
+    const nextChecked = filtersPayload.all_categories === 1 ? allTreeKeys : normalized
+    setTreeCheckedKeys(nextChecked)
+    form.setFieldsValue({ filters: filtersPayload })
+  }
+
   const onSubmit = async () => {
     const values = await form.validateFields()
     // Debug log to inspect weekday values
@@ -503,7 +941,7 @@ export default function PipelineForm() {
         delete pipelinePayload.weekdays_json
       }
       const writerValues = { ...(values.writer || {}) } as any
-      writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type)
+      writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type, allowedWriterTypes)
       const limitMap = buildLimitPayload(
         toNumber(writerValues.limit_per_category_default),
         writerValues.limit_per_category_overrides
@@ -702,12 +1140,33 @@ export default function PipelineForm() {
     )
   }
 
+  const currentTabIndex = useMemo(() => TAB_ORDER.indexOf(activeTab), [activeTab])
+  const prevTab = currentTabIndex > 0 ? TAB_ORDER[currentTabIndex - 1] : null
+  const nextTab =
+    currentTabIndex >= 0 && currentTabIndex < TAB_ORDER.length - 1
+      ? TAB_ORDER[currentTabIndex + 1]
+      : null
+
   return (
     <Form form={form} layout="vertical" initialValues={initialFormValues}>
-      <Card loading={loading}>
+      <Card loading={pageLoading}>
+        {fetchError ? (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="加载管线数据失败"
+            description={fetchError}
+            action={
+              <Button size="small" onClick={() => setReloadKey((key) => key + 1)} loading={loading}>
+                重新加载
+              </Button>
+            }
+          />
+        ) : null}
         <Tabs
           activeKey={activeTab}
-          onChange={(k) => setActiveTab(k)}
+          onChange={(k) => setActiveTab(k as TabKey)}
           items={[
             {
               key: 'base',
@@ -717,6 +1176,21 @@ export default function PipelineForm() {
                   <Form.Item name={["pipeline", "name"]} label="名称">
                     <Input placeholder="可留空，名称仅用于展示" />
                   </Form.Item>
+                  <Form.Item
+                    name={["pipeline", "pipeline_class_id"]}
+                    label="管线类别"
+                    rules={[{ required: true, message: '请选择管线类别' }]}
+                  >
+                    <Select
+                      placeholder="请选择管线类别"
+                      options={options.pipeline_classes
+                        .filter((item) => item.enabled !== 0)
+                        .map((item) => ({
+                          value: item.id,
+                          label: item.label_zh || item.key
+                        }))}
+                    />
+                  </Form.Item>
                   <Form.Item name={["pipeline", "enabled"]} label="启用">
                     <Radio.Group>
                       <Radio value={1}>启用</Radio>
@@ -725,7 +1199,7 @@ export default function PipelineForm() {
                   </Form.Item>
                   <Form.Item
                     name={["pipeline", "weekdays_json"]}
-                    label="按星期运行"
+                    label="在以下星期早9:30左右投放"
                     tooltip="留空=不限制；全选=等价于不限制；选择为空数组=永不按星期触发（常用于临时停发）"
                   >
                     <Space direction="vertical" style={{ width: '100%' }}>
@@ -771,15 +1245,6 @@ export default function PipelineForm() {
                         </Button>
                         <Button
                           size="small"
-                          onClick={() => {
-                            setWeekdaySelection(null)
-                            form.setFieldValue(["pipeline", "weekdays_json"], null)
-                          }}
-                        >
-                          不限制
-                        </Button>
-                        <Button
-                          size="small"
                           danger
                           onClick={() => {
                             const preset: number[] = []
@@ -803,28 +1268,21 @@ export default function PipelineForm() {
             },
             {
               key: 'filters',
-              label: '过滤',
+              label: '来源',
               children: (
                 <Space direction="vertical" style={{ width: '100%' }}>
-                  <Form.Item name={["filters", "all_categories"]} label="全部类别">
-                    <Radio.Group>
-                      <Radio value={1}>是</Radio>
-                      <Radio value={0}>否</Radio>
-                    </Radio.Group>
-                  </Form.Item>
-                  <Form.Item noStyle shouldUpdate>
-                    {() =>
-                      form.getFieldValue(["filters", "all_categories"]) === 0 && (
-                        <Form.Item name={["filters", "categories_json"]} label="类别白名单">
-                          <Select
-                            mode="multiple"
-                            options={options.categories.map((c) => ({ value: c, label: c }))}
-                            placeholder="选择类别"
-                          />
-                        </Form.Item>
-                      )
-                    }
-                  </Form.Item>
+                  <Typography.Text type="secondary">
+                    勾选来源树：一级为“全部”，二级为类别，三级为来源。全选=all_categories=1；勾选某类别=记录到
+                    categories_json；仅勾选具体来源=include_src_json。
+                  </Typography.Text>
+                  <Tree
+                    checkable
+                    selectable={false}
+                    defaultExpandAll
+                    checkedKeys={treeCheckedKeys}
+                    onCheck={handleTreeCheck}
+                    treeData={treeData}
+                  />
                 </Space>
               )
             },
@@ -833,6 +1291,18 @@ export default function PipelineForm() {
               label: 'Writer',
               children: (
                 <Space direction="vertical" style={{ width: '100%' }}>
+                  <Form.Item
+                    name={["writer", "type"]}
+                    label="Writer 类型"
+                    rules={[{ required: true, message: '请选择 Writer 类型' }]}
+                  >
+                    <Select
+                      showSearch
+                      placeholder="选择 Writer 类型"
+                      options={writerTypeOptions}
+                      optionFilterProp="label"
+                    />
+                  </Form.Item>
                   <Form.Item name={["writer", "hours"]} label="回溯小时" initialValue={24}>
                     <InputNumber min={1} />
                   </Form.Item>
@@ -1250,9 +1720,24 @@ export default function PipelineForm() {
         />
       </Card>
       <Space style={{ marginTop: 16 }}>
-        <Button type="primary" onClick={onSubmit} loading={loading}>
-          {editing ? '保存' : '创建'}
-        </Button>
+        {prevTab ? (
+          <Button onClick={() => setActiveTab(prevTab)} disabled={actionsDisabled}>
+            上一项
+          </Button>
+        ) : null}
+        {editing ? (
+          <Button type="primary" onClick={onSubmit} loading={loading} disabled={actionsDisabled}>
+            保存
+          </Button>
+        ) : nextTab ? (
+          <Button type="primary" onClick={() => setActiveTab(nextTab)} disabled={actionsDisabled}>
+            下一项
+          </Button>
+        ) : (
+          <Button type="primary" onClick={onSubmit} loading={loading} disabled={actionsDisabled}>
+            创建
+          </Button>
+        )}
         <Button onClick={() => navigate('/')}>取消</Button>
       </Space>
     </Form>

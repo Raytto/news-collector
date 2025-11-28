@@ -12,8 +12,13 @@ TS="$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')"
 LOG_DIR="$ROOT_DIR/log"
 LOG_FILE="$LOG_DIR/${TS}-auto-debug-once-log.txt"
 mkdir -p "$LOG_DIR"
-exec > >(tee -a "$LOG_FILE") 2>&1
+if command -v stdbuf >/dev/null 2>&1; then
+  exec > >(stdbuf -oL -eL tee -a "$LOG_FILE") 2>&1
+else
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 echo "[INFO] Log file: $LOG_FILE"
+export PYTHONUNBUFFERED=1
 
 check_pipeline_config_debug() {
   local db_path="$ROOT_DIR/data/info.db"
@@ -22,6 +27,7 @@ check_pipeline_config_debug() {
 import sqlite3
 import sys
 from pathlib import Path
+
 
 def fail(msg: str, code: int = 1) -> None:
     print(f"[ERROR] {msg}", file=sys.stderr)
@@ -41,30 +47,72 @@ except Exception as exc:
 
 with conn:
     cur = conn.cursor()
-    has_pipelines = cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='pipelines'"
-    ).fetchone()
-    if not has_pipelines:
-        fail("Pipeline DB missing pipelines table", code=2)
+    required_tables = (
+        "pipelines",
+        "pipeline_filters",
+        "pipeline_writers",
+        "pipeline_deliveries_email",
+        "pipeline_deliveries_feishu",
+        "pipeline_writer_metric_weights",
+        "ai_metrics",
+        "info_ai_scores",
+        "info_ai_review",
+    )
+    missing_tables = []
+    for tbl in required_tables:
+        row = cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (tbl,),
+        ).fetchone()
+        if not row:
+            missing_tables.append(tbl)
+    if missing_tables:
+        fail("Pipeline DB missing tables: " + ", ".join(missing_tables), code=2)
 
-    # Ensure debug_enabled column exists; add if missing
+    cur.execute("PRAGMA table_info(pipeline_writers)")
+    writer_cols = {row[1] for row in cur.fetchall()}
+    required_writer_cols = ("limit_per_category", "per_source_cap")
+    missing_writer_cols = [col for col in required_writer_cols if col not in writer_cols]
+    if missing_writer_cols:
+        fail("Pipeline writers table missing columns: " + ", ".join(missing_writer_cols), code=5)
+
     cur.execute("PRAGMA table_info(pipelines)")
-    pcols = {row[1] for row in cur.fetchall()}
-    if "debug_enabled" not in pcols:
-        try:
-            cur.execute("ALTER TABLE pipelines ADD COLUMN debug_enabled INTEGER NOT NULL DEFAULT 0")
-        except Exception:
-            pass
+    pipeline_cols = {row[1] for row in cur.fetchall()}
+    if "debug_enabled" not in pipeline_cols:
+        fail("Pipelines table missing debug_enabled column; run migrations before debug.", code=6)
 
-    try:
-        pipelines = cur.execute(
-            "SELECT id, name FROM pipelines WHERE COALESCE(debug_enabled,0)=1 ORDER BY id"
-        ).fetchall()
-    except sqlite3.OperationalError as exc:
-        fail(f"DB missing debug_enabled column: {exc}", code=6)
-
+    pipelines = cur.execute(
+        "SELECT id, name FROM pipelines WHERE COALESCE(debug_enabled,0)=1 ORDER BY id"
+    ).fetchall()
     if not pipelines:
-        fail("No debug pipelines found (set debug_enabled=1 to run).", code=3)
+        fail("No debug pipelines found; set debug_enabled=1 before running.", code=3)
+
+    missing_configs: list[str] = []
+    for pid, name in pipelines:
+        has_writer = cur.execute(
+            "SELECT 1 FROM pipeline_writers WHERE pipeline_id=?",
+            (pid,),
+        ).fetchone()
+        if not has_writer:
+            missing_configs.append(f"{name} (writer)")
+            continue
+        has_email = cur.execute(
+            "SELECT 1 FROM pipeline_deliveries_email WHERE pipeline_id=?",
+            (pid,),
+        ).fetchone()
+        has_feishu = cur.execute(
+            "SELECT 1 FROM pipeline_deliveries_feishu WHERE pipeline_id=?",
+            (pid,),
+        ).fetchone()
+        if not (has_email or has_feishu):
+            missing_configs.append(f"{name} (delivery)")
+
+    if missing_configs:
+        print("[ERROR] Debug pipelines missing writer/delivery configuration:", file=sys.stderr)
+        for item in missing_configs:
+            print(f"  - {item}", file=sys.stderr)
+        print("Import or configure pipelines before rerunning.", file=sys.stderr)
+        sys.exit(4)
 
 print("[INFO] Pipeline DB configuration for debug looks good.", file=sys.stderr)
 PY
@@ -132,16 +180,12 @@ run_once() {
 
   echo "[INFO] Applying AI metrics migration (idempotent)..." >&2
   $PYTHON "$ROOT_DIR/scripts/migrations/202510_ai_metrics_refactor.py" --db "$ROOT_DIR/data/info.db" || true
+  echo "[INFO] Applying pipeline refactor migration (idempotent)..." >&2
+  $PYTHON -c "import sqlite3,sys;from pathlib import Path;sql=Path('$ROOT_DIR/scripts/migrations/pipeline_refactor.sql');conn=sqlite3.connect('$ROOT_DIR/data/info.db');conn.executescript(sql.read_text());conn.commit();conn.close()" || true
 
   check_pipeline_config_debug
 
-  echo "[INFO] Collecting latest into SQLite..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
-
-  echo "[INFO] Running AI evaluation for recent 72h..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 72 --limit 400 || true
-
-  echo "[INFO] Running debug pipelines sequentially..." >&2
+  echo "[INFO] Running debug pipelines (collect→evaluate→write→deliver)..." >&2
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_runner.py" --all --debug-only
 }
 

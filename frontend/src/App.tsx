@@ -1,16 +1,29 @@
+import { lazy, Suspense } from 'react'
 import { Avatar, Dropdown, Layout, Menu, theme } from 'antd'
 import { Route, Routes, Link, useLocation } from 'react-router-dom'
-import { BranchesOutlined, ExperimentOutlined, FileTextOutlined, TagsOutlined, UnorderedListOutlined, UserOutlined } from '@ant-design/icons'
-import PipelineList from './pages/PipelineList'
-import PipelineForm from './pages/PipelineForm'
-import SourceList from './pages/SourceList'
-import CategoryList from './pages/CategoryList'
-import InfoList from './pages/InfoList'
-import AiMetrics from './pages/AiMetrics'
-import UnsubscribePage from './pages/Unsubscribe'
+import {
+  ApiOutlined,
+  BranchesOutlined,
+  ExperimentOutlined,
+  FileTextOutlined,
+  TagsOutlined,
+  UnorderedListOutlined,
+  UserOutlined
+} from '@ant-design/icons'
 import { AuthProvider, useAuth } from './auth'
 import LoginModal from './LoginModal'
-import Users from './pages/Users'
+
+// Lazy-load route components to reduce the initial bundle.
+const PipelineList = lazy(() => import('./pages/PipelineList'))
+const PipelineForm = lazy(() => import('./pages/PipelineForm'))
+const SourceList = lazy(() => import('./pages/SourceList'))
+const CategoryList = lazy(() => import('./pages/CategoryList'))
+const InfoList = lazy(() => import('./pages/InfoList'))
+const AiMetrics = lazy(() => import('./pages/AiMetrics'))
+const Evaluators = lazy(() => import('./pages/Evaluators'))
+const UnsubscribePage = lazy(() => import('./pages/Unsubscribe'))
+const Users = lazy(() => import('./pages/Users'))
+const PipelineClassList = lazy(() => import('./pages/PipelineClassList'))
 
 const { Header, Content } = Layout
 
@@ -21,13 +34,16 @@ function AppShell() {
   const { pathname } = useLocation()
   const { user, signOut, setLoginVisible } = useAuth()
   const isAdmin = (user?.is_admin || 0) === 1
+  const pageFallback = <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   // Public unsubscribe page: allow访问无需登录
   if (pathname.startsWith('/unsubscribe')) {
     return (
       <Layout style={{ minHeight: '100vh' }}>
         <Content style={{ padding: 24, background: colorBgContainer }}>
-          <UnsubscribePage />
+          <Suspense fallback={pageFallback}>
+            <UnsubscribePage />
+          </Suspense>
         </Content>
       </Layout>
     )
@@ -57,8 +73,12 @@ function AppShell() {
     selectedKey = 'sources'
   } else if (pathname.startsWith('/categories')) {
     selectedKey = 'categories'
+  } else if (pathname.startsWith('/pipeline-classes')) {
+    selectedKey = 'pipeline-classes'
   } else if (pathname.startsWith('/ai-metrics')) {
     selectedKey = 'ai-metrics'
+  } else if (pathname.startsWith('/evaluators')) {
+    selectedKey = 'evaluators'
   } else if (pathname.startsWith('/users')) {
     selectedKey = 'users'
   }
@@ -83,14 +103,19 @@ function AppShell() {
               ? ([
                   {
                     key: 'categories',
-                    label: <Link to="/categories">所有类别</Link>,
+                    label: <Link to="/categories">来源类别</Link>,
                     icon: <TagsOutlined />
                   }
                 ] as const)
               : []),
             {
+              key: 'evaluators',
+              label: <Link to="/evaluators">评估器</Link>,
+              icon: <ApiOutlined />
+            },
+            {
               key: 'ai-metrics',
-              label: <Link to="/ai-metrics">AI评估</Link>,
+              label: <Link to="/ai-metrics">AI指标</Link>,
               icon: <ExperimentOutlined />
             },
             {
@@ -104,6 +129,11 @@ function AppShell() {
                     key: 'users',
                     label: <Link to="/users">用户管理</Link>,
                     icon: <UserOutlined />
+                  },
+                  {
+                    key: 'pipeline-classes',
+                    label: <Link to="/pipeline-classes">推送类别</Link>,
+                    icon: <TagsOutlined />
                   }
                 ] as const)
               : []),
@@ -138,16 +168,20 @@ function AppShell() {
         </div>
       </Header>
       <Content style={{ padding: 24, background: colorBgContainer }}>
-        <Routes>
-          <Route path="/" element={<PipelineList />} />
-          <Route path="/new" element={<PipelineForm />} />
-          <Route path="/edit/:id" element={<PipelineForm />} />
-          <Route path="/infos" element={<InfoList />} />
-          <Route path="/sources" element={<SourceList />} />
-          <Route path="/categories" element={<CategoryList />} />
-          <Route path="/ai-metrics" element={<AiMetrics />} />
-          <Route path="/users" element={<Users />} />
-        </Routes>
+        <Suspense fallback={pageFallback}>
+          <Routes>
+            <Route path="/" element={<PipelineList />} />
+            <Route path="/new" element={<PipelineForm />} />
+            <Route path="/edit/:id" element={<PipelineForm />} />
+            <Route path="/infos" element={<InfoList />} />
+            <Route path="/sources" element={<SourceList />} />
+            <Route path="/categories" element={<CategoryList />} />
+            <Route path="/pipeline-classes" element={<PipelineClassList />} />
+            <Route path="/ai-metrics" element={<AiMetrics />} />
+            <Route path="/evaluators" element={<Evaluators />} />
+            <Route path="/users" element={<Users />} />
+          </Routes>
+        </Suspense>
       </Content>
     </Layout>
   )

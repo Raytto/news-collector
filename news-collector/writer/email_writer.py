@@ -178,7 +178,7 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
         ).fetchone()
     f = cur.execute(
         """
-        SELECT all_categories, COALESCE(categories_json,'')
+        SELECT all_categories, COALESCE(categories_json,''), COALESCE(include_src_json,'')
         FROM pipeline_filters
         WHERE pipeline_id=?
         ORDER BY rowid DESC
@@ -207,12 +207,22 @@ def _load_pipeline_cfg(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, 
     if f:
         out["all_categories"] = int(f[0]) if f[0] is not None else 1
         out["categories_json"] = str(f[1] or "")
+        out["include_src_json"] = str(f[2] or "")
     if metric_rows:
         out["metric_weight_rows"] = [
             {"key": row[0], "weight": float(row[1]), "enabled": int(row[2] or 0)}
             for row in metric_rows
         ]
     return out
+
+
+def _load_pipeline_meta(conn: sqlite3.Connection, pipeline_id: int) -> Dict[str, Any]:
+    cur = conn.cursor()
+    try:
+        row = cur.execute("SELECT evaluator_key FROM pipelines WHERE id=?", (pipeline_id,)).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    return {"evaluator_key": str(row[0]) if row and row[0] else "news_evaluator"}
 
 
 def try_parse_dt(value: str) -> Optional[datetime]:
@@ -251,7 +261,12 @@ def human_time(publish: str) -> str:
     return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M 北京时间")
 
 
-def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
+def load_active_metrics(
+    conn: sqlite3.Connection,
+    *,
+    allowed_keys: Optional[Set[str]] = None,
+    pipeline_keys: Optional[Set[str]] = None,
+) -> List[MetricDefinition]:
     try:
         rows = conn.execute(
             """
@@ -263,9 +278,7 @@ def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
         ).fetchall()
     except sqlite3.OperationalError as exc:
         raise SystemExit("缺少 AI 指标定义表 (ai_metrics)，请先运行 evaluator 初始化。") from exc
-    if not rows:
-        raise SystemExit("ai_metrics 表为空，无法生成邮件摘要")
-    return [
+    metrics = [
         MetricDefinition(
             id=row[0],
             key=row[1],
@@ -274,6 +287,57 @@ def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
         )
         for row in rows
     ]
+    if allowed_keys:
+        metrics = [m for m in metrics if m.key in allowed_keys]
+    if pipeline_keys:
+        metrics = [m for m in metrics if m.key in pipeline_keys]
+    if not metrics:
+        raise SystemExit("缺少匹配的指标，无法生成邮件摘要")
+    return metrics
+
+
+def load_allowed_metric_keys(conn: sqlite3.Connection, evaluator_key: str) -> Set[str]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.key
+            FROM evaluator_metrics AS em
+            JOIN evaluators AS e ON e.id = em.evaluator_id
+            JOIN ai_metrics AS m ON m.id = em.metric_id
+            WHERE e.key=? AND m.active=1
+            ORDER BY m.sort_order ASC, m.id ASC
+            """,
+            (evaluator_key,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(row[0]) for row in rows if row and row[0]}
+
+
+def derive_pipeline_metric_keys(
+    metric_weight_rows: Optional[List[Dict[str, Any]]],
+    weights_json: str,
+) -> Set[str]:
+    keys: Set[str] = set()
+    if metric_weight_rows:
+        for row in metric_weight_rows:
+            key = str(row.get("key") or "").strip()
+            if not key:
+                continue
+            enabled = row.get("enabled", 1)
+            if int(enabled or 0):
+                keys.add(key)
+    if weights_json:
+        try:
+            parsed = json.loads(weights_json)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            for key in parsed.keys():
+                text = str(key).strip()
+                if text:
+                    keys.add(text)
+    return keys
 
 
 def resolve_weights(
@@ -336,7 +400,7 @@ def compute_weighted_score(scores: Dict[str, int], weights: Dict[str, float]) ->
     return round(max(1.0, min(5.0, score)), 2)
 
 
-def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_evaluator") -> List[Dict[str, Any]]:
     try:
         rows = conn.execute(
             """
@@ -356,9 +420,9 @@ def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
             FROM info AS i
             JOIN info_ai_scores AS s ON s.info_id = i.id
             JOIN ai_metrics AS m ON m.id = s.metric_id AND m.active = 1
-            LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+            LEFT JOIN info_ai_review AS r ON r.info_id = i.id AND r.evaluator_key=?
             """
-        ).fetchall()
+        , (evaluator_key,)).fetchall()
         extended = True
     except sqlite3.OperationalError:
         # 兼容旧库（缺少 ai_key_concepts/ai_summary_long 列）
@@ -379,9 +443,9 @@ def load_article_scores(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
                 FROM info AS i
                 JOIN info_ai_scores AS s ON s.info_id = i.id
                 JOIN ai_metrics AS m ON m.id = s.metric_id AND m.active = 1
-                LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+                LEFT JOIN info_ai_review AS r ON r.info_id = i.id AND r.evaluator_key=?
                 """
-            ).fetchall()
+            , (evaluator_key,)).fetchall()
             extended = False
         except sqlite3.OperationalError as exc:
             raise SystemExit("缺少 AI 评分数据表 (info_ai_scores)，请先运行 evaluator 生成评分。") from exc
@@ -687,14 +751,14 @@ def main() -> None:
     frontend_base = (os.getenv("FRONTEND_BASE_URL") or "").strip().rstrip("/")
     unsubscribe_url: str = ""
     manage_url: str = ""
+    evaluator_key = "news_evaluator"
+    include_sources: Set[str] = set()
 
     with sqlite3.connect(str(db_path)) as conn:
-        metrics = load_active_metrics(conn)
-        metric_keys = {m.key for m in metrics}
-
         metric_weight_rows: Optional[List[Dict[str, Any]]] = None
         pipeline_weights_json = ""
         source_bonus = DEFAULT_SOURCE_BONUS.copy()
+        pipeline_metric_keys: Set[str] = set()
 
         def _load_delivery_email(conn: sqlite3.Connection, pipeline_id: int) -> Optional[str]:
             try:
@@ -710,10 +774,13 @@ def main() -> None:
 
         if pid is not None:
             cfg = _load_pipeline_cfg(conn, pid)
+            meta = _load_pipeline_meta(conn, pid)
+            evaluator_key = str(meta.get("evaluator_key") or "news_evaluator")
             if isinstance(cfg.get("hours"), int) and int(cfg["hours"]) > 0:
                 effective_hours = int(cfg["hours"])
             pipeline_weights_json = cfg.get("weights_json", "")
             metric_weight_rows = cfg.get("metric_weight_rows")
+            pipeline_metric_keys = derive_pipeline_metric_keys(metric_weight_rows, pipeline_weights_json)
 
             bonus_json = cfg.get("bonus_json", "")
             if bonus_json:
@@ -741,9 +808,23 @@ def main() -> None:
                     per_source_cap = int(cfg["per_source_cap"])
                 except (TypeError, ValueError):
                     pass
+            if cfg.get("include_src_json"):
+                try:
+                    parsed = json.loads(cfg.get("include_src_json") or "[]")
+                    if isinstance(parsed, list):
+                        include_sources = {str(x).strip() for x in parsed if str(x).strip()}
+                except json.JSONDecodeError:
+                    pass
             recipient_email = _load_delivery_email(conn, pid)
 
         print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
+        allowed_metric_keys = load_allowed_metric_keys(conn, evaluator_key)
+        metrics = load_active_metrics(
+            conn,
+            allowed_keys=allowed_metric_keys if allowed_metric_keys else None,
+            pipeline_keys=pipeline_metric_keys if pipeline_metric_keys else None,
+        )
+        metric_keys = {m.key for m in metrics}
         weights = resolve_weights(metrics, metric_weight_rows, pipeline_weights_json, weights_cli_override)
 
         if bonus_cli_override.strip():
@@ -760,7 +841,7 @@ def main() -> None:
         if args.per_source_cap is not None:
             per_source_cap = int(args.per_source_cap)
 
-        articles = load_article_scores(conn)
+        articles = load_article_scores(conn, evaluator_key=evaluator_key)
 
     if frontend_base:
         manage_url = frontend_base + "/"
@@ -779,7 +860,7 @@ def main() -> None:
         if not dt or dt < cutoff:
             continue
         category = article.get("category", "")
-        if categories_filter and category not in categories_filter:
+        if categories_filter and category not in categories_filter and article.get("source", "") not in include_sources:
             continue
         link = article.get("link", "").strip()
         if not link:

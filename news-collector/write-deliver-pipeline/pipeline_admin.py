@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS pipelines (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL UNIQUE,
   enabled      INTEGER NOT NULL DEFAULT 1,
+  pipeline_class_id INTEGER,
+  evaluator_key TEXT NOT NULL DEFAULT 'news_evaluator',
+  debug_enabled INTEGER NOT NULL DEFAULT 0,
   -- 允许运行的星期（ISO 1-7）；NULL 表示不限制
   weekdays_json TEXT,
   description  TEXT,
@@ -53,7 +56,6 @@ CREATE TABLE IF NOT EXISTS pipeline_filters (
   pipeline_id      INTEGER NOT NULL,
   all_categories   INTEGER NOT NULL DEFAULT 1,
   categories_json  TEXT,
-  all_src          INTEGER NOT NULL DEFAULT 1,
   include_src_json TEXT,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
@@ -83,6 +85,39 @@ CREATE TABLE IF NOT EXISTS pipeline_writer_metric_weights (
 
 CREATE INDEX IF NOT EXISTS idx_wm_weights_pipeline
   ON pipeline_writer_metric_weights (pipeline_id);
+
+-- 管线类别
+CREATE TABLE IF NOT EXISTS pipeline_classes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
+  description  TEXT,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_categories (
+  pipeline_class_id INTEGER NOT NULL,
+  category_key      TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, category_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id),
+  FOREIGN KEY (category_key) REFERENCES categories(key)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_evaluators (
+  pipeline_class_id INTEGER NOT NULL,
+  evaluator_key     TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, evaluator_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_writers (
+  pipeline_class_id INTEGER NOT NULL,
+  writer_type       TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, writer_type),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
 
 -- Email 投递（单管线单投递）
 CREATE TABLE IF NOT EXISTS pipeline_deliveries_email (
@@ -121,6 +156,13 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   summary      TEXT,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+-- 源执行记录
+CREATE TABLE IF NOT EXISTS source_runs (
+  source_id   INTEGER PRIMARY KEY,
+  last_run_at TEXT NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES sources(id)
+);
 """
 
 
@@ -136,6 +178,12 @@ def ensure_db() -> None:
             p_cols = {row[1] for row in cur.fetchall()}
             if "weekdays_json" not in p_cols:
                 cur.execute("ALTER TABLE pipelines ADD COLUMN weekdays_json TEXT")
+            if "pipeline_class_id" not in p_cols:
+                cur.execute("ALTER TABLE pipelines ADD COLUMN pipeline_class_id INTEGER")
+            if "debug_enabled" not in p_cols:
+                cur.execute("ALTER TABLE pipelines ADD COLUMN debug_enabled INTEGER NOT NULL DEFAULT 0")
+            if "evaluator_key" not in p_cols:
+                cur.execute("ALTER TABLE pipelines ADD COLUMN evaluator_key TEXT NOT NULL DEFAULT 'news_evaluator'")
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_writers'"
         )
@@ -146,6 +194,51 @@ def ensure_db() -> None:
                 cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category TEXT")
             if "per_source_cap" not in existing_cols:
                 cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
+        # Ensure include_src_json exists
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pipeline_filters'")
+        if cur.fetchone():
+            cur.execute("PRAGMA table_info(pipeline_filters)")
+            f_cols = {row[1] for row in cur.fetchall()}
+            if "include_src_json" not in f_cols:
+                cur.execute("ALTER TABLE pipeline_filters ADD COLUMN include_src_json TEXT")
+        # Create new tables for pipeline class constraints and source runs
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_classes (
+              id           INTEGER PRIMARY KEY AUTOINCREMENT,
+              key          TEXT NOT NULL UNIQUE,
+              label_zh     TEXT NOT NULL,
+              description  TEXT,
+              enabled      INTEGER NOT NULL DEFAULT 1,
+              created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS pipeline_class_categories (
+              pipeline_class_id INTEGER NOT NULL,
+              category_key      TEXT NOT NULL,
+              PRIMARY KEY (pipeline_class_id, category_key),
+              FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id),
+              FOREIGN KEY (category_key) REFERENCES categories(key)
+            );
+            CREATE TABLE IF NOT EXISTS pipeline_class_evaluators (
+              pipeline_class_id INTEGER NOT NULL,
+              evaluator_key     TEXT NOT NULL,
+              PRIMARY KEY (pipeline_class_id, evaluator_key),
+              FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+            );
+            CREATE TABLE IF NOT EXISTS pipeline_class_writers (
+              pipeline_class_id INTEGER NOT NULL,
+              writer_type       TEXT NOT NULL,
+              PRIMARY KEY (pipeline_class_id, writer_type),
+              FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+            );
+            CREATE TABLE IF NOT EXISTS source_runs (
+              source_id   INTEGER PRIMARY KEY,
+              last_run_at TEXT NOT NULL,
+              FOREIGN KEY (source_id) REFERENCES sources(id)
+            );
+            """
+        )
         # Enforce uniqueness for single-row tables keyed by pipeline_id.
         # First, dedupe keeping latest row (max rowid), then create unique indexes.
         try:
@@ -757,6 +850,76 @@ def cmd_seed(_: argparse.Namespace) -> None:
     print("Seeded 3 pipelines: email_306483372, email_410861858_wenhao, feishu_broadcast")
 
 
+def cmd_clone(args: argparse.Namespace) -> None:
+    ensure_db()
+    src_name = args.source
+    new_name = args.target
+    with sqlite3.connect(str(DB_PATH)) as conn:
+        cur = conn.cursor()
+        row = cur.execute(
+            "SELECT id FROM pipelines WHERE name=?",
+            (src_name,),
+        ).fetchone()
+        if not row:
+            raise SystemExit(f"源管线不存在: {src_name}")
+        src_id = int(row[0])
+        # create new pipeline row copying meta
+        cur.execute(
+            """
+            INSERT INTO pipelines (name, enabled, description, pipeline_class_id, evaluator_key, debug_enabled, weekdays_json)
+            SELECT ?, 0, description, pipeline_class_id, evaluator_key, 0, weekdays_json
+            FROM pipelines WHERE id=?
+            """,
+            (new_name, src_id),
+        )
+        new_id = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+        # clone filters
+        try:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO pipeline_filters (pipeline_id, all_categories, categories_json, include_src_json)
+                SELECT ?, all_categories, categories_json, include_src_json FROM pipeline_filters WHERE pipeline_id=?
+                """,
+                (new_id, src_id),
+            )
+        except sqlite3.OperationalError:
+            pass
+        # clone writers
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO pipeline_writers (pipeline_id, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap)
+            SELECT ?, type, hours, weights_json, bonus_json, limit_per_category, per_source_cap
+            FROM pipeline_writers WHERE pipeline_id=?
+            """,
+            (new_id, src_id),
+        )
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO pipeline_writer_metric_weights (pipeline_id, metric_id, weight, enabled)
+            SELECT ?, metric_id, weight, enabled FROM pipeline_writer_metric_weights WHERE pipeline_id=?
+            """,
+            (new_id, src_id),
+        )
+        # clone deliveries (email or feishu)
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO pipeline_deliveries_email (pipeline_id, email, subject_tpl, deliver_type)
+            SELECT ?, email, subject_tpl, deliver_type FROM pipeline_deliveries_email WHERE pipeline_id=?
+            """,
+            (new_id, src_id),
+        )
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO pipeline_deliveries_feishu (pipeline_id, app_id, app_secret, to_all_chat, chat_id, title_tpl, to_all, content_json, deliver_type)
+            SELECT ?, app_id, app_secret, to_all_chat, chat_id, title_tpl, to_all, content_json, deliver_type
+            FROM pipeline_deliveries_feishu WHERE pipeline_id=?
+            """,
+            (new_id, src_id),
+        )
+        conn.commit()
+    print(f"克隆完成: {src_name} -> {new_name} (enabled=0, debug=0)")
+
+
 def cmd_enable_disable(args: argparse.Namespace) -> None:
     ensure_db()
     with sqlite3.connect(str(DB_PATH)) as conn:
@@ -799,6 +962,11 @@ def parse_args() -> argparse.Namespace:
     s_imp.add_argument("--input", required=True, help="Input JSON file path")
     s_imp.add_argument("--mode", choices=["replace", "merge"], default="replace", help="replace: drop existing pipeline with same name before import; merge: overwrite parts")
     s_imp.set_defaults(func=cmd_import)
+
+    s_clone = sub.add_parser("clone", help="Clone an existing pipeline to a new name (enabled=0)")
+    s_clone.add_argument("--source", required=True, help="Existing pipeline name")
+    s_clone.add_argument("--target", required=True, help="New pipeline name")
+    s_clone.set_defaults(func=cmd_clone)
 
     return p.parse_args()
 

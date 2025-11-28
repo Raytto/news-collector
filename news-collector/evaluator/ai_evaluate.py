@@ -16,16 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT.parent / "data"
 DB_PATH = DATA_DIR / "info.db"
 
-_PROMPT_FILE = "article_evaluation_zh.prompt"
-_PROMPT_ENV = os.getenv("AI_PROMPT_PATH")
-_PROMPT_CANDIDATES = [
-    Path(_PROMPT_ENV) if _PROMPT_ENV else None,
-    ROOT / "prompts" / "ai" / _PROMPT_FILE,
-    ROOT.parent / "prompts" / "ai" / _PROMPT_FILE,
-]
-PROMPT_PATH = next((p for p in _PROMPT_CANDIDATES if p and p.exists()), _PROMPT_CANDIDATES[1])
-
 DEFAULT_METRIC_SEED: Sequence[Dict[str, object]] = [
+    {
+        "key": "rok_cod_fit",
+        "label_zh": "ROK/COD 副玩法结合可能性",
+        "rate_guide_zh": "5-高度可行；3-有限可行；1-不合适",
+        "default_weight": 1.0,
+        "sort_order": 10,
+    },
     {
         "key": "timeliness",
         "label_zh": "时效性",
@@ -153,10 +151,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=50, help="本次最多处理的资讯条数 (默认: 50)")
     parser.add_argument("--overwrite", action="store_true", help="已存在评价时重新生成并覆盖")
     parser.add_argument("--dry-run", action="store_true", help="仅打印结果，不写入数据库")
-    parser.add_argument("--prompt", default=str(PROMPT_PATH), help="提示词文件路径 (默认: 自动探测)")
     parser.add_argument("--hours", type=int, default=24, help="仅处理最近 N 小时内的资讯 (默认: 24)")
     parser.add_argument("--category", action="append", default=[], help="仅评估指定分类，可重复传入 (例如: --category game)")
     parser.add_argument("--source", action="append", default=[], help="仅评估指定来源标识，可重复传入 (例如: --source chuapp)")
+    parser.add_argument("--evaluator-key", default="news_evaluator", help="评估器标识，用于区分不同评审记录 (默认: news_evaluator)")
+    parser.add_argument("--pipeline-id", type=int, help="指定管线 ID，按照管线配置限定指标/提示词")
     parser.add_argument(
         "--exportprompt",
         help="将填充后的提示词导出到指定文件并退出",
@@ -193,14 +192,11 @@ def _try_parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
-def load_prompt(path: Path) -> tuple[str, str]:
-    if not path.exists():
-        raise SystemExit(f"未找到提示词文件: {path}")
-    text = path.read_text(encoding="utf-8")
+def parse_prompt_text(text: str) -> tuple[str, str]:
     marker_sys = "<<SYS>>"
     marker_user = "<<USER>>"
     if marker_sys not in text or marker_user not in text:
-        raise SystemExit("提示词文件需要包含 <<SYS>> 与 <<USER>> 标记")
+        raise SystemExit("提示词需要包含 <<SYS>> 与 <<USER>> 标记")
     sys_part, user_part = text.split(marker_user, 1)
     system_prompt = sys_part.replace(marker_sys, "", 1).strip()
     user_prompt = user_part.strip()
@@ -214,6 +210,82 @@ def fill_prompt(template: str, mapping: Dict[str, str]) -> str:
     for key, value in mapping.items():
         result = result.replace(f"{{{{{key}}}}}", value)
     return result
+
+
+def load_allowed_metric_keys(conn: sqlite3.Connection, evaluator_key: str) -> Set[str]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.key
+            FROM evaluator_metrics AS em
+            JOIN evaluators AS e ON e.id = em.evaluator_id
+            JOIN ai_metrics AS m ON m.id = em.metric_id
+            WHERE e.key=? AND m.active=1
+            ORDER BY m.sort_order ASC, m.id ASC
+            """,
+            (evaluator_key,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(row[0]) for row in rows if row and row[0]}
+
+
+def load_pipeline_metric_keys(conn: sqlite3.Connection, pipeline_id: int) -> Set[str]:
+    keys: Set[str] = set()
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.key, w.enabled
+            FROM pipeline_writer_metric_weights AS w
+            JOIN ai_metrics AS m ON m.id = w.metric_id
+            WHERE w.pipeline_id=?
+            """,
+            (pipeline_id,),
+        ).fetchall()
+        for key, enabled in rows:
+            if int(enabled or 0):
+                keys.add(str(key))
+    except sqlite3.OperationalError:
+        pass
+    if keys:
+        return keys
+    try:
+        row = conn.execute(
+            "SELECT weights_json FROM pipeline_writers WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
+            (pipeline_id,),
+        ).fetchone()
+        if row and row[0]:
+            raw = row[0]
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8", errors="ignore")
+            try:
+                parsed = json.loads(str(raw))
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                for key in parsed.keys():
+                    text = str(key).strip()
+                    if text:
+                        keys.add(text)
+    except sqlite3.OperationalError:
+        pass
+    return keys
+
+
+def load_prompt_from_db(conn: sqlite3.Connection, evaluator_key: str) -> Optional[str]:
+    try:
+        row = conn.execute(
+            "SELECT prompt FROM evaluators WHERE key=?",
+            (evaluator_key,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    prompt = row[0]
+    if isinstance(prompt, (bytes, bytearray)):
+        return prompt.decode("utf-8", errors="ignore")
+    return str(prompt) if prompt is not None else None
 
 
 def trim_detail_for_prompt(detail: str) -> str:
@@ -335,7 +407,95 @@ def ensure_ai_tables(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE info_ai_review ADD COLUMN ai_key_concepts TEXT")
     if "ai_summary_long" not in review_columns:
         conn.execute("ALTER TABLE info_ai_review ADD COLUMN ai_summary_long TEXT")
+    if "evaluator_key" not in review_columns:
+        conn.execute("ALTER TABLE info_ai_review ADD COLUMN evaluator_key TEXT NOT NULL DEFAULT 'news_evaluator'")
+    # Unique composite index (best effort)
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_info_ai_review_info_eval ON info_ai_review(info_id, evaluator_key)"
+        )
+    except Exception:
+        pass
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evaluators (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            key          TEXT NOT NULL UNIQUE,
+            label_zh     TEXT NOT NULL,
+            description  TEXT,
+            prompt       TEXT,
+            active       INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS evaluator_metrics (
+            evaluator_id INTEGER NOT NULL,
+            metric_id    INTEGER NOT NULL,
+            PRIMARY KEY (evaluator_id, metric_id),
+            FOREIGN KEY (evaluator_id) REFERENCES evaluators(id) ON DELETE CASCADE,
+            FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_evaluator_metrics_eval ON evaluator_metrics (evaluator_id)"
+    )
+    # 兼容旧库缺少字段
+    eval_cols = {row[1] for row in conn.execute("PRAGMA table_info(evaluators)").fetchall()}
+    if "prompt" not in eval_cols:
+        conn.execute("ALTER TABLE evaluators ADD COLUMN prompt TEXT")
+    if "active" not in eval_cols:
+        conn.execute("ALTER TABLE evaluators ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
     seed_default_metrics(conn)
+    # 填充默认评估器
+    seed_defs = (
+        ("news_evaluator", "资讯评估器", "通用资讯评估"),
+        ("legou_minigame_evaluator", "乐狗副玩法评估器", "乐狗 YouTube 副玩法评估"),
+    )
+    for key, label, desc in seed_defs:
+        conn.execute(
+            "INSERT OR IGNORE INTO evaluators (key, label_zh, description, prompt, active) VALUES (?, ?, ?, ?, 1)",
+            (key, label, desc, ""),
+        )
+    try:
+        metric_rows = conn.execute("SELECT id, key FROM ai_metrics WHERE active=1").fetchall()
+        metric_id_map = {str(row[1]): int(row[0]) for row in metric_rows}
+        for key, _, _ in seed_defs:
+            row = conn.execute("SELECT id FROM evaluators WHERE key=?", (key,)).fetchone()
+            if not row:
+                continue
+            ev_id = int(row[0])
+            if key == "legou_minigame_evaluator":
+                allowed_keys = ["rok_cod_fit"]
+                conn.execute("DELETE FROM evaluator_metrics WHERE evaluator_id=?", (ev_id,))
+            elif key == "news_evaluator":
+                allowed_keys = [k for k in metric_id_map.keys() if k != "rok_cod_fit"]
+                has_any = conn.execute(
+                    "SELECT 1 FROM evaluator_metrics WHERE evaluator_id=? LIMIT 1",
+                    (ev_id,),
+                ).fetchone()
+                if has_any:
+                    continue
+            else:
+                has_any = conn.execute(
+                    "SELECT 1 FROM evaluator_metrics WHERE evaluator_id=? LIMIT 1",
+                    (ev_id,),
+                ).fetchone()
+                if has_any:
+                    continue
+                allowed_keys = list(metric_id_map.keys())
+            metric_ids = [metric_id_map[k] for k in allowed_keys if k in metric_id_map]
+            if metric_ids:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO evaluator_metrics (evaluator_id, metric_id) VALUES (?, ?)",
+                    [(ev_id, mid) for mid in metric_ids],
+                )
+    except Exception:
+        pass
     conn.commit()
 
 
@@ -364,7 +524,12 @@ def seed_default_metrics(conn: sqlite3.Connection) -> None:
         )
 
 
-def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
+def load_active_metrics(
+    conn: sqlite3.Connection,
+    *,
+    allowed_keys: Optional[Set[str]] = None,
+    pipeline_keys: Optional[Set[str]] = None,
+) -> List[MetricDefinition]:
     rows = conn.execute(
         """
         SELECT id, key, label_zh, rate_guide_zh, default_weight, sort_order
@@ -384,6 +549,10 @@ def load_active_metrics(conn: sqlite3.Connection) -> List[MetricDefinition]:
         )
         for row in rows
     ]
+    if allowed_keys:
+        metrics = [m for m in metrics if m.key in allowed_keys]
+    if pipeline_keys:
+        metrics = [m for m in metrics if m.key in pipeline_keys]
     if not metrics:
         raise SystemExit("ai_metrics 表为空，无法继续评估")
     return metrics
@@ -427,16 +596,17 @@ def fetch_candidates(
     hours: int,
     categories: Optional[List[str]] = None,
     sources: Optional[List[str]] = None,
+    evaluator_key: str = "news_evaluator",
 ) -> List[Article]:
     rows = conn.execute(
         """
         SELECT i.id, i.title, i.source, i.publish, i.detail, i.category,
                r.info_id IS NOT NULL AS has_review
         FROM info AS i
-        LEFT JOIN info_ai_review AS r ON r.info_id = i.id
+        LEFT JOIN info_ai_review AS r ON r.info_id = i.id AND r.evaluator_key=?
         ORDER BY i.id DESC
         """
-    ).fetchall()
+    , (evaluator_key,)).fetchall()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))
     articles: List[Article] = []
     cat_whitelist = set(categories or [])
@@ -662,6 +832,7 @@ def store_evaluation(
     metrics: Sequence[MetricDefinition],
     review_columns: Set[str],
     enable_legacy_backfill: bool,
+    evaluator_key: str,
 ) -> None:
     score_rows = [
         (evaluation.info_id, metric.id, evaluation.scores[metric.key])
@@ -689,6 +860,7 @@ def store_evaluation(
         "ai_key_concepts",
         "ai_summary_long",
         "raw_response",
+        "evaluator_key",
     ]
     values: List[object] = [
         evaluation.info_id,
@@ -698,6 +870,7 @@ def store_evaluation(
         key_concepts_value,
         evaluation.summary_long,
         evaluation.raw_response,
+        evaluator_key,
     ]
     updates = [
         "final_score=excluded.final_score",
@@ -706,6 +879,7 @@ def store_evaluation(
         "ai_key_concepts=excluded.ai_key_concepts",
         "ai_summary_long=excluded.ai_summary_long",
         "raw_response=excluded.raw_response",
+        "evaluator_key=excluded.evaluator_key",
     ]
 
     if enable_legacy_backfill:
@@ -717,16 +891,19 @@ def store_evaluation(
                 updates.append(f"{column}=excluded.{column}")
 
     placeholders = ", ".join(["?"] * len(values))
-    conn.execute(
-        f"""
+    sql = f"""
         INSERT INTO info_ai_review ({', '.join(columns)}, updated_at)
         VALUES ({placeholders}, CURRENT_TIMESTAMP)
-        ON CONFLICT(info_id) DO UPDATE SET
+        ON CONFLICT(info_id, evaluator_key) DO UPDATE SET
             {', '.join(updates)},
             updated_at=CURRENT_TIMESTAMP
-        """,
-        values,
-    )
+        """
+    try:
+        conn.execute(sql, values)
+    except sqlite3.OperationalError:
+        # Fallback for legacy single-PK table
+        sql_legacy = sql.replace("ON CONFLICT(info_id, evaluator_key)", "ON CONFLICT(info_id)")
+        conn.execute(sql_legacy, values)
 
 
 def evaluate_articles(
@@ -739,6 +916,7 @@ def evaluate_articles(
     dry_run: bool,
     review_columns: Set[str],
     enable_legacy_backfill: bool,
+    evaluator_key: str,
 ) -> None:
     for article in articles:
         detail_for_prompt = trim_detail_for_prompt(article.detail)
@@ -777,7 +955,7 @@ def evaluate_articles(
                 f"  摘要: {result.summary_long}"
             )
         else:
-            store_evaluation(conn, result, metrics, review_columns, enable_legacy_backfill)
+            store_evaluation(conn, result, metrics, review_columns, enable_legacy_backfill, evaluator_key)
             conn.commit()
             dim_str = " / ".join(
                 f"{metric.key}:{result.scores[metric.key]}" for metric in metrics
@@ -789,9 +967,9 @@ def evaluate_articles(
 
 def main() -> None:
     args = parse_args()
-    prompt_path = Path(args.prompt) if args.prompt else PROMPT_PATH
-    system_prompt, user_template = load_prompt(prompt_path)
     limit = max(1, int(args.limit))
+    evaluator_key = (args.evaluator_key or "news_evaluator").strip() or "news_evaluator"
+    pipeline_id = args.pipeline_id if getattr(args, "pipeline_id", None) is not None else None
 
     db_path = Path(args.db)
     if not db_path.exists():
@@ -799,7 +977,19 @@ def main() -> None:
 
     with sqlite3.connect(str(db_path)) as conn:
         ensure_ai_tables(conn)
-        metrics = load_active_metrics(conn)
+        prompt_text = (load_prompt_from_db(conn, evaluator_key) or "").strip()
+        if not prompt_text:
+            raise SystemExit(f"评估器 {evaluator_key} 的 prompt 为空，请先在 evaluators.prompt 填充内容")
+        system_prompt, user_template = parse_prompt_text(prompt_text)
+        allowed_keys = load_allowed_metric_keys(conn, evaluator_key)
+        pipeline_metric_keys: Set[str] = set()
+        if pipeline_id:
+            pipeline_metric_keys = load_pipeline_metric_keys(conn, int(pipeline_id))
+        metrics = load_active_metrics(
+            conn,
+            allowed_keys=allowed_keys if allowed_keys else None,
+            pipeline_keys=pipeline_metric_keys if pipeline_metric_keys else None,
+        )
         metrics_block = build_metrics_block(metrics)
         schema_example = build_schema_example(metrics)
         enriched_template = fill_prompt(
@@ -828,6 +1018,7 @@ def main() -> None:
             args.hours,
             categories=args.category,
             sources=args.source,
+            evaluator_key=evaluator_key,
         )
         if not articles:
             print("没有待处理的资讯")
@@ -843,6 +1034,7 @@ def main() -> None:
             dry_run=args.dry_run,
             review_columns=review_columns,
             enable_legacy_backfill=legacy_backfill,
+            evaluator_key=evaluator_key,
         )
 
 

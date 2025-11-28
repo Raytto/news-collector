@@ -216,7 +216,7 @@ export default function AiMetrics() {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <div style={{ fontSize: 18, fontWeight: 500 }}>AI评估</div>
+        <div style={{ fontSize: 18, fontWeight: 500 }}>AI指标</div>
         <Button type="primary" onClick={openCreate} disabled={!isAdmin}>
           新增维度
         </Button>

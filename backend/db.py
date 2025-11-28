@@ -56,6 +56,62 @@ CREATE INDEX IF NOT EXISTS idx_source_address_source
 CREATE UNIQUE INDEX IF NOT EXISTS idx_source_address_unique
   ON source_address (source_id, address);
 
+-- 管线类别
+CREATE TABLE IF NOT EXISTS pipeline_classes (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
+  description  TEXT,
+  enabled      INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_categories (
+  pipeline_class_id INTEGER NOT NULL,
+  category_key      TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, category_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id),
+  FOREIGN KEY (category_key) REFERENCES categories(key)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_evaluators (
+  pipeline_class_id INTEGER NOT NULL,
+  evaluator_key     TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, evaluator_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_class_writers (
+  pipeline_class_id INTEGER NOT NULL,
+  writer_type       TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, writer_type),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
+
+-- 评估器定义
+CREATE TABLE IF NOT EXISTS evaluators (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
+  description  TEXT,
+  prompt       TEXT,
+  active       INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS evaluator_metrics (
+  evaluator_id INTEGER NOT NULL,
+  metric_id    INTEGER NOT NULL,
+  PRIMARY KEY (evaluator_id, metric_id),
+  FOREIGN KEY (evaluator_id) REFERENCES evaluators(id) ON DELETE CASCADE,
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluator_metrics_eval
+  ON evaluator_metrics (evaluator_id);
+
 CREATE TABLE IF NOT EXISTS pipelines (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
@@ -65,7 +121,10 @@ CREATE TABLE IF NOT EXISTS pipelines (
   description   TEXT,
   created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
-  debug_enabled INTEGER NOT NULL DEFAULT 0
+  owner_user_id INTEGER,
+  debug_enabled INTEGER NOT NULL DEFAULT 0,
+  pipeline_class_id INTEGER,
+  evaluator_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_filters (
@@ -102,6 +161,12 @@ CREATE TABLE IF NOT EXISTS pipeline_writer_metric_weights (
 
 CREATE INDEX IF NOT EXISTS idx_wm_weights_pipeline
   ON pipeline_writer_metric_weights (pipeline_id);
+
+CREATE TABLE IF NOT EXISTS source_runs (
+  source_id   INTEGER PRIMARY KEY,
+  last_run_at TEXT NOT NULL,
+  FOREIGN KEY (source_id) REFERENCES sources(id)
+);
 
 CREATE TABLE IF NOT EXISTS pipeline_deliveries_email (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -200,6 +265,12 @@ CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup
 
 # Defaults aligned with writers (email_writer.py / feishu_writer.py)
 DEFAULT_METRICS: Tuple[Dict[str, object], ...] = (
+    {
+        "key": "rok_cod_fit",
+        "label_zh": "ROK/COD 副玩法结合可能性",
+        "default_weight": 1.0,
+        "sort_order": 10,
+    },
     {"key": "timeliness", "label_zh": "时效性", "default_weight": 0.14, "sort_order": 10},
     {"key": "game_relevance", "label_zh": "游戏相关性", "default_weight": 0.20, "sort_order": 20},
     {"key": "mobile_game_relevance", "label_zh": "手游相关性", "default_weight": 0.09, "sort_order": 30},
@@ -230,7 +301,6 @@ def _get_env_bool(key: str, default: bool = False) -> bool:
         return default
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
-
 def ensure_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(DB_PATH)) as conn:
@@ -258,6 +328,27 @@ def ensure_db() -> None:
         p_cols = {row[1] for row in cur.fetchall()}
         if "weekdays_json" not in p_cols:
             cur.execute("ALTER TABLE pipelines ADD COLUMN weekdays_json TEXT")
+        # Add pipeline_class_id/evaluator_key columns to pipelines if missing
+        cur.execute("PRAGMA table_info(pipelines)")
+        p_cols = {row[1] for row in cur.fetchall()}
+        if "pipeline_class_id" not in p_cols:
+            cur.execute("ALTER TABLE pipelines ADD COLUMN pipeline_class_id INTEGER")
+        if "evaluator_key" not in p_cols:
+            cur.execute("ALTER TABLE pipelines ADD COLUMN evaluator_key TEXT")
+        # Backfill defaults when new columns were added
+        try:
+            row_general = cur.execute(
+                "SELECT id FROM pipeline_classes WHERE key='general_news' ORDER BY id LIMIT 1"
+            ).fetchone()
+            default_class_id = int(row_general[0]) if row_general else None
+        except sqlite3.OperationalError:
+            default_class_id = None
+        if default_class_id is not None:
+            cur.execute(
+                "UPDATE pipelines SET pipeline_class_id=? WHERE pipeline_class_id IS NULL",
+                (default_class_id,),
+            )
+        cur.execute("UPDATE pipelines SET evaluator_key='news_evaluator' WHERE evaluator_key IS NULL")
         # Add enabled column to users if missing
         cur.execute("PRAGMA table_info(users)")
         u_cols = {row[1] for row in cur.fetchall()}
@@ -310,6 +401,149 @@ def ensure_db() -> None:
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_pipelines_owner ON pipelines (owner_user_id)")
             finally:
                 conn.execute("PRAGMA foreign_keys = ON")
+        # Seed默认管线类别
+        try:
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO pipeline_classes (key, label_zh, description, enabled)
+                VALUES ('general_news', '综合资讯', '通用资讯管线', 1)
+                """
+            )
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO pipeline_classes (key, label_zh, description, enabled)
+                VALUES ('legou_minigame', '乐狗副玩法', 'YouTube 小游戏推荐', 1)
+                """
+            )
+        except sqlite3.OperationalError:
+            # 表不存在时静默跳过
+            pass
+        else:
+            try:
+                row_general = cur.execute(
+                    "SELECT id FROM pipeline_classes WHERE key='general_news' ORDER BY id LIMIT 1"
+                ).fetchone()
+                row_minigame = cur.execute(
+                    "SELECT id FROM pipeline_classes WHERE key='legou_minigame' ORDER BY id LIMIT 1"
+                ).fetchone()
+                if row_general:
+                    general_id = int(row_general[0])
+                    cur.execute(
+                        "UPDATE pipelines SET pipeline_class_id=? WHERE pipeline_class_id IS NULL",
+                        (general_id,),
+                    )
+                    # 默认综合资讯类允许平台已有的通用资讯类别
+                    # 注：乐狗副玩法使用 game_yt，保持分组隔离
+                    for cat in ("game", "tech", "general", "humanities"):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_categories (pipeline_class_id, category_key) VALUES (?, ?)",
+                                (general_id, cat),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+                    for ev in ("news_evaluator",):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_evaluators (pipeline_class_id, evaluator_key) VALUES (?, ?)",
+                                (general_id, ev),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+                    for wt in ("email_news", "feishu_news", "feishu_md", "info_html"):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_writers (pipeline_class_id, writer_type) VALUES (?, ?)",
+                                (general_id, wt),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+                if row_minigame:
+                    minigame_id = int(row_minigame[0])
+                    for cat in ("game_yt",):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_categories (pipeline_class_id, category_key) VALUES (?, ?)",
+                                (minigame_id, cat),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+                    for ev in ("legou_minigame_evaluator",):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_evaluators (pipeline_class_id, evaluator_key) VALUES (?, ?)",
+                                (minigame_id, ev),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+                    for wt in ("feishu_legou_game",):
+                        try:
+                            cur.execute(
+                                "INSERT OR IGNORE INTO pipeline_class_writers (pipeline_class_id, writer_type) VALUES (?, ?)",
+                                (minigame_id, wt),
+                            )
+                        except sqlite3.IntegrityError:
+                            pass
+            except sqlite3.OperationalError:
+                pass
+        # Seed 默认评估器及其允许的指标
+        try:
+            # 确保评估器表具备 prompt/active 列（兼容旧库）
+            cur.execute("PRAGMA table_info(evaluators)")
+            eval_cols = {row[1] for row in cur.fetchall()}
+            if eval_cols and "prompt" not in eval_cols:
+                cur.execute("ALTER TABLE evaluators ADD COLUMN prompt TEXT")
+            if eval_cols and "active" not in eval_cols:
+                cur.execute("ALTER TABLE evaluators ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+            seed_defs = (
+                ("news_evaluator", "资讯评估器", "通用资讯评估"),
+                ("legou_minigame_evaluator", "乐狗副玩法评估器", "乐狗 YouTube 副玩法评估"),
+            )
+            for key, label, desc in seed_defs:
+                cur.execute(
+                    "INSERT OR IGNORE INTO evaluators (key, label_zh, description, prompt, active) VALUES (?, ?, ?, ?, 1)",
+                    (key, label, desc, ""),
+                )
+            try:
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO ai_metrics (key, label_zh, rate_guide_zh, default_weight, active, sort_order)
+                    VALUES ('rok_cod_fit', 'ROK/COD 副玩法结合可能性', '5-高度可行；3-有限可行；1-不合适', 1.0, 1, 10)
+                    """
+                )
+            except sqlite3.OperationalError:
+                pass
+            # 将现有指标填充到评估器允许的指标列表（若尚未配置）
+            try:
+                metric_rows = cur.execute("SELECT id, key FROM ai_metrics WHERE active=1").fetchall()
+                metric_map = {str(row[1]): int(row[0]) for row in metric_rows}
+            except sqlite3.OperationalError:
+                metric_map = {}
+            for key, _label, _desc in seed_defs:
+                row = cur.execute("SELECT id FROM evaluators WHERE key=?", (key,)).fetchone()
+                if not row:
+                    continue
+                ev_id = int(row[0])
+                if key == "legou_minigame_evaluator":
+                    cur.execute("DELETE FROM evaluator_metrics WHERE evaluator_id=?", (ev_id,))
+                    target_keys = ["rok_cod_fit"]
+                else:
+                    exists = cur.execute(
+                        "SELECT 1 FROM evaluator_metrics WHERE evaluator_id=? LIMIT 1",
+                        (ev_id,),
+                    ).fetchone()
+                    if exists:
+                        continue
+                    target_keys = [k for k in metric_map.keys() if k != "rok_cod_fit"]
+                metric_ids = [metric_map[k] for k in target_keys if k in metric_map]
+                if metric_ids:
+                    cur.executemany(
+                        "INSERT OR IGNORE INTO evaluator_metrics (evaluator_id, metric_id) VALUES (?, ?)",
+                        [(ev_id, mid) for mid in metric_ids],
+                    )
+        except sqlite3.OperationalError:
+            # 旧版本可能缺少 ai_metrics/evaluators 表，忽略初始化
+            pass
         conn.commit()
 
 
@@ -415,6 +649,69 @@ def _normalize_weights_json(conn: sqlite3.Connection, raw_value: Any) -> Optiona
     return str(value)
 
 
+def _safe_json_loads(raw: Any, *, default: Any = None) -> Any:
+    """Parse JSON safely; return default on any failure."""
+    if raw is None:
+        return default
+    value = raw
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return default
+        value = stripped
+    try:
+        return json.loads(value)
+    except Exception:
+        try:
+            text = str(value)
+            preview = text if len(text) <= 120 else f"{text[:117]}..."
+            print(f"[WARN] safe_json_loads: failed to parse JSON, returning default. raw={preview!r}")
+        except Exception:
+            print("[WARN] safe_json_loads: failed to parse JSON; unable to render raw value")
+        return default
+
+
+def _extract_metric_keys(raw_value: Any) -> set[str]:
+    keys: set[str] = set()
+    if raw_value is None:
+        return keys
+    value = raw_value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return keys
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            keys.add(s)
+        else:
+            value = parsed
+    if isinstance(value, dict):
+        for key in value.keys():
+            if key is None:
+                continue
+            text = str(key).strip()
+            if text:
+                keys.add(text)
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    keys.add(text)
+            elif isinstance(item, dict):
+                sub = item.get("key")
+                if sub:
+                    text = str(sub).strip()
+                    if text:
+                        keys.add(text)
+    return keys
+
+
 def _resolve_metric_id(conn: sqlite3.Connection, raw_key: Any) -> Optional[int]:
     key = _ensure_metric_key(conn, raw_key)
     if key is None:
@@ -425,8 +722,10 @@ def _resolve_metric_id(conn: sqlite3.Connection, raw_key: Any) -> Optional[int]:
     return int(row[0])
 
 
-def _load_metric_defaults(conn: sqlite3.Connection) -> Dict[str, float]:
+def _load_metric_defaults(conn: sqlite3.Connection, allowed_keys: Optional[set[str]] = None) -> Dict[str, float]:
     metrics = _list_active_metrics(conn)
+    if allowed_keys:
+        metrics = [m for m in metrics if m.get("key") in allowed_keys]
     return {
         metric["key"]: float(metric.get("default_weight") or 0.0)
         for metric in metrics
@@ -501,6 +800,7 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
           GROUP BY pipeline_id
         )
         SELECT p.id, p.name, p.enabled, p.description, p.updated_at, p.owner_user_id, p.debug_enabled, p.weekdays_json,
+               p.pipeline_class_id, p.evaluator_key,
                u.name AS owner_user_name, u.email AS owner_user_email,
                w.type AS writer_type, w.hours AS writer_hours,
                CASE WHEN e.pipeline_id IS NOT NULL THEN 'email'
@@ -536,6 +836,8 @@ def fetch_pipeline_list(conn: sqlite3.Connection) -> list[dict]:
             "owner_user_id": int(r["owner_user_id"]) if r["owner_user_id"] is not None else None,
             "owner_user_name": r["owner_user_name"],
             "owner_user_email": r["owner_user_email"],
+            "pipeline_class_id": int(r["pipeline_class_id"]) if r["pipeline_class_id"] is not None else None,
+            "evaluator_key": r["evaluator_key"],
             "writer_type": r["writer_type"],
             "writer_hours": r["writer_hours"],
             "delivery_kind": r["delivery_kind"],
@@ -568,11 +870,12 @@ def _parse_weekdays_text(raw: Any) -> Optional[list[int]]:
 def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
     cur = conn.cursor()
     p = cur.execute(
-        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id, COALESCE(debug_enabled,0) AS debug_enabled, weekdays_json FROM pipelines WHERE id=?",
+        "SELECT id, name, enabled, COALESCE(description,'') AS description, owner_user_id, COALESCE(debug_enabled,0) AS debug_enabled, weekdays_json, pipeline_class_id, evaluator_key FROM pipelines WHERE id=?",
         (pid,),
     ).fetchone()
     if not p:
         return None
+    allowed_metric_keys = get_allowed_metric_keys(conn, p["evaluator_key"] or "news_evaluator")
     f = cur.execute(
         "SELECT all_categories, categories_json, all_src, include_src_json FROM pipeline_filters WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
         (pid,),
@@ -594,16 +897,16 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
     if f:
         filters = {
             "all_categories": int(f[0]),
-            "categories_json": json.loads(f[1]) if f[1] else None,
+            "categories_json": _safe_json_loads(f[1]),
             "all_src": int(f[2]),
-            "include_src_json": json.loads(f[3]) if f[3] else None,
+            "include_src_json": _safe_json_loads(f[3]),
         }
 
     writer = None
     if w:
-        defaults = _load_metric_defaults(conn)
+        defaults = _load_metric_defaults(conn, allowed_metric_keys if allowed_metric_keys else None)
         normalized_weights = _normalize_weights_json(conn, w[2])
-        weights_dict: Dict[str, float]
+        weights_dict: Dict[str, float] = defaults.copy()
         if normalized_weights:
             try:
                 weights_dict = json.loads(normalized_weights)
@@ -612,17 +915,23 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             else:
                 if not isinstance(weights_dict, dict):
                     weights_dict = defaults.copy()
+        if allowed_metric_keys and weights_dict:
+            weights_dict = {k: v for k, v in weights_dict.items() if k in allowed_metric_keys}
         else:
             weights_dict = defaults.copy()
         writer = {
             "type": str(w[0] or ""),
             "hours": int(w[1] or 24),
             "weights_json": weights_dict,
-            "bonus_json": json.loads(w[3]) if w[3] else None,
+            "bonus_json": _safe_json_loads(w[3]),
             "limit_per_category": _normalize_limit_map(w[4]),
             "per_source_cap": int(w[5]) if w[5] is not None else None,
             "metric_weights": _fetch_metric_weights(conn, pid),
         }
+        if allowed_metric_keys and isinstance(writer["metric_weights"], list):
+            writer["metric_weights"] = [
+                row for row in writer["metric_weights"] if row.get("key") in allowed_metric_keys
+            ]
         # Provide effective defaults for editing convenience
         if writer["limit_per_category"] is None:
             writer["limit_per_category"] = {"default": 10}
@@ -649,7 +958,7 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             "chat_id": fs[3],
             "title_tpl": fs[4],
             "to_all": int(fs[5] or 0),
-            "content_json": json.loads(fs[6]) if fs[6] else None,
+            "content_json": _safe_json_loads(fs[6]),
         }
 
     return {
@@ -659,6 +968,8 @@ def fetch_pipeline(conn: sqlite3.Connection, pid: int) -> Optional[dict]:
             "enabled": int(p["enabled"]),
             "description": p["description"],
             "owner_user_id": int(p["owner_user_id"]) if p["owner_user_id"] is not None else None,
+            "pipeline_class_id": int(p["pipeline_class_id"]) if p["pipeline_class_id"] is not None else None,
+            "evaluator_key": p["evaluator_key"],
             "debug_enabled": int(p["debug_enabled"]) if p["debug_enabled"] is not None else 0,
             "weekdays_json": _parse_weekdays_text(p["weekdays_json"]) if "weekdays_json" in p.keys() else None,
         },
@@ -687,10 +998,28 @@ def create_or_update_pipeline(
 ) -> int:
     cur = conn.cursor()
     base = payload.get("pipeline") or {}
+    existing_class_id: Optional[int] = None
+    existing_evaluator_key: Optional[str] = None
+    if pid is not None:
+        try:
+            existed_row = cur.execute(
+                "SELECT pipeline_class_id, evaluator_key FROM pipelines WHERE id=?",
+                (pid,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            existed_row = None
+        if existed_row:
+            if existed_row["pipeline_class_id"] is not None:
+                existing_class_id = int(existed_row["pipeline_class_id"])
+            if existed_row["evaluator_key"] is not None:
+                existing_evaluator_key = str(existed_row["evaluator_key"]).strip() or None
     # Observe missing vs explicit values for partial updates
     raw_name = base.get("name", _MISSING)
     raw_enabled = base.get("enabled", _MISSING)
     raw_description = base.get("description", _MISSING)
+    raw_pipeline_class = base.get("pipeline_class_id", _MISSING)
+    raw_evaluator_key = base.get("evaluator_key", _MISSING)
+    evaluator_key_provided = raw_evaluator_key is not _MISSING
     # Compute params for insert/update
     name_param: Optional[str]
     if raw_name is _MISSING:
@@ -708,6 +1037,21 @@ def create_or_update_pipeline(
         description_param: Optional[str] = None
     else:
         description_param = str(raw_description or "")
+    # Normalize pipeline_class_id (allow missing)
+    class_provided = raw_pipeline_class is not _MISSING
+    if raw_pipeline_class is _MISSING:
+        pipeline_class_param: Optional[int] = None
+    else:
+        try:
+            pipeline_class_param = int(raw_pipeline_class)
+        except (TypeError, ValueError):
+            pipeline_class_param = None
+    evaluator_key_explicit: Optional[str]
+    if evaluator_key_provided:
+        ek = str(raw_evaluator_key or "").strip()
+        evaluator_key_explicit = ek if ek else None
+    else:
+        evaluator_key_explicit = None
     # Only update debug flag when explicitly provided; default OFF for new
     raw_debug = base.get("debug_enabled")
     debug_enabled_param: Optional[int]
@@ -722,6 +1066,29 @@ def create_or_update_pipeline(
     name_insert = name_param if name_param is not None else ""
     enabled_insert = enabled_param if enabled_param is not None else 1
     description_insert = description_param if description_param is not None else ""
+    pipeline_class_insert: Optional[int]
+    if pid is None:
+        pipeline_class_insert = pipeline_class_param if pipeline_class_param is not None else None
+        if pipeline_class_insert is None:
+            try:
+                row = cur.execute(
+                    "SELECT id FROM pipeline_classes WHERE key='general_news' ORDER BY id LIMIT 1"
+                ).fetchone()
+                if row:
+                    pipeline_class_insert = int(row[0])
+                else:
+                    row_any = cur.execute("SELECT id FROM pipeline_classes ORDER BY id LIMIT 1").fetchone()
+                    if row_any:
+                        pipeline_class_insert = int(row_any[0])
+            except sqlite3.OperationalError:
+                pipeline_class_insert = None
+    else:
+        if class_provided:
+            if pipeline_class_param is None:
+                raise ValueError("管线类别无效")
+            pipeline_class_insert = pipeline_class_param
+        else:
+            pipeline_class_insert = existing_class_id
     # Normalize weekdays_json (list[int] 1..7) → JSON text or NULL; preserve if MISSING
     raw_weekdays = base.get("weekdays_json", _MISSING)
     weekdays_norm: object | None
@@ -761,11 +1128,108 @@ def create_or_update_pipeline(
     if owner_id is None:
         owner_id = owner_user_id
 
+    # Resolve pipeline class & its constraints
+    if pipeline_class_insert is None:
+        raise ValueError("缺少管线类别")
+    class_changed = False
+    if pid is not None and class_provided:
+        class_changed = (existing_class_id is None) or (int(pipeline_class_insert) != int(existing_class_id))
+    class_row = cur.execute(
+        "SELECT id, enabled FROM pipeline_classes WHERE id=?",
+        (pipeline_class_insert,),
+    ).fetchone()
+    if not class_row:
+        raise ValueError("未找到管线类别")
+    if int(class_row["enabled"] or 0) == 0:
+        raise ValueError("管线类别未启用")
+    allowed_cats = {
+        str(row[0])
+        for row in cur.execute(
+            "SELECT category_key FROM pipeline_class_categories WHERE pipeline_class_id=?",
+            (pipeline_class_insert,),
+        ).fetchall()
+    }
+    allowed_eval_rows = cur.execute(
+        "SELECT evaluator_key FROM pipeline_class_evaluators WHERE pipeline_class_id=? ORDER BY rowid",
+        (pipeline_class_insert,),
+    ).fetchall()
+    allowed_evals_list = [str(row[0]) for row in allowed_eval_rows if row and row[0]]
+    allowed_evals = set(allowed_evals_list)
+    default_allowed_evaluator = allowed_evals_list[0] if allowed_evals_list else None
+    allowed_writers = {
+        str(row[0])
+        for row in cur.execute(
+            "SELECT writer_type FROM pipeline_class_writers WHERE pipeline_class_id=?",
+            (pipeline_class_insert,),
+        ).fetchall()
+    }
+    evaluator_fallback = default_allowed_evaluator or "news_evaluator"
+    if evaluator_key_explicit:
+        final_evaluator_key = evaluator_key_explicit
+    else:
+        if pid is not None and not evaluator_key_provided and existing_evaluator_key and not class_changed:
+            final_evaluator_key = existing_evaluator_key
+        else:
+            final_evaluator_key = evaluator_fallback
+    if allowed_evals and final_evaluator_key not in allowed_evals:
+        if default_allowed_evaluator and default_allowed_evaluator in allowed_evals:
+            final_evaluator_key = default_allowed_evaluator
+        else:
+            raise ValueError("评估器不在该管线类别允许列表中")
+    allowed_metric_keys = get_allowed_metric_keys(conn, final_evaluator_key)
+    evaluator_key_insert = final_evaluator_key
+    should_update_evaluator = (
+        pid is None
+        or evaluator_key_provided
+        or class_changed
+        or (existing_evaluator_key or "") != final_evaluator_key
+    )
+    evaluator_key_param = final_evaluator_key if should_update_evaluator else None
+    # Normalize filters early for validation
+    filters_payload = payload.get("filters") or {}
+    all_categories_flag = 1
+    try:
+        all_categories_flag = 1 if int(filters_payload.get("all_categories", 1)) else 0
+    except (TypeError, ValueError):
+        all_categories_flag = 1
+    categories_selected = _dedupe_str_list(filters_payload.get("categories_json") or [])
+    include_src_selected = _dedupe_str_list(filters_payload.get("include_src_json") or [])
+    source_cat_map = {
+        row[0]: row[1]
+        for row in cur.execute("SELECT key, category_key FROM sources").fetchall()
+    }
+    if all_categories_flag == 1:
+        categories_selected = []
+        include_src_selected = []
+    else:
+        for cat in categories_selected:
+            if allowed_cats and cat not in allowed_cats:
+                raise ValueError(f"类别 {cat} 不在该管线类别允许范围内")
+        for src in include_src_selected:
+            if src not in source_cat_map:
+                raise ValueError(f"未找到来源：{src}")
+            cat_key = source_cat_map[src]
+            if allowed_cats and cat_key not in allowed_cats:
+                raise ValueError(f"来源 {src} 的分类 {cat_key} 不在该管线类别允许范围内")
+    # Validate writer type
+    writer_payload = payload.get("writer") or {}
+    writer_type_val = str(writer_payload.get("type") or "").strip()
+    if writer_type_val and allowed_writers and writer_type_val not in allowed_writers:
+        raise ValueError("Writer 类型不在该管线类别允许范围内")
+
     if pid is None:
         if weekdays_norm is _MISSING:
             cur.execute(
-                "INSERT INTO pipelines (name, enabled, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?)",
-                (name_insert, enabled_insert, description_insert, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
+                "INSERT INTO pipelines (name, enabled, description, owner_user_id, debug_enabled, pipeline_class_id, evaluator_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name_insert,
+                    enabled_insert,
+                    description_insert,
+                    owner_id,
+                    debug_enabled_param if debug_enabled_param is not None else 0,
+                    pipeline_class_insert,
+                    evaluator_key_insert,
+                ),
             )
         else:
             if _get_env_bool("DEBUG_WEEKDAY", False):
@@ -774,16 +1238,34 @@ def create_or_update_pipeline(
                 except Exception:
                     pass
             cur.execute(
-                "INSERT INTO pipelines (name, enabled, weekdays_json, description, owner_user_id, debug_enabled) VALUES (?, ?, ?, ?, ?, ?)",
-                (name_insert, enabled_insert, weekdays_norm, description_insert, owner_id, debug_enabled_param if debug_enabled_param is not None else 0),
+                "INSERT INTO pipelines (name, enabled, weekdays_json, description, owner_user_id, debug_enabled, pipeline_class_id, evaluator_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    name_insert,
+                    enabled_insert,
+                    weekdays_norm,
+                    description_insert,
+                    owner_id,
+                    debug_enabled_param if debug_enabled_param is not None else 0,
+                    pipeline_class_insert,
+                    evaluator_key_insert,
+                ),
             )
         pid = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
     else:
         # Build dynamic update using COALESCE to preserve missing fields
         if weekdays_norm is _MISSING:
             cur.execute(
-                "UPDATE pipelines SET name=COALESCE(?, name), enabled=COALESCE(?, enabled), description=COALESCE(?, description), owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (name_param, enabled_param, description_param, owner_id, debug_enabled_param, pid),
+                "UPDATE pipelines SET name=COALESCE(?, name), enabled=COALESCE(?, enabled), description=COALESCE(?, description), owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), pipeline_class_id=COALESCE(?, pipeline_class_id), evaluator_key=COALESCE(?, evaluator_key), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (
+                    name_param,
+                    enabled_param,
+                    description_param,
+                    owner_id,
+                    debug_enabled_param,
+                    pipeline_class_param,
+                    evaluator_key_param,
+                    pid,
+                ),
             )
         else:
             if _get_env_bool("DEBUG_WEEKDAY", False):
@@ -792,8 +1274,18 @@ def create_or_update_pipeline(
                 except Exception:
                     pass
             cur.execute(
-                "UPDATE pipelines SET name=COALESCE(?, name), enabled=COALESCE(?, enabled), weekdays_json=?, description=COALESCE(?, description), owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (name_param, enabled_param, weekdays_norm, description_param, owner_id, debug_enabled_param, pid),
+                "UPDATE pipelines SET name=COALESCE(?, name), enabled=COALESCE(?, enabled), weekdays_json=?, description=COALESCE(?, description), owner_user_id=COALESCE(?, owner_user_id), debug_enabled=COALESCE(?, debug_enabled), pipeline_class_id=COALESCE(?, pipeline_class_id), evaluator_key=COALESCE(?, evaluator_key), updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (
+                    name_param,
+                    enabled_param,
+                    weekdays_norm,
+                    description_param,
+                    owner_id,
+                    debug_enabled_param,
+                    pipeline_class_param,
+                    evaluator_key_param,
+                    pid,
+                ),
             )
 
     # filters
@@ -805,16 +1297,21 @@ def create_or_update_pipeline(
             "INSERT OR REPLACE INTO pipeline_filters (pipeline_id, all_categories, categories_json, all_src, include_src_json) VALUES (?, ?, ?, ?, ?)",
             (
                 pid,
-                int(f.get("all_categories", 1)),
-                _to_json_text(f.get("categories_json")),
-                int(f.get("all_src", 1)),
-                _to_json_text(f.get("include_src_json")),
+                all_categories_flag,
+                _to_json_text(categories_selected),
+                1,
+                _to_json_text(include_src_selected),
             ),
         )
 
     # writer
-    w = payload.get("writer") or {}
+    w = writer_payload
     if w:
+        requested_metric_keys: set[str] = set()
+        requested_metric_keys |= _extract_metric_keys(w.get("weights_json"))
+        requested_metric_keys |= _extract_metric_keys(w.get("metric_weights") or [])
+        if allowed_metric_keys and requested_metric_keys and not requested_metric_keys.issubset(allowed_metric_keys):
+            raise ValueError("存在不被评估器允许的指标")
         cur.execute("DELETE FROM pipeline_writers WHERE pipeline_id=?", (pid,))
         limit_map = _normalize_limit_map(w.get("limit_per_category"))
         weights_json_norm = _normalize_weights_json(conn, w.get("weights_json"))
@@ -1369,14 +1866,249 @@ def delete_pipeline(conn: sqlite3.Connection, pid: int) -> None:
 
 def fetch_options(conn: sqlite3.Connection) -> dict:
     cur = conn.cursor()
-    rows = cur.execute("SELECT DISTINCT category FROM info WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category").fetchall()
+    rows = cur.execute(
+        "SELECT DISTINCT category FROM info WHERE category IS NOT NULL AND TRIM(category) <> '' ORDER BY category"
+    ).fetchall()
     categories = [r[0] for r in rows]
+    # Pipeline classes are optional; ignore if table missing
+    pipeline_classes: list[dict] = []
+    try:
+        class_rows = cur.execute(
+            """
+            SELECT id, key, label_zh, description, enabled
+            FROM pipeline_classes
+            ORDER BY id
+            """
+        ).fetchall()
+        cat_rows = cur.execute(
+            "SELECT pipeline_class_id, category_key FROM pipeline_class_categories"
+        ).fetchall()
+        eval_rows = cur.execute(
+            "SELECT pipeline_class_id, evaluator_key FROM pipeline_class_evaluators"
+        ).fetchall()
+        writer_rows = cur.execute(
+            "SELECT pipeline_class_id, writer_type FROM pipeline_class_writers"
+        ).fetchall()
+        cat_map: dict[int, list[str]] = {}
+        eval_map: dict[int, list[str]] = {}
+        writer_map: dict[int, list[str]] = {}
+        for row in cat_rows:
+            cid = int(row[0])
+            cat_map.setdefault(cid, []).append(str(row[1]))
+        for row in eval_rows:
+            cid = int(row[0])
+            eval_map.setdefault(cid, []).append(str(row[1]))
+        for row in writer_rows:
+            cid = int(row[0])
+            writer_map.setdefault(cid, []).append(str(row[1]))
+        for r in class_rows:
+            cid = int(r["id"])
+            pipeline_classes.append(
+                {
+                    "id": cid,
+                    "key": r["key"],
+                    "label_zh": r["label_zh"],
+                    "description": r["description"],
+                    "enabled": int(r["enabled"] or 0),
+                    "categories": _dedupe_str_list(cat_map.get(cid, [])),
+                    "evaluators": _dedupe_str_list(eval_map.get(cid, [])),
+                    "writers": _dedupe_str_list(writer_map.get(cid, [])),
+                }
+            )
+    except sqlite3.OperationalError:
+        pipeline_classes = []
+    evaluators = fetch_evaluators(conn)
     return {
         "categories": categories,
+        "pipeline_classes": pipeline_classes,
         "writer_types": ["feishu_md", "info_html"],
         "delivery_kinds": ["email", "feishu"],
         "metrics": _list_active_metrics(conn),
+        "evaluators": evaluators,
     }
+
+
+def _dedupe_str_list(values: Iterable[object]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for v in values:
+        key = str(v or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def fetch_pipeline_classes(conn: sqlite3.Connection) -> list[dict]:
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT id, key, label_zh, description, enabled, created_at, updated_at FROM pipeline_classes ORDER BY id"
+    ).fetchall()
+    cat_rows = cur.execute(
+        "SELECT pipeline_class_id, category_key FROM pipeline_class_categories"
+    ).fetchall()
+    eval_rows = cur.execute(
+        "SELECT pipeline_class_id, evaluator_key FROM pipeline_class_evaluators"
+    ).fetchall()
+    writer_rows = cur.execute(
+        "SELECT pipeline_class_id, writer_type FROM pipeline_class_writers"
+    ).fetchall()
+    cat_map: dict[int, list[str]] = {}
+    eval_map: dict[int, list[str]] = {}
+    writer_map: dict[int, list[str]] = {}
+    for row in cat_rows:
+        cid = int(row[0])
+        cat_map.setdefault(cid, []).append(str(row[1]))
+    for row in eval_rows:
+        cid = int(row[0])
+        eval_map.setdefault(cid, []).append(str(row[1]))
+    for row in writer_rows:
+        cid = int(row[0])
+        writer_map.setdefault(cid, []).append(str(row[1]))
+    result: list[dict] = []
+    for r in rows:
+        cid = int(r["id"])
+        result.append(
+            {
+                "id": cid,
+                "key": r["key"],
+                "label_zh": r["label_zh"],
+                "description": r["description"],
+                "enabled": int(r["enabled"] or 0),
+                "categories": _dedupe_str_list(cat_map.get(cid, [])),
+                "evaluators": _dedupe_str_list(eval_map.get(cid, [])),
+                "writers": _dedupe_str_list(writer_map.get(cid, [])),
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            }
+        )
+    return result
+
+
+def _replace_pipeline_class_links(
+    conn: sqlite3.Connection,
+    cid: int,
+    *,
+    categories: Optional[Iterable[str]] = None,
+    evaluators: Optional[Iterable[str]] = None,
+    writers: Optional[Iterable[str]] = None,
+) -> None:
+    cur = conn.cursor()
+    if categories is not None and categories is not _MISSING:
+        allowed_categories = {row[0] for row in cur.execute("SELECT key FROM categories").fetchall()}
+        cur.execute("DELETE FROM pipeline_class_categories WHERE pipeline_class_id=?", (cid,))
+        rows_to_insert = []
+        for cat in _dedupe_str_list(categories):
+            if cat not in allowed_categories:
+                raise ValueError(f"未找到分类：{cat}")
+            rows_to_insert.append((cid, cat))
+        if rows_to_insert:
+            cur.executemany(
+                "INSERT OR REPLACE INTO pipeline_class_categories (pipeline_class_id, category_key) VALUES (?, ?)",
+                rows_to_insert,
+            )
+    if evaluators is not None and evaluators is not _MISSING:
+        cur.execute("DELETE FROM pipeline_class_evaluators WHERE pipeline_class_id=?", (cid,))
+        rows_to_insert = [(cid, ev) for ev in _dedupe_str_list(evaluators)]
+        if rows_to_insert:
+            cur.executemany(
+                "INSERT OR REPLACE INTO pipeline_class_evaluators (pipeline_class_id, evaluator_key) VALUES (?, ?)",
+                rows_to_insert,
+            )
+    if writers is not None and writers is not _MISSING:
+        cur.execute("DELETE FROM pipeline_class_writers WHERE pipeline_class_id=?", (cid,))
+        rows_to_insert = [(cid, wt) for wt in _dedupe_str_list(writers)]
+        if rows_to_insert:
+            cur.executemany(
+                "INSERT OR REPLACE INTO pipeline_class_writers (pipeline_class_id, writer_type) VALUES (?, ?)",
+                rows_to_insert,
+            )
+
+
+def create_pipeline_class(conn: sqlite3.Connection, payload: dict) -> int:
+    cur = conn.cursor()
+    key = str(payload.get("key") or "").strip()
+    label = str(payload.get("label_zh") or "").strip()
+    description = payload.get("description")
+    enabled_raw = payload.get("enabled", 1)
+    try:
+        enabled = 1 if int(enabled_raw) else 0
+    except (TypeError, ValueError):
+        enabled = 1
+    if not key:
+        raise ValueError("缺少管线类别 key")
+    if not label:
+        raise ValueError("缺少管线类别名称")
+    cur.execute(
+        "INSERT INTO pipeline_classes (key, label_zh, description, enabled) VALUES (?, ?, ?, ?)",
+        (key, label, description, enabled),
+    )
+    cid = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+    _replace_pipeline_class_links(
+        conn,
+        cid,
+        categories=payload.get("categories"),
+        evaluators=payload.get("evaluators"),
+        writers=payload.get("writers"),
+    )
+    conn.commit()
+    return cid
+
+
+def update_pipeline_class(conn: sqlite3.Connection, cid: int, payload: dict) -> None:
+    cur = conn.cursor()
+    exists = cur.execute("SELECT id FROM pipeline_classes WHERE id=?", (cid,)).fetchone()
+    if not exists:
+        raise ValueError("未找到管线类别")
+    raw_key = payload.get("key", _MISSING)
+    raw_label = payload.get("label_zh", _MISSING)
+    raw_desc = payload.get("description", _MISSING)
+    raw_enabled = payload.get("enabled", _MISSING)
+    try:
+        enabled_param = None if raw_enabled is _MISSING else (1 if int(raw_enabled) else 0)
+    except (TypeError, ValueError):
+        enabled_param = 1
+    cur.execute(
+        """
+        UPDATE pipeline_classes
+        SET key=COALESCE(?, key),
+            label_zh=COALESCE(?, label_zh),
+            description=COALESCE(?, description),
+            enabled=COALESCE(?, enabled),
+            updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (
+            None if raw_key is _MISSING else str(raw_key or "").strip(),
+            None if raw_label is _MISSING else str(raw_label or "").strip(),
+            None if raw_desc is _MISSING else raw_desc,
+            enabled_param,
+            cid,
+        ),
+    )
+    _replace_pipeline_class_links(
+        conn,
+        cid,
+        categories=payload.get("categories", _MISSING) if "categories" in payload else _MISSING,
+        evaluators=payload.get("evaluators", _MISSING) if "evaluators" in payload else _MISSING,
+        writers=payload.get("writers", _MISSING) if "writers" in payload else _MISSING,
+    )
+    conn.commit()
+
+
+def delete_pipeline_class(conn: sqlite3.Connection, cid: int) -> None:
+    cur = conn.cursor()
+    row = cur.execute("SELECT id FROM pipeline_classes WHERE id=?", (cid,)).fetchone()
+    if not row:
+        raise ValueError("未找到管线类别")
+    dependent = cur.execute("SELECT COUNT(1) FROM pipelines WHERE pipeline_class_id=?", (cid,)).fetchone()
+    if dependent and int(dependent[0]) > 0:
+        raise ValueError("存在关联管线，无法删除")
+    for table in ("pipeline_class_categories", "pipeline_class_evaluators", "pipeline_class_writers"):
+        cur.execute(f"DELETE FROM {table} WHERE pipeline_class_id=?", (cid,))
+    cur.execute("DELETE FROM pipeline_classes WHERE id=?", (cid,))
+    conn.commit()
 
 
 def fetch_categories(conn: sqlite3.Connection) -> list[dict]:
@@ -1998,3 +2730,205 @@ def delete_ai_metric(conn: sqlite3.Connection, metric_id: int) -> None:
         raise ValueError("仍有关联的投递配置指标，无法删除")
     cur.execute("DELETE FROM ai_metrics WHERE id=?", (metric_id,))
     conn.commit()
+
+
+# -------------------- Evaluators --------------------
+
+
+def _metric_keys_from_payload(conn: sqlite3.Connection, metrics: Iterable[Any]) -> list[int]:
+    keys = _dedupe_str_list(metrics)
+    metric_ids: list[int] = []
+    for key in keys:
+        metric_id = _resolve_metric_id(conn, key)
+        if metric_id is None:
+            raise ValueError(f"未知指标: {key}")
+        metric_ids.append(metric_id)
+    return metric_ids
+
+
+def fetch_evaluators(conn: sqlite3.Connection) -> list[dict]:
+    try:
+        rows = conn.execute(
+            "SELECT id, key, label_zh, description, prompt, active, created_at, updated_at FROM evaluators ORDER BY id"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    metric_map: dict[int, list[str]] = {}
+    try:
+        metric_rows = conn.execute(
+            """
+            SELECT em.evaluator_id, m.key
+            FROM evaluator_metrics AS em
+            JOIN ai_metrics AS m ON m.id = em.metric_id
+            ORDER BY m.sort_order ASC, m.id ASC
+            """
+        ).fetchall()
+        for ev_id, metric_key in metric_rows:
+            metric_map.setdefault(int(ev_id), []).append(str(metric_key))
+    except sqlite3.OperationalError:
+        metric_map = {}
+    return [
+        {
+            "id": int(row["id"]),
+            "key": row["key"],
+            "label_zh": row["label_zh"],
+            "description": row["description"],
+            "prompt": row["prompt"],
+            "active": int(row["active"] or 0),
+            "metrics": _dedupe_str_list(metric_map.get(int(row["id"]), [])),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_evaluator(conn: sqlite3.Connection, payload: dict) -> int:
+    cur = conn.cursor()
+    key = str(payload.get("key") or "").strip()
+    label = str(payload.get("label_zh") or "").strip()
+    description = payload.get("description")
+    prompt = payload.get("prompt")
+    active_raw = payload.get("active", 1)
+    metrics_raw = payload.get("metrics") or []
+    if not key:
+        raise ValueError("评估器 key 不能为空")
+    if not label:
+        raise ValueError("评估器名称不能为空")
+    try:
+        active_flag = 1 if int(active_raw) else 0
+    except (TypeError, ValueError):
+        active_flag = 1
+    metric_ids: list[int]
+    try:
+        metric_ids = _metric_keys_from_payload(conn, metrics_raw)
+    except sqlite3.OperationalError:
+        metric_ids = []
+    if not metric_ids:
+        try:
+            metric_ids = [int(row[0]) for row in cur.execute("SELECT id FROM ai_metrics WHERE active=1").fetchall()]
+        except sqlite3.OperationalError:
+            metric_ids = []
+    cur.execute(
+        """
+        INSERT INTO evaluators (key, label_zh, description, prompt, active)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (key, label, description, prompt, active_flag),
+    )
+    ev_id = int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
+    if metric_ids:
+        cur.executemany(
+            "INSERT OR IGNORE INTO evaluator_metrics (evaluator_id, metric_id) VALUES (?, ?)",
+            [(ev_id, mid) for mid in metric_ids],
+        )
+    conn.commit()
+    return ev_id
+
+
+def update_evaluator(conn: sqlite3.Connection, evaluator_id: int, payload: dict) -> None:
+    cur = conn.cursor()
+    existing = cur.execute(
+        "SELECT id FROM evaluators WHERE id=?",
+        (evaluator_id,),
+    ).fetchone()
+    if not existing:
+        raise ValueError("未找到评估器")
+    label = payload.get("label_zh")
+    description = payload.get("description")
+    prompt = payload.get("prompt")
+    active = payload.get("active")
+    metrics = payload.get("metrics", _MISSING)
+    updates: list[str] = []
+    params: list[Any] = []
+    if label is not None:
+        name = str(label).strip()
+        if not name:
+            raise ValueError("评估器名称不能为空")
+        updates.append("label_zh=?")
+        params.append(name)
+    if description is not None:
+        updates.append("description=?")
+        params.append(description)
+    if prompt is not None:
+        updates.append("prompt=?")
+        params.append(prompt)
+    if active is not None:
+        try:
+            active_flag = 1 if int(active) else 0
+        except (TypeError, ValueError):
+            active_flag = 1
+        updates.append("active=?")
+        params.append(active_flag)
+    if updates:
+        updates.append("updated_at=CURRENT_TIMESTAMP")
+        cur.execute(
+            f"UPDATE evaluators SET {', '.join(updates)} WHERE id=?",
+            [*params, evaluator_id],
+        )
+    if metrics is not _MISSING:
+        try:
+            metric_ids = _metric_keys_from_payload(conn, metrics or [])
+        except sqlite3.OperationalError:
+            metric_ids = []
+        cur.execute("DELETE FROM evaluator_metrics WHERE evaluator_id=?", (evaluator_id,))
+        if metric_ids:
+            cur.executemany(
+                "INSERT OR IGNORE INTO evaluator_metrics (evaluator_id, metric_id) VALUES (?, ?)",
+                [(evaluator_id, mid) for mid in metric_ids],
+            )
+    conn.commit()
+
+
+def delete_evaluator(conn: sqlite3.Connection, evaluator_id: int) -> None:
+    cur = conn.cursor()
+    existing = cur.execute("SELECT key FROM evaluators WHERE id=?", (evaluator_id,)).fetchone()
+    if not existing:
+        raise ValueError("未找到评估器")
+    eval_key = str(existing[0])
+    refs_class = cur.execute(
+        "SELECT COUNT(1) FROM pipeline_class_evaluators WHERE evaluator_key=?",
+        (eval_key,),
+    ).fetchone()[0]
+    refs_pipeline = cur.execute(
+        "SELECT COUNT(1) FROM pipelines WHERE evaluator_key=?",
+        (eval_key,),
+    ).fetchone()[0]
+    if refs_class or refs_pipeline:
+        raise ValueError("评估器仍在使用中，无法删除")
+    cur.execute("DELETE FROM evaluators WHERE id=?", (evaluator_id,))
+    conn.commit()
+
+
+def get_evaluator_prompt(conn: sqlite3.Connection, evaluator_key: str) -> Optional[str]:
+    try:
+        row = conn.execute(
+            "SELECT prompt FROM evaluators WHERE key=?",
+            (evaluator_key,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if not row:
+        return None
+    prompt = row[0]
+    if isinstance(prompt, (bytes, bytearray)):
+        return prompt.decode("utf-8", errors="ignore")
+    return str(prompt) if prompt is not None else None
+
+
+def get_allowed_metric_keys(conn: sqlite3.Connection, evaluator_key: str) -> set[str]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.key
+            FROM evaluator_metrics AS em
+            JOIN evaluators AS e ON e.id = em.evaluator_id
+            JOIN ai_metrics AS m ON m.id = em.metric_id
+            WHERE e.key=? AND m.active=1
+            ORDER BY m.sort_order ASC, m.id ASC
+            """,
+            (evaluator_key,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return set()
+    return {str(row[0]) for row in rows if row and row[0]}

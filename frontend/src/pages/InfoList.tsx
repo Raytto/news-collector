@@ -182,7 +182,7 @@ export default function InfoList() {
       render: (_, record) => (
         <Space>
           <Button type="link" size="small" onClick={() => openReview(record.id)}>
-            AI评估
+            AI指标
           </Button>
           <Button type="link" size="small" onClick={() => openDetail(record.id)}>
             文字内容
@@ -334,7 +334,7 @@ export default function InfoList() {
 
       <Modal
         destroyOnClose
-        title={`AI评估详情 #${currentInfoId ?? ''}`}
+        title={`AI指标详情 #${currentInfoId ?? ''}`}
         open={reviewVisible}
         onCancel={() => {
           setReviewVisible(false)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import argparse
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ import time
 import random
 from collections import defaultdict
 from urllib.parse import urlparse
+import multiprocessing
 
 
 COLLECTOR_DIR = Path(__file__).resolve().parent
@@ -53,6 +55,7 @@ GLOBAL_HTTP_CONCURRENCY = _get_int("COLLECTOR_GLOBAL_HTTP_CONCURRENCY", 16)
 PER_HOST_MIN_INTERVAL_MS = _get_int("COLLECTOR_PER_HOST_MIN_INTERVAL_MS", 500)
 TIMEOUT_CONNECT = _get_float("COLLECTOR_TIMEOUT_CONNECT", 5.0)
 TIMEOUT_READ = _get_float("COLLECTOR_TIMEOUT_READ", 10.0)
+SOURCE_TIMEOUT_SEC = _get_float("COLLECTOR_SOURCE_TIMEOUT_SEC", 15.0)
 RETRY_MAX = _get_int("COLLECTOR_RETRY_MAX", 3)
 RETRY_BACKOFF_BASE = _get_float("COLLECTOR_RETRY_BACKOFF_BASE", 0.6)
 DISABLE_CONCURRENCY = os.getenv("COLLECTOR_DISABLE_CONCURRENCY", "").strip().lower() in {"1", "true", "yes"}
@@ -164,10 +167,12 @@ class Entry:
     title: str
     link: str
     category: str = ""
+    img_link: str = ""
 
 
 @dataclass
 class SourceSpec:
+    id: int
     source: str
     category: str
     path: Path
@@ -370,6 +375,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     publish = str(item.get("published") or item.get("publish") or "").strip()
     source = str(item.get("source") or "").strip()
     category = str(item.get("category") or "").strip()
+    img_link = str(item.get("img") or item.get("image") or item.get("thumbnail") or "").strip()
     if not (title and link):
         return None
     # Try to normalize publish to seconds if it looks like a YYYY-MM-DD HH:MM
@@ -386,7 +392,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     except Exception:
         # Keep original string
         pass
-    return Entry(source=source, publish=publish, title=title, link=link, category=category)
+    return Entry(source=source, publish=publish, title=title, link=link, category=category, img_link=img_link)
 
 
 ISO_PATTERN = re.compile(
@@ -420,7 +426,8 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             link TEXT NOT NULL,
             category TEXT,
-            detail TEXT
+            detail TEXT,
+            img_link TEXT
         )
         """
     )
@@ -431,6 +438,8 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE info ADD COLUMN category TEXT")
         if "detail" not in cols:
             conn.execute("ALTER TABLE info ADD COLUMN detail TEXT")
+        if "img_link" not in cols:
+            conn.execute("ALTER TABLE info ADD COLUMN img_link TEXT")
     except Exception:
         pass
     # New dedup rule for new DBs: unique by link only (no migration performed)
@@ -480,6 +489,15 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
         ON sources (category_key, enabled)
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_runs (
+            source_id   INTEGER PRIMARY KEY,
+            last_run_at TEXT NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES sources(id)
+        )
+        """
+    )
     conn.commit()
 
 
@@ -490,19 +508,19 @@ def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> list[
         try:
             cur.execute(
                 """
-                INSERT INTO info (source, publish, title, link, category, detail)
-                VALUES (?, ?, ?, ?, ?, NULL)
+                INSERT INTO info (source, publish, title, link, category, detail, img_link)
+                VALUES (?, ?, ?, ?, ?, NULL, ?)
                 ON CONFLICT(link) DO NOTHING
                 """,
-                (e.source, e.publish, e.title, e.link, e.category),
+                (e.source, e.publish, e.title, e.link, e.category, e.img_link or None),
             )
             if cur.rowcount:
                 newly_added.append(e)
         except sqlite3.OperationalError:
             # For older SQLite lacking DO NOTHING, emulate via IGNORE
             cur.execute(
-                "INSERT OR IGNORE INTO info (source, publish, title, link, category, detail) VALUES (?, ?, ?, ?, ?, NULL)",
-                (e.source, e.publish, e.title, e.link, e.category),
+                "INSERT OR IGNORE INTO info (source, publish, title, link, category, detail, img_link) VALUES (?, ?, ?, ?, ?, NULL, ?)",
+                (e.source, e.publish, e.title, e.link, e.category, e.img_link or None),
             )
             if cur.rowcount:
                 newly_added.append(e)
@@ -518,12 +536,12 @@ def _resolve_script_path(script_path: str) -> Path:
     return path
 
 
-def _load_sources_from_db(conn: sqlite3.Connection) -> list[SourceSpec]:
+def _load_sources_from_db(conn: sqlite3.Connection, allow_keys: Optional[set[str]] = None) -> list[SourceSpec]:
     cursor = conn.cursor()
     try:
         rows = cursor.execute(
             """
-            SELECT key, category_key, script_path
+            SELECT id, key, category_key, script_path
             FROM sources
             WHERE enabled = 1
             ORDER BY id
@@ -533,10 +551,12 @@ def _load_sources_from_db(conn: sqlite3.Connection) -> list[SourceSpec]:
         return []
 
     specs: list[SourceSpec] = []
-    for key, category_key, script_path in rows:
+    for sid, key, category_key, script_path in rows:
         key_str = str(key or "").strip()
         script_path_str = str(script_path or "").strip()
         if not (key_str and script_path_str):
+            continue
+        if allow_keys is not None and key_str not in allow_keys:
             continue
         try:
             resolved = _resolve_script_path(script_path_str)
@@ -544,6 +564,7 @@ def _load_sources_from_db(conn: sqlite3.Connection) -> list[SourceSpec]:
             continue
         specs.append(
             SourceSpec(
+                id=int(sid),
                 source=key_str,
                 category=str(category_key or "").strip(),
                 path=resolved,
@@ -557,11 +578,24 @@ def _update_detail(conn: sqlite3.Connection, link: str, detail: str) -> None:
     conn.commit()
 
 
+def _update_source_run(conn: sqlite3.Connection, source_id: int) -> None:
+    now_iso = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    conn.execute(
+        """
+        INSERT INTO source_runs (source_id, last_run_at)
+        VALUES (?, ?)
+        ON CONFLICT(source_id) DO UPDATE SET last_run_at=excluded.last_run_at
+        """,
+        (source_id, now_iso),
+    )
+    conn.commit()
+
+
 def _backfill_missing_details(
     conn: sqlite3.Connection,
     mod,
     source_hint: Optional[str] = None,
-    limit: int = 10,
+    limit: int = 30,
 ) -> None:
     """Fetch and store details for recent rows that are missing it.
 
@@ -710,6 +744,11 @@ def _process_source_spec(spec: SourceSpec) -> Tuple[str, int]:
             except Exception:
                 # Non-fatal
                 pass
+            try:
+                if spec.id:
+                    _update_source_run(conn, spec.id)
+            except Exception as exc:
+                print(f"[WARN] 更新 source_runs 失败 ({source_key}): {exc}")
         except Exception as exc:
             urls = _get_module_feed_urls(mod) if mod else []
             extra = f" (feed_urls={urls!r})" if urls else ""
@@ -720,7 +759,77 @@ def _process_source_spec(spec: SourceSpec) -> Tuple[str, int]:
         conn.close()
 
 
+def _process_source_spec_worker(spec: SourceSpec, queue: "multiprocessing.Queue[Any]") -> None:
+    """Worker wrapper so we can retrieve results across process boundaries."""
+    try:
+        queue.put(("ok", _process_source_spec(spec)))
+    except Exception as exc:  # pragma: no cover - defensive
+        queue.put(("err", exc))
+
+
+def _run_source_with_timeout(spec: SourceSpec, timeout: float) -> Tuple[str, int]:
+    """Execute one source with a wall-clock timeout."""
+    if timeout is None or timeout <= 0:
+        return _process_source_spec(spec)
+
+    result_queue: "multiprocessing.Queue[Any]" = multiprocessing.Queue(maxsize=1)
+    proc = multiprocessing.Process(
+        target=_process_source_spec_worker,
+        args=(spec, result_queue),
+    )
+    proc.start()
+    proc.join(timeout)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        source_hint = spec.source or spec.path.stem
+        print(f"{spec.path.name}({source_hint}): 超时 {int(timeout)}s，已跳过")
+        result_queue.close()
+        result_queue.join_thread()
+        return source_hint, 0
+
+    try:
+        status, payload = result_queue.get_nowait()
+    except Exception:
+        result_queue.close()
+        result_queue.join_thread()
+        return spec.source or "", 0
+
+    result_queue.close()
+    result_queue.join_thread()
+
+    if status == "ok":
+        return payload
+    print(f"{spec.path.name}({spec.source or 'unknown'}): 执行异常 - {payload}")
+    return spec.source or "", 0
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Collect sources into SQLite")
+    parser.add_argument(
+        "--sources",
+        help="逗号分隔的来源 key 列表（仅运行这些来源）",
+        default="",
+    )
+    parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="重复传入以限定来源 key（与 --sources 合并）",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
+    allow_sources: set[str] = set()
+    if args.sources:
+        allow_sources.update({s.strip() for s in str(args.sources).split(",") if s.strip()})
+    if args.source:
+        allow_sources.update({s.strip() for s in args.source if s.strip()})
+    if not allow_sources:
+        allow_sources = set()
+
     print(f"收集目录: {SCRAPING_DIR}")
     if not SCRAPING_DIR.exists():
         print("未找到 scraping 目录")
@@ -731,7 +840,7 @@ def main() -> None:
     try:
         _ensure_db(conn)
         _seed_sources_from_fs(conn)
-        source_specs = _load_sources_from_db(conn)
+        source_specs = _load_sources_from_db(conn, allow_sources or None)
         if source_specs:
             print(f"从 sources 表加载 {len(source_specs)} 个启用来源")
         else:
@@ -743,11 +852,14 @@ def main() -> None:
         total_new = 0
         if DISABLE_CONCURRENCY or SOURCE_CONCURRENCY <= 1:
             for spec in source_specs:
-                _, added = _process_source_spec(spec)
+                _, added = _run_source_with_timeout(spec, SOURCE_TIMEOUT_SEC)
                 total_new += added
         else:
             with ThreadPoolExecutor(max_workers=SOURCE_CONCURRENCY) as pool:
-                future_map = {pool.submit(_process_source_spec, spec): spec for spec in source_specs}
+                future_map = {
+                    pool.submit(_run_source_with_timeout, spec, SOURCE_TIMEOUT_SEC): spec
+                    for spec in source_specs
+                }
                 for fut in as_completed(future_map):
                     try:
                         _src, added = fut.result()

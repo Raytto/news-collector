@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 import re
 import html as htmllib
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 import textwrap
@@ -29,7 +29,20 @@ TS_PLACEHOLDER_VARIANTS = ("${ts}", "$(ts)")
 # Script paths
 WRITER_DIR = ROOT / "news-collector" / "writer"
 DELIVER_DIR = ROOT / "news-collector" / "deliver"
+COLLECTOR_SCRIPT = ROOT / "news-collector" / "collector" / "collect_to_sqlite.py"
+EVALUATOR_SCRIPT = ROOT / "news-collector" / "evaluator" / "ai_evaluate.py"
 PY = os.environ.get("PYTHON") or sys.executable or "python3"
+
+# Ensure stdout/err are flushed promptly when piped through tee
+def _enable_line_buffering() -> None:
+    try:
+        sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+_enable_line_buffering()
 
 # Weekday helpers (runner-local domain module)
 try:
@@ -62,6 +75,9 @@ class Pipeline:
     name: str
     enabled: int
     description: str
+    pipeline_class_id: Optional[int] = None
+    evaluator_key: str = "news_evaluator"
+    debug_enabled: int = 0
     weekdays_json: Optional[str] = None
 
 
@@ -73,6 +89,128 @@ def _fetchone_dict(cur: sqlite3.Cursor, sql: str, args: Tuple[Any, ...]) -> Dict
     return {cols[i]: row[i] for i in range(len(cols))}
 
 
+def _json_list(text: Any) -> list[str]:
+    if text is None:
+        return []
+    try:
+        parsed = json.loads(str(text))
+        if isinstance(parsed, list):
+            return [str(x).strip() for x in parsed if str(x).strip()]
+    except Exception:
+        return []
+    return []
+
+
+def _load_class_maps(conn: sqlite3.Connection) -> Tuple[Dict[int, set[str]], Dict[int, set[str]], Dict[int, set[str]]]:
+    cur = conn.cursor()
+    class_categories: Dict[int, set[str]] = {}
+    class_evaluators: Dict[int, set[str]] = {}
+    class_writers: Dict[int, set[str]] = {}
+    try:
+        rows = cur.execute("SELECT pipeline_class_id, category_key FROM pipeline_class_categories").fetchall()
+        for cid, cat in rows:
+            class_categories.setdefault(int(cid), set()).add(str(cat))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        rows = cur.execute("SELECT pipeline_class_id, evaluator_key FROM pipeline_class_evaluators").fetchall()
+        for cid, ek in rows:
+            class_evaluators.setdefault(int(cid), set()).add(str(ek))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        rows = cur.execute("SELECT pipeline_class_id, writer_type FROM pipeline_class_writers").fetchall()
+        for cid, wt in rows:
+            class_writers.setdefault(int(cid), set()).add(str(wt))
+    except sqlite3.OperationalError:
+        pass
+    return class_categories, class_evaluators, class_writers
+
+
+def _load_sources(conn: sqlite3.Connection) -> list[Dict[str, Any]]:
+    cur = conn.cursor()
+    try:
+        rows = cur.execute("SELECT id, key, category_key, script_path, enabled FROM sources").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    specs = []
+    for sid, key, cat, script, enabled in rows:
+        specs.append(
+            {
+                "id": int(sid),
+                "key": str(key or "").strip(),
+                "category": str(cat or "").strip(),
+                "script_path": str(script or "").strip(),
+                "enabled": int(enabled or 0),
+            }
+        )
+    return specs
+
+
+def _sources_to_collect(conn: sqlite3.Connection, sources: list[Dict[str, Any]], window_hours: int = 2) -> list[str]:
+    cur = conn.cursor()
+    cutoff = datetime.utcnow() - timedelta(hours=window_hours)
+    runnable: list[str] = []
+    for s in sources:
+        sid = s.get("id")
+        skey = s.get("key")
+        if not sid or not skey:
+            continue
+        try:
+            row = cur.execute("SELECT last_run_at FROM source_runs WHERE source_id=?", (sid,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if not row or not row[0]:
+            runnable.append(skey)
+            continue
+        try:
+            last_dt = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+        except Exception:
+            runnable.append(skey)
+            continue
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        if last_dt < cutoff.replace(tzinfo=last_dt.tzinfo):
+            runnable.append(skey)
+    return runnable
+
+
+def _run_collect_for_sources(source_keys: list[str]) -> None:
+    if not source_keys:
+        return
+    cmd = [PY, str(COLLECTOR_SCRIPT), "--sources", ",".join(source_keys)]
+    print(f"[COLLECT] {','.join(source_keys)}")
+    subprocess.run(cmd, check=True)
+
+
+def _run_evaluator(
+    evaluator_key: str,
+    categories: list[str],
+    sources: list[str],
+    hours: int,
+    limit: int = 200,
+    pipeline_id: Optional[int] = None,
+) -> None:
+    cmd = [
+        PY,
+        str(EVALUATOR_SCRIPT),
+        "--hours",
+        str(hours),
+        "--limit",
+        str(limit),
+        "--evaluator-key",
+        evaluator_key,
+    ]
+    if pipeline_id is not None:
+        cmd.extend(["--pipeline-id", str(pipeline_id)])
+    for c in categories:
+        cmd.extend(["--category", c])
+    for s in sources:
+        cmd.extend(["--source", s])
+    print(f"[EVAL] {evaluator_key} hours={hours} cats={categories} srcs={sources}")
+    subprocess.run(cmd, check=True)
+
+
 def load_pipelines(
     conn: sqlite3.Connection,
     name: Optional[str],
@@ -82,68 +220,105 @@ def load_pipelines(
 ) -> list[Pipeline]:
     cur = conn.cursor()
     rows: list[tuple] = []
+    with_weekdays = False
+    with_meta = False
     if pid is not None:
         try:
             rows = cur.execute(
-                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE id=?",
+                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json, pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE id=?",
                 (int(pid),),
             ).fetchall()
             with_weekdays = True
+            with_meta = True
         except sqlite3.OperationalError:
             rows = cur.execute(
                 "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE id=?",
                 (int(pid),),
             ).fetchall()
             with_weekdays = False
+            with_meta = False
     elif name:
         # Try selecting weekdays_json; fallback if column missing
         try:
             rows = cur.execute(
-                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE name=?",
+                "SELECT id, name, enabled, COALESCE(description,''), weekdays_json, pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE name=?",
                 (name,),
             ).fetchall()
             with_weekdays = True
+            with_meta = True
         except sqlite3.OperationalError:
             rows = cur.execute(
                 "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE name=?",
                 (name,),
             ).fetchall()
             with_weekdays = False
+            with_meta = False
     elif all_flag:
         # When debug_only is set, select by debug flag instead of enabled
         if debug_only:
             # If debug_enabled column is missing, treat as empty set to avoid crashing
             try:
                 rows = cur.execute(
-                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE debug_enabled=1 ORDER BY id",
+                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json, pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE debug_enabled=1 ORDER BY id",
                 ).fetchall()
                 with_weekdays = True
+                with_meta = True
             except sqlite3.OperationalError:
                 try:
                     rows = cur.execute(
-                        "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE debug_enabled=1 ORDER BY id",
+                        "SELECT id, name, enabled, COALESCE(description,''), pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE debug_enabled=1 ORDER BY id",
                     ).fetchall()
+                    with_meta = True
                 except sqlite3.OperationalError:
                     rows = []
+                    with_meta = False
                 with_weekdays = False
         else:
             try:
                 rows = cur.execute(
-                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json FROM pipelines WHERE enabled=1 ORDER BY id",
+                    "SELECT id, name, enabled, COALESCE(description,''), weekdays_json, pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE enabled=1 ORDER BY id",
                 ).fetchall()
                 with_weekdays = True
+                with_meta = True
             except sqlite3.OperationalError:
-                rows = cur.execute(
-                    "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
-                ).fetchall()
+                try:
+                    rows = cur.execute(
+                        "SELECT id, name, enabled, COALESCE(description,''), pipeline_class_id, evaluator_key, debug_enabled FROM pipelines WHERE enabled=1 ORDER BY id",
+                    ).fetchall()
+                    with_meta = True
+                except sqlite3.OperationalError:
+                    rows = cur.execute(
+                        "SELECT id, name, enabled, COALESCE(description,'') FROM pipelines WHERE enabled=1 ORDER BY id",
+                    ).fetchall()
+                    with_meta = False
                 with_weekdays = False
     else:
         raise SystemExit("必须指定 --name 或 --all")
     if not rows:
         return []
-    if with_weekdays:
-        return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3]), r[4] if len(r) > 4 else None) for r in rows]
-    return [Pipeline(int(r[0]), str(r[1]), int(r[2]), str(r[3]), None) for r in rows]
+    pipelines: list[Pipeline] = []
+    for r in rows:
+        pid = int(r[0])
+        name_val = str(r[1])
+        enabled = int(r[2])
+        desc = str(r[3])
+        weekdays = r[4] if (with_weekdays and len(r) > 4) else (r[4] if (with_meta and len(r) > 4 and not with_weekdays) else None)
+        # meta positions depend on select; when with_meta, expect evaluator and debug fields present after weekdays or after desc
+        if with_meta:
+            if with_weekdays:
+                pipeline_class_id = int(r[5]) if r[5] is not None else None
+                evaluator_key = str(r[6] or "news_evaluator")
+                debug_enabled = int(r[7] or 0)
+            else:
+                pipeline_class_id = int(r[4]) if len(r) > 4 and r[4] is not None else None
+                evaluator_key = str(r[5] or "news_evaluator") if len(r) > 5 else "news_evaluator"
+                debug_enabled = int(r[6] or 0) if len(r) > 6 else 0
+        else:
+            pipeline_class_id = None
+            evaluator_key = "news_evaluator"
+            debug_enabled = 0
+        pipelines.append(Pipeline(pid, name_val, enabled, desc, pipeline_class_id, evaluator_key, debug_enabled, weekdays))
+    return pipelines
 
 
 def _allowed_today(weekdays_json_text: Optional[str]) -> tuple[bool, str]:
@@ -188,6 +363,7 @@ def run_writer(
     filters: Dict[str, Any],
     out_dir: Path,
     ts: str,
+    evaluator_key: str,
 ) -> Path:
     """Call the configured writer script to generate output.
 
@@ -203,7 +379,7 @@ def run_writer(
 
     # Map writer types to concrete scripts. We unify all email HTML
     # generation to email_writer.py, including the legacy "wenhao_html".
-    if wtype == "feishu_md":
+    if wtype in {"feishu_md", "feishu_news"}:
         out_path = out_dir / f"{ts}.md"
         cmd = [
             PY,
@@ -213,12 +389,22 @@ def run_writer(
             "--hours",
             str(hours),
         ]
-    elif wtype in {"info_html", "wenhao_html"}:
+    elif wtype in {"info_html", "wenhao_html", "email_news"}:
         # Unified email writer for all HTML digests
         out_path = out_dir / f"{ts}.html"
         cmd = [
             PY,
             str(WRITER_DIR / "email_writer.py"),
+            "--output",
+            str(out_path),
+            "--hours",
+            str(hours),
+        ]
+    elif wtype == "feishu_legou_game":
+        out_path = out_dir / f"{ts}.md"
+        cmd = [
+            PY,
+            str(WRITER_DIR / "feishu_legou_game_writer.py"),
             "--output",
             str(out_path),
             "--hours",
@@ -230,6 +416,7 @@ def run_writer(
     print(f"[PIPELINE {pipeline_id}] Running writer: {' '.join(cmd)}")
     env = os.environ.copy()
     env["PIPELINE_ID"] = str(pipeline_id)
+    env["PIPELINE_EVALUATOR_KEY"] = evaluator_key
     subprocess.run(cmd, check=True, env=env)
     if not out_path.exists():
         raise SystemExit(f"writer 未生成输出文件: {out_path}")
@@ -323,26 +510,104 @@ def deliver_feishu(md_file: Path, pipeline_id: int, delivery: Dict[str, Any]) ->
     subprocess.run(cmd, check=True, env=env)
 
 
-def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
+def run_one(conn: sqlite3.Connection, p: Pipeline, debug_only: bool = False, skip_debug: bool = False) -> None:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     date_zh = datetime.now().strftime("%Y年%m月%d日")
     out_dir = ensure_output_dir(p.id)
     cur = conn.cursor()
 
-    filters = _fetchone_dict(
-        cur,
-        "SELECT all_categories, categories_json, all_src, include_src_json "
-        "FROM pipeline_filters WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
-        (p.id,),
-    )
+    # Debug gating: only skip when caller opts in (e.g., scheduled all-run)
+    if skip_debug and int(p.debug_enabled or 0) == 1 and not debug_only:
+        print(f"[SKIP] {p.name}: debug_enabled=1")
+        return
+
+    # Load class maps and validate evaluator/writer/category compatibility
+    class_cats, class_evals, class_writers = _load_class_maps(conn)
+    allowed_cats = class_cats.get(int(p.pipeline_class_id or -1), set()) if p.pipeline_class_id else set()
+    allowed_evals = class_evals.get(int(p.pipeline_class_id or -1), set()) if p.pipeline_class_id else set()
+    allowed_writers = class_writers.get(int(p.pipeline_class_id or -1), set()) if p.pipeline_class_id else set()
+    if p.pipeline_class_id and allowed_cats and not allowed_cats:
+        print(f"[SKIP] {p.name}: pipeline_class 未配置类别")
+        return
+
+    try:
+        filters = _fetchone_dict(
+            cur,
+            "SELECT all_categories, categories_json, include_src_json "
+            "FROM pipeline_filters WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
+            (p.id,),
+        )
+    except sqlite3.OperationalError:
+        filters = _fetchone_dict(
+            cur,
+            "SELECT all_categories, categories_json FROM pipeline_filters WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
+            (p.id,),
+        )
+        filters.setdefault("include_src_json", "")
     writer = _fetchone_dict(
         cur,
-        "SELECT type, hours, weights_json, bonus_json "
+        "SELECT type, hours, weights_json, bonus_json, limit_per_category, per_source_cap "
         "FROM pipeline_writers WHERE pipeline_id=? ORDER BY rowid DESC LIMIT 1",
         (p.id,),
     )
     if not writer:
         raise SystemExit(f"pipeline {p.name} 缺少 writer 配置")
+    writer_type = str(writer.get("type", "")).strip()
+    if allowed_writers and writer_type not in allowed_writers:
+        raise SystemExit(f"pipeline {p.name}: writer 类型不在管线类别允许列表中")
+    if allowed_evals and p.evaluator_key not in allowed_evals:
+        raise SystemExit(f"pipeline {p.name}: evaluator_key 不在管线类别允许列表中")
+
+    # Compute selected categories and sources
+    all_categories_flag = int(filters.get("all_categories", 1) or 1)
+    categories_json = _json_list(filters.get("categories_json"))
+    include_src_json = _json_list(filters.get("include_src_json"))
+    categories_selected = list(allowed_cats) if all_categories_flag == 1 and allowed_cats else categories_json
+    if allowed_cats and categories_selected:
+        categories_selected = [c for c in categories_selected if c in allowed_cats]
+    sources = _load_sources(conn)
+    selected_sources = [
+        s for s in sources
+        if int(s.get("enabled", 0)) == 1
+        and (not allowed_cats or s.get("category") in allowed_cats)
+        and (
+            all_categories_flag == 1
+            or s.get("category") in categories_selected
+            or s.get("key") in include_src_json
+        )
+    ]
+    selected_source_keys = [s["key"] for s in selected_sources]
+    if not selected_sources:
+        print(f"[SKIP] {p.name}: 无匹配来源")
+        return
+
+    categories_desc = ",".join(categories_selected) if categories_selected else "all"
+    sources_desc = ",".join(selected_source_keys) if selected_source_keys else "none"
+    print(
+        f"[PIPELINE {p.id}] Start {p.name} | writer={writer_type} | evaluator={p.evaluator_key or 'news_evaluator'} "
+        f"| categories={categories_desc} | sources={sources_desc} | debug_enabled={int(p.debug_enabled or 0)}",
+        flush=True,
+    )
+
+    # Step 1: collect (skip if run within 2 hours)
+    runnable_sources = _sources_to_collect(conn, selected_sources, window_hours=2)
+    if runnable_sources:
+        _run_collect_for_sources(runnable_sources)
+    else:
+        print(f"[COLLECT] 所有来源已在2小时内运行，跳过采集")
+
+    # Step 2: evaluate (only if writer requires AI or evaluator provided)
+    eval_hours = int(writer.get("hours") or 24)
+    eval_categories = categories_selected if categories_selected else list(allowed_cats)
+    eval_sources = [s["key"] for s in selected_sources]
+    _run_evaluator(
+        p.evaluator_key or "news_evaluator",
+        eval_categories,
+        eval_sources,
+        eval_hours,
+        limit=400,
+        pipeline_id=p.id,
+    )
 
     # Validate deliveries: exactly one in either table
     has_email = bool(
@@ -364,10 +629,12 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
         )
 
     # If writer depends on AI review table, ensure it exists before running
-    writer_type = str(writer.get("type", "")).strip()
-    needs_ai = writer_type in {"feishu_md", "info_html", "wenhao_html"}
+    needs_ai = writer_type in {"feishu_md", "info_html", "wenhao_html", "email_news", "feishu_news", "feishu_legou_game"}
     if needs_ai:
-        required_tables = ("ai_metrics", "info_ai_scores", "info_ai_review")
+        if writer_type == "feishu_legou_game":
+            required_tables = ("info_ai_review",)
+        else:
+            required_tables = ("ai_metrics", "info_ai_scores", "info_ai_review")
         missing = [
             tbl
             for tbl in required_tables
@@ -379,15 +646,13 @@ def run_one(conn: sqlite3.Connection, p: Pipeline) -> None:
             print(f"[SKIP] {p.name}: 缺少 {', '.join(missing)} 表，跳过需要 AI 评分的数据写作")
             return
 
-    out_path = run_writer(p.id, writer, filters, out_dir, ts)
+    out_path = run_writer(p.id, writer, filters, out_dir, ts, p.evaluator_key or "news_evaluator")
 
-    # If configured to send plain-only, also persist a .txt copy next to HTML
     _write_plain_copy_if_needed(out_path)
 
     if has_email:
         deliver_email(out_path, p.id)
     else:
-        # If content_json is present, we could pass --text instead of --file, but current bot expects file for card.
         deliver_feishu(out_path, p.id, feishu_delivery)
 
 
@@ -423,31 +688,33 @@ def main() -> None:
             pid=getattr(args, "id", None),
         )
         if not ps:
-            print("没有匹配的管线可执行")
+            print("没有匹配的管线可执行", flush=True)
             return
+        single_target = bool(getattr(args, "id", None)) or bool(getattr(args, "name", None))
         for p in ps:
             debug_only = bool(getattr(args, "debug_only", False))
-            # In debug-only mode, run purely by debug flag; otherwise respect enabled toggle.
+            if debug_only and int(p.debug_enabled or 0) != 1:
+                continue
             if not debug_only and int(p.enabled) != 1:
-                print(f"[SKIP] {p.name} (disabled)")
+                print(f"[SKIP] {p.name} (disabled)", flush=True)
                 continue
             # Weekday gating is ignored for debug runs.
             if not debug_only and not getattr(args, "ignore_weekday", False) and os.getenv("FORCE_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}:
                 ok, why = _allowed_today(p.weekdays_json)
                 if not ok:
-                    print(f"[SKIP] {p.name}: {why}")
+                    print(f"[SKIP] {p.name}: {why}", flush=True)
                     continue
                 # Emit debug line when allowed if DEBUG_WEEKDAY is enabled
                 if str(os.getenv("DEBUG_WEEKDAY", "")).strip().lower() in {"1", "true", "yes", "on"}:
-                    print(f"[DEBUG] {p.name}: {why}")
-            print(f"[RUN] {p.name} (id={p.id})")
+                    print(f"[DEBUG] {p.name}: {why}", flush=True)
+            print(f"[RUN] {p.name} (id={p.id})", flush=True)
             try:
-                run_one(conn, p)
-                print(f"[DONE] {p.name}")
+                run_one(conn, p, debug_only=debug_only, skip_debug=not single_target)
+                print(f"[DONE] {p.name}", flush=True)
             except SystemExit as e:
-                print(f"[FAIL] {p.name}: {e}")
+                print(f"[FAIL] {p.name}: {e}", flush=True)
             except Exception as e:
-                print(f"[FAIL] {p.name}: {e}")
+                print(f"[FAIL] {p.name}: {e}", flush=True)
 
 
 if __name__ == "__main__":

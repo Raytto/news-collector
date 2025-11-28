@@ -3,7 +3,15 @@ import { Button, Popconfirm, Space, Switch, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
-import { deletePipeline, fetchPipelines, pushPipelineNow, updatePipeline, type PipelineListItem } from '../api'
+import {
+  createPipeline,
+  deletePipeline,
+  fetchPipeline,
+  fetchPipelines,
+  pushPipelineNow,
+  updatePipeline,
+  type PipelineListItem
+} from '../api'
 import { useAuth } from '../auth'
 
 export default function PipelineList() {
@@ -12,6 +20,7 @@ export default function PipelineList() {
   const [list, setList] = useState<PipelineListItem[]>([])
   const [loading, setLoading] = useState(false)
   const [pushingId, setPushingId] = useState<number | null>(null)
+  const [duplicatingId, setDuplicatingId] = useState<number | null>(null)
   const [cooling, setCooling] = useState<Record<number, number>>({})
   const navigate = useNavigate()
 
@@ -93,6 +102,33 @@ export default function PipelineList() {
     }
   }
 
+  const onDuplicate = async (id: number) => {
+    setDuplicatingId(id)
+    try {
+      const data = await fetchPipeline(id)
+      if (!data?.pipeline) {
+        throw new Error('未获取到管线详情')
+      }
+      const payload: any = {
+        pipeline: { ...data.pipeline },
+        filters: data.filters,
+        writer: data.writer,
+        delivery: data.delivery
+      }
+      delete payload.pipeline.id
+      const originalName = payload.pipeline.name || ''
+      payload.pipeline.name = `${originalName}(副本)`
+      await createPipeline(payload)
+      message.success('已复制管线')
+      load()
+    } catch (e: any) {
+      const detail = e?.response?.data?.detail
+      message.error(detail || '复制失败')
+    } finally {
+      setDuplicatingId(null)
+    }
+  }
+
   const columns: ColumnsType<PipelineListItem> = [
     { title: 'ID', dataIndex: 'id', width: 80 },
     { title: '名称', dataIndex: 'name' },
@@ -170,11 +206,14 @@ export default function PipelineList() {
     },
     {
       title: '操作',
-      width: 260,
+      width: 320,
       render: (_, r) => (
         <Space size={8} wrap>
           <Button size="small" type="primary" onClick={() => navigate(`/edit/${r.id}`)}>
             编辑
+          </Button>
+          <Button size="small" type="primary" loading={duplicatingId === r.id} onClick={() => onDuplicate(r.id)}>
+            复制
           </Button>
           {(() => {
             const coolingUntil = cooling[r.id] || 0

@@ -7,7 +7,7 @@
 ## 2. 总体架构
 1. 数据来源：`info` 表中的文章记录（可有 `detail` 正文）。
 2. 评估服务：通过可配置的 HTTP API 调用大语言模型（LLM），端点/模型/key 从 Conda 环境变量读取。
-3. 提示词层：`prompts/ai/` 下维护模板，脚本在运行时注入文章元数据与正文后发送至 LLM。
+3. 提示词层：提示词模板存储在数据库表 `evaluators.prompt`，脚本在运行时注入文章元数据/正文/动态指标后发送至 LLM（可用 CLI 的 `--exportprompt` 导出调试）。
 4. 结果存储：新表 `info_ai_review` 按 `info.id` 进行 1:1 关联，保存维度分数与加权总分、AI 概要与评价。
 5. 调度脚本：遍历缺失评估的 `info` 行，批量请求并入库结果。
 
@@ -15,11 +15,11 @@
 - 在 `environment.yml` 中声明：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`；可选：`AI_REQUEST_INTERVAL`、`AI_API_TIMEOUT`、`AI_SCORE_WEIGHTS`。
 - 程序通过 `os.getenv` 读取；严禁提交真实密钥。后续在 `docs/prompt/ai/README.md` 汇总环境变量说明。
 
-## 4. 提示词文件
-- 目录：`prompts/ai/`；评估模板：`prompts/ai/article_evaluation_zh.prompt`。
+## 4. 提示词模板
+- 存储：数据库 `evaluators.prompt` 列维护模板，由前端/管理接口或直接 SQL 填充；无需本地文件。
 - 模板要求模型：
   1) 阅读 `detail` 正文；2) 对各维度给出 1–5 分；3) 生成一句话中文概要；4) 给出一句话中文评价；5) 仅返回约定 JSON。
-- 需包含占位符（如 `{{title}}`、`{{detail}}`），由脚本渲染；全部中文输出。
+- 需包含占位符（如 `{{title}}`、`{{detail}}`，以及动态的 `{{metrics_block}}`、`{{schema_example}}`），由脚本渲染；全部中文输出。
 
 ## 5. 评估维度与权重（更新版）
 - 统一维度：`timeliness`（时效性）、`game_relevance`（游戏相关性）、`mobile_game_relevance`（手游相关性）、`ai_relevance`（AI 相关性）、`tech_relevance`（科技相关性）、`quality`（文章质量）、`insight`（洞察力）、`depth`（深度）、`novelty`（新颖度）。

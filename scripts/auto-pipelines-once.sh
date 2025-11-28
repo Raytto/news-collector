@@ -12,8 +12,13 @@ TS="$(TZ='Asia/Shanghai' date '+%Y%m%d-%H%M%S')"
 LOG_DIR="$ROOT_DIR/log"
 LOG_FILE="$LOG_DIR/${TS}-auto-once-log.txt"
 mkdir -p "$LOG_DIR"
-exec > >(tee -a "$LOG_FILE") 2>&1
+if command -v stdbuf >/dev/null 2>&1; then
+  exec > >(stdbuf -oL -eL tee -a "$LOG_FILE") 2>&1
+else
+  exec > >(tee -a "$LOG_FILE") 2>&1
+fi
 echo "[INFO] Log file: $LOG_FILE"
+export PYTHONUNBUFFERED=1
 
 check_pipeline_config() {
   local db_path="$ROOT_DIR/data/info.db"
@@ -169,16 +174,12 @@ run_once() {
 
   echo "[INFO] Applying AI metrics migration (idempotent)..." >&2
   $PYTHON "$ROOT_DIR/scripts/migrations/202510_ai_metrics_refactor.py" --db "$ROOT_DIR/data/info.db" || true
+  echo "[INFO] Applying pipeline refactor migration (idempotent)..." >&2
+  $PYTHON -c "import sqlite3,sys;from pathlib import Path;sql=Path('$ROOT_DIR/scripts/migrations/pipeline_refactor.sql');conn=sqlite3.connect('$ROOT_DIR/data/info.db');conn.executescript(sql.read_text());conn.commit();conn.close()" || true
 
   check_pipeline_config
 
-  echo "[INFO] Collecting latest into SQLite..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/collector/collect_to_sqlite.py"
-
-  echo "[INFO] Running AI evaluation for recent 72h..." >&2
-  $PYTHON "$ROOT_DIR/news-collector/evaluator/ai_evaluate.py" --hours 72 --limit 400 || true
-
-  echo "[INFO] Running all pipelines sequentially..." >&2
+  echo "[INFO] Running orchestrator (collect→evaluate→write→deliver) for all pipelines..." >&2
   $PYTHON "$ROOT_DIR/news-collector/write-deliver-pipeline/pipeline_runner.py" --all
 }
 

@@ -1,6 +1,6 @@
 # News Collector Database Specification
 
-This document describes the SQLite schema used by the project to persist scraped articles, AI evaluation results, and DB‑backed write/deliver pipelines.
+This document describes the SQLite schema used by the project to persist scraped articles, AI evaluation results, and DB‑backed write/deliver pipelines. It also reflects the pipeline refactor that introduces pipeline classes、允许的评估器/Writer 绑定、源运行记录、以及多评估器并存的 AI 评审表结构。
 
 ## Overview
 
@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS info (
   title    TEXT NOT NULL,
   link     TEXT NOT NULL,
   category TEXT,
-  detail   TEXT
+  detail   TEXT,
+  img_link TEXT,
+  FOREIGN KEY (category) REFERENCES categories(key)
 );
 
 -- De-duplication constraint (new DBs)
@@ -47,8 +49,9 @@ Columns (`info`):
 - `publish` (TEXT): Publication time; prefer ISO‑8601 UTC (e.g., `2025-10-24T14:27:00+00:00`). May be coarse strings when precise time is unavailable.
 - `title` (TEXT): Article title.
 - `link` (TEXT): Absolute URL; unique de‑dup key.
-- `category` (TEXT, nullable): High‑level category such as `game`, `tech`.
+- `category` (TEXT, nullable): High‑level category such as `game`, `tech`; constrained to `categories.key`.
 - `detail` (TEXT, nullable): Plain‑text content fetched from detail pages when available.
+- `img_link` (TEXT, nullable): Teaser image URL captured by collectors when available.
 
 ### Sources and Categories
 
@@ -146,6 +149,8 @@ CREATE TABLE IF NOT EXISTS ai_metrics (
 CREATE INDEX IF NOT EXISTS idx_ai_metrics_active
   ON ai_metrics (active, sort_order);
 ```
+ - Seed metric for 副玩法/小游戏：
+  - `rok_cod_fit`：label_zh="ROK/COD 副玩法结合可能性"，rate_guide_zh="5-高度可行；3-有限可行；1-不合适"，default_weight=1.0，sort_order=10，active=1。`legou_minigame_evaluator` 可只写入这一项，也可将 `final_score` 与该分数保持一致。
 
 #### Table: `info_ai_scores`
 
@@ -171,44 +176,149 @@ CREATE INDEX IF NOT EXISTS idx_info_ai_scores_metric
 
 #### Table: `info_ai_review`
 
-Created by `ai_evaluate.py`. Holds text outputs and raw LLM response; no per-dimension columns.
+Created by evaluators。支持多评估器并存（按 `evaluator_key` 区分）。
 
 ```sql
 CREATE TABLE IF NOT EXISTS info_ai_review (
-  info_id     INTEGER PRIMARY KEY,
-  final_score REAL    NOT NULL DEFAULT 0.0,
-  ai_comment  TEXT    NOT NULL,
-  ai_summary  TEXT    NOT NULL,
+  info_id        INTEGER NOT NULL,
+  evaluator_key  TEXT    NOT NULL DEFAULT 'news_evaluator',
+  final_score    REAL    NOT NULL DEFAULT 0.0,
+  ai_comment     TEXT    NOT NULL,
+  ai_summary     TEXT    NOT NULL,
   ai_key_concepts TEXT,
   ai_summary_long TEXT,
-  raw_response TEXT,
-  created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-  updated_at  TEXT DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (info_id) REFERENCES info(id)
+  raw_response   TEXT,
+  created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (info_id, evaluator_key)
 );
 ```
 
 Notes:
 
-- Metric scores live in `info_ai_scores`. Writers compute the final weighted score dynamically based on `ai_metrics` and pipeline weights.
+- Metric scores live in `info_ai_scores`。Writers 按 `evaluator_key` 读取对应评审；同一资讯可被多个评估器写入不同记录。
 - `ai_key_concepts` stores a JSON 数组（或空值）描述文章的关键词；`ai_summary_long` 为约 50 字的拓展摘要。
+- 对 `legou_minigame_evaluator`：`ai_summary` 填一句话游戏介绍，`ai_comment` 填一句话说明与 ROK/COD 副玩法结合的可行性/建议（不可行时要说明原因），`final_score` 建议与 `rok_cod_fit` 同值。`rok_cod_fit` 必须落地到 `info_ai_scores`（1-5 分），无需其他指标。
+- 现有 DB 在 `(info_id, evaluator_key)` 上同时拥有主键与唯一索引；未声明外键，约束由应用逻辑保证。
+
+#### Table: `evaluators`
+
+Registers available评估器（用于前端配置与管线类的 allowlist）。
+
+```sql
+CREATE TABLE IF NOT EXISTS evaluators (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
+  description  TEXT,
+  prompt       TEXT,
+  active       INTEGER NOT NULL DEFAULT 1,
+  created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### Table: `evaluator_metrics`
+
+Evaluator 允许的指标列表（长表形式）。
+
+```sql
+CREATE TABLE IF NOT EXISTS evaluator_metrics (
+  evaluator_id INTEGER NOT NULL,
+  metric_id    INTEGER NOT NULL,
+  PRIMARY KEY (evaluator_id, metric_id),
+  FOREIGN KEY (evaluator_id) REFERENCES evaluators(id) ON DELETE CASCADE,
+  FOREIGN KEY (metric_id) REFERENCES ai_metrics(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evaluator_metrics_eval
+  ON evaluator_metrics (evaluator_id);
+```
+
+Semantics:
+
+- 仅允许在此映射表中出现的 metric 写入/展示；未配额者会被跳过。
+- 删除 evaluator 会级联清空其映射（`ON DELETE CASCADE`）。
 
 ### DB‑Backed Pipelines (Write + Deliver)
 
 These tables are created/ensured by `pipeline_admin.py` and used by `pipeline_runner.py`.
 
-#### Table: `pipelines`
+#### Table: `pipeline_classes`
 
 ```sql
-CREATE TABLE IF NOT EXISTS pipelines (
+CREATE TABLE IF NOT EXISTS pipeline_classes (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  name         TEXT NOT NULL UNIQUE,
-  enabled      INTEGER NOT NULL DEFAULT 1,
+  key          TEXT NOT NULL UNIQUE,
+  label_zh     TEXT NOT NULL,
   description  TEXT,
+  enabled      INTEGER NOT NULL DEFAULT 1,
   created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+#### Table: `pipeline_class_categories`
+
+```sql
+CREATE TABLE IF NOT EXISTS pipeline_class_categories (
+  pipeline_class_id INTEGER NOT NULL,
+  category_key      TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, category_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id),
+  FOREIGN KEY (category_key) REFERENCES categories(key)
+);
+```
+
+#### Table: `pipeline_class_evaluators`
+
+```sql
+CREATE TABLE IF NOT EXISTS pipeline_class_evaluators (
+  pipeline_class_id INTEGER NOT NULL,
+  evaluator_key     TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, evaluator_key),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
+```
+
+#### Table: `pipeline_class_writers`
+
+```sql
+CREATE TABLE IF NOT EXISTS pipeline_class_writers (
+  pipeline_class_id INTEGER NOT NULL,
+  writer_type       TEXT NOT NULL,
+  PRIMARY KEY (pipeline_class_id, writer_type),
+  FOREIGN KEY (pipeline_class_id) REFERENCES pipeline_classes(id)
+);
+```
+
+#### Table: `pipelines`
+
+```sql
+CREATE TABLE IF NOT EXISTS pipelines (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  name          TEXT NOT NULL,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  description   TEXT,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  owner_user_id INTEGER,
+  debug_enabled INTEGER NOT NULL DEFAULT 0,
+  weekdays_json TEXT,
+  pipeline_class_id INTEGER REFERENCES pipeline_classes(id),
+  evaluator_key TEXT NOT NULL DEFAULT 'news_evaluator'
+);
+
+CREATE INDEX IF NOT EXISTS idx_pipelines_owner
+  ON pipelines (owner_user_id);
+```
+
+Semantics:
+
+- `name` is not unique in the current DB；管理端应按 `id`/owner 识别。
+- `pipeline_class_id` 可为空（兼容旧库）；初始化时会尝试回填到默认 `general_news`。
+- `owner_user_id` 记录管线创建者，便于权限与退订通知。
+- `evaluator_key` 为管线默认评估器；用于 writers 读取对应的 `info_ai_review`。
 
 #### Table: `pipeline_filters`
 
@@ -221,19 +331,24 @@ CREATE TABLE IF NOT EXISTS pipeline_filters (
   include_src_json TEXT,
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_filters_pipeline_id
+  ON pipeline_filters(pipeline_id);
 ```
 
 Semantics:
 
-- `all_categories=1` means writers should include all categories. When `0`, writers read `categories_json` (JSON array of category names, e.g., `["game","tech"]`).
-- `all_src`/`include_src_json` are reserved for future source whitelisting.
+- `all_categories=1` means writers should include全部允许的类别（由 `pipeline_class_categories` 决定）。When `0`, writers read `categories_json` (JSON array of category names, e.g., `["game","tech"]`).
+- `all_src`：1=默认包含所有源；0 时 `include_src_json` 才生效。
+- `include_src_json`：当 `all_src=0` 且某分类未被全选时，允许按源白名单补充。
+- `pipeline_id` 唯一（`ux_pipeline_filters_pipeline_id`），每个管线仅一条过滤配置。
 
 #### Table: `pipeline_writers`
 
 ```sql
 CREATE TABLE IF NOT EXISTS pipeline_writers (
   pipeline_id         INTEGER NOT NULL,
-  type                TEXT NOT NULL,   -- e.g., 'feishu_md', 'info_html'
+  type                TEXT NOT NULL,   -- e.g., 'email_news','feishu_news','feishu_legou_game'
   hours               INTEGER NOT NULL, -- lookback window
   weights_json        TEXT,             -- JSON overrides: metric-key -> weight
   bonus_json          TEXT,             -- JSON per-source bonus map
@@ -241,7 +356,14 @@ CREATE TABLE IF NOT EXISTS pipeline_writers (
   per_source_cap      INTEGER,          -- <=0 means unlimited
   FOREIGN KEY (pipeline_id) REFERENCES pipelines(id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pipeline_writers_pipeline_id
+  ON pipeline_writers(pipeline_id);
 ```
+
+Semantics:
+
+- `pipeline_id` 唯一，当前 DB 仅允许每条管线存在一条 writer 配置记录（通过 `ux_pipeline_writers_pipeline_id` 强制）。
 
 #### Table: `pipeline_writer_metric_weights`
 
@@ -331,6 +453,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 );
 ```
 
+Unsubscribe behavior:
+
+- `GET /unsubscribe` / `GET /api/unsubscribe` 仅将目标管线的 `enabled` 置为 0，不再写入退订表。
+- 旧版本若仍包含退订表，可运行 `scripts/migrations/202512_remove_unsubscribe_tables.py` 删除 `unsubscribed_emails` / `pipeline_unsubscribed`。
+
 ### Auth & Users
 
 #### Table: `users`
@@ -341,11 +468,11 @@ CREATE TABLE IF NOT EXISTS users (
   email          TEXT NOT NULL UNIQUE,
   name           TEXT NOT NULL,
   is_admin       INTEGER NOT NULL DEFAULT 0,
-  enabled        INTEGER NOT NULL DEFAULT 1,
   avatar_url     TEXT,
   created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
   verified_at    TEXT,
   last_login_at  TEXT,
+  enabled        INTEGER NOT NULL DEFAULT 1,
   manual_push_count    INTEGER NOT NULL DEFAULT 0, -- 当日手动推送计数
   manual_push_date     TEXT,                       -- 计数对应的日期（YYYY-MM-DD）
   manual_push_last_at  TEXT                        -- 最近一次手动推送时间戳
@@ -357,21 +484,87 @@ Semantics:
 - `manual_push_count` / `manual_push_date` / `manual_push_last_at` track per-user manual “立即推送”使用频率。服务端默认限制：10 秒冷却、每日最多 20 次（见 `MANUAL_PUSH_COOLDOWN_SECONDS` / `MANUAL_PUSH_DAILY_LIMIT` 环境变量）。
 - `enabled=0` 会阻止登录与手动推送。
 
+#### Table: `user_sessions`
+
+```sql
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id            TEXT PRIMARY KEY,
+  user_id       INTEGER NOT NULL,
+  token_hash    TEXT NOT NULL,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at  TEXT,
+  expires_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  ip            TEXT,
+  user_agent    TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_token_hash
+  ON user_sessions (token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user
+  ON user_sessions (user_id, expires_at);
+```
+
+Semantics: stores hashed session tokens; `expires_at` controls validity, `revoked_at` marks explicit logout/revocation.
+
+#### Table: `auth_email_codes`
+
+```sql
+CREATE TABLE IF NOT EXISTS auth_email_codes (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL,
+  user_id       INTEGER,
+  purpose       TEXT NOT NULL,
+  code_hash     TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  consumed_at   TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  max_attempts  INTEGER NOT NULL DEFAULT 5,
+  resent_count  INTEGER NOT NULL DEFAULT 0,
+  created_ip    TEXT,
+  user_agent    TEXT,
+  created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_codes_active_unique
+ON auth_email_codes (email, purpose)
+WHERE consumed_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup
+  ON auth_email_codes (email, purpose, expires_at);
+```
+
+Semantics: one active code per `(email, purpose)`；`attempt_count`/`max_attempts` 控制输错上限，`consumed_at` 标记成功使用。
+
+### Source run tracking
+
+#### Table: `source_runs`
+
+```sql
+CREATE TABLE IF NOT EXISTS source_runs (
+  source_id   INTEGER PRIMARY KEY,
+  last_run_at TEXT NOT NULL
+);
+```
+
+ Semantics: 每个源最近一次抓取时间，用于 orchestrator 判断是否在 2 小时内已跑过（当前表未声明外键约束）。
+
 ### Relationships & Access Patterns
 
-- `info_ai_review.info_id` → `info.id` (1:1).
-- `pipeline_*` rows are joined by `pipeline_id`. `pipelines.name` is unique for human‑friendly selection.
-- `pipeline_runner.py` selects enabled pipelines, then:
-  1) Runs the configured writer with `PIPELINE_ID` in env (so writers pick up DB config),
-  2) Delivers via the matching delivery table.
+- `info.category` 受 `categories.key` 外键约束；`info_ai_scores.metric_id` 指向 `ai_metrics.id`；`info_ai_review` 以 `(info_id, evaluator_key)` 为主键但当前 DB 未声明外键。
+- `pipeline_*` 表通过 `pipeline_id` 关联；`pipeline_filters`/`pipeline_writers` 各自仅一条记录；`pipelines.pipeline_class_id`（如有）受 `pipeline_classes` 约束；`pipeline_class_*` 列表控制允许的类别/评估器/Writer（评估器 key 未声明 FK）。
+- Orchestrator 执行顺序：collect（按 source_runs 跳过近期源）→ evaluate（按 evaluator_key 写评审）→ write → deliver。
 
 ## Insertion, Detail Fetch & De‑duplication
 
 The collector skips duplicates via upsert:
 
 ```sql
-INSERT INTO info (source, publish, title, link, category, detail)
-VALUES (?, ?, ?, ?, ?, NULL)
+INSERT INTO info (source, publish, title, link, category, detail, img_link)
+VALUES (?, ?, ?, ?, ?, NULL, ?)
 ON CONFLICT(link) DO NOTHING;
 ```
 
@@ -388,6 +581,7 @@ The collector also backfills missing details for a small, recent batch per sourc
 Notes on collector behavior (with `sources` table):
 
 - `info.source` is always set from `sources.key`; `info.category` is set from `sources.category_key` (overrides script-provided values if any).
+- `img_link` 会在抓取到封面图时落库，否则为 NULL。
 - The collector iterates `sources` where `enabled=1`; if a `script_path` does not exist or cannot be imported, it logs an error for that source and continues.
 
 ## Typical Queries
@@ -444,7 +638,7 @@ ORDER BY p.id;
 When `PIPELINE_ID` is present in the environment:
 
 - Writers read `hours`, `weights_json`, `bonus_json` from `pipeline_writers`.
-- Category filter comes from `pipeline_filters` when `all_categories=0`.
+- Category/source filters come from `pipeline_filters`: `all_categories=0` 时使用 `categories_json`，`all_src=0` 时使用 `include_src_json`。
 - Item limits come from:
   - `limit_per_category`: integer or JSON map (e.g., `{ "default": 10, "tech": 5 }`).
   - `per_source_cap`: integer; `<=0` disables per‑source limiting.
@@ -464,6 +658,11 @@ Weights semantics (clean rebuild):
 - 2025‑10 D: Introduced DB‑backed pipelines (`pipelines`, `pipeline_filters`, `pipeline_writers`, deliveries).
 - 2025‑10 E: Added writer limit fields to `pipeline_writers`: `limit_per_category` (TEXT as integer/JSON) and `per_source_cap` (INTEGER).
 - 2025‑10 F: Rebuilt AI metrics architecture (clean): added `ai_metrics` + `info_ai_scores`; `info_ai_review` holds text outputs only; `weights_json` uses metric `key`.
+- 2025‑10 G: Pipeline refactor：新增 pipeline_classes / 允许映射表；pipelines 增加 evaluator/debug/class；source_runs 记录最近抓取；info_ai_review 引入 evaluator_key（复合主键）。
+- 2025‑11 A: Added `img_link` to `info` 并对 `category` 声明外键到 `categories.key`。
+- 2025‑11 B: Added evaluator registry tables：`evaluators`、`evaluator_metrics`。
+- 2025‑11 C: Pipelines cleanup：`pipelines.name` 不再唯一，新增 `owner_user_id` 索引；`pipeline_filters` 增加 `all_src` 且一管线一行；`pipeline_writers` 仅允许一行配置。
+- 2025‑12 A: 移除退订记录表（`unsubscribed_emails`、`pipeline_unsubscribed`），退订仅将管线 `enabled` 置 0。
 
 ## Maintenance
 

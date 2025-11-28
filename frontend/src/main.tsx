@@ -21,6 +21,10 @@ function applyFavicon(href: string) {
 
 applyFavicon(siteIcon)
 
+// Simple build tag so deployed assets get a fresh hash when rebuilt.
+const BUILD_TAG = 'frontend-20251128-02'
+console.info('[agentduck] build', BUILD_TAG)
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>

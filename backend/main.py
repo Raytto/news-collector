@@ -32,6 +32,8 @@ class PipelineBase(BaseModel):
     name: str | None = None
     enabled: int = Field(1, ge=0, le=1)
     description: str | None = None
+    pipeline_class_id: Optional[int] = None
+    evaluator_key: Optional[str] = None
     debug_enabled: Optional[int] = Field(None, ge=0, le=1)
     # 允许运行的星期（1=周一…7=周日）；None 表示不限制
     weekdays_json: Optional[list[int]] = None
@@ -88,6 +90,26 @@ class PipelinePayload(BaseModel):
     delivery: DeliveryEmail | DeliveryFeishu | None = None
 
 
+class PipelineClassPayload(BaseModel):
+    key: str
+    label_zh: str
+    description: Optional[str] = None
+    enabled: int = Field(1, ge=0, le=1)
+    categories: list[str] = Field(default_factory=list)
+    evaluators: list[str] = Field(default_factory=list)
+    writers: list[str] = Field(default_factory=list)
+
+
+class PipelineClassUpdatePayload(BaseModel):
+    key: Optional[str] = None
+    label_zh: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[int] = Field(None, ge=0, le=1)
+    categories: Optional[list[str]] = None
+    evaluators: Optional[list[str]] = None
+    writers: Optional[list[str]] = None
+
+
 class CategoryPayload(BaseModel):
     key: str
     label_zh: str
@@ -133,6 +155,23 @@ class AiMetricUpdatePayload(BaseModel):
     default_weight: Optional[float] = None
     sort_order: Optional[int] = None
     active: Optional[int] = Field(None, ge=0, le=1)
+
+
+class EvaluatorPayload(BaseModel):
+    key: str
+    label_zh: str
+    description: Optional[str] = None
+    prompt: Optional[str] = None
+    active: int = Field(1, ge=0, le=1)
+    metrics: list[str] = Field(default_factory=list)
+
+
+class EvaluatorUpdatePayload(BaseModel):
+    label_zh: Optional[str] = None
+    description: Optional[str] = None
+    prompt: Optional[str] = None
+    active: Optional[int] = Field(None, ge=0, le=1)
+    metrics: Optional[list[str]] = None
 
 
 app = FastAPI(title="情报鸭 API", version="0.1.0")
@@ -904,6 +943,56 @@ def options(user: dict = Depends(_require_user)) -> dict:
         return db.fetch_options(conn)
 
 
+@app.get("/pipeline-classes")
+def list_pipeline_classes(user: dict = Depends(_require_user)) -> list[dict]:
+    with db.get_conn() as conn:
+        return db.fetch_pipeline_classes(conn)
+
+
+@app.post("/pipeline-classes", status_code=201)
+def create_pipeline_class(payload: PipelineClassPayload, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            new_id = db.create_pipeline_class(conn, payload.model_dump())
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="管线类别 key 已存在")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"id": new_id}
+
+
+@app.put("/pipeline-classes/{cid}")
+def update_pipeline_class(cid: int, payload: PipelineClassUpdatePayload, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            db.update_pipeline_class(conn, cid, payload.model_dump(exclude_unset=True))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="管线类别 key 已存在")
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "未找到" in message else 400
+            raise HTTPException(status_code=status, detail=message)
+        return {"id": cid}
+
+
+@app.delete("/pipeline-classes/{cid}")
+def delete_pipeline_class(cid: int, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            db.delete_pipeline_class(conn, cid)
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "未找到" in message else 400
+            raise HTTPException(status_code=status, detail=message)
+        return {"ok": True}
+
+
 def _parse_weekday_string(value: str) -> list[int] | None:
     # Keep for compatibility; delegate to domain coerce
     return weekday_coerce(value)
@@ -1098,6 +1187,56 @@ def remove_ai_metric(metric_id: int, user: dict = Depends(_require_user)) -> dic
         return {"ok": True}
 
 
+@app.get("/evaluators")
+def list_evaluators(user: dict = Depends(_require_user)) -> list[dict]:
+    with db.get_conn() as conn:
+        return db.fetch_evaluators(conn)
+
+
+@app.post("/evaluators", status_code=201)
+def create_evaluator(payload: EvaluatorPayload, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            new_id = db.create_evaluator(conn, payload.model_dump())
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="评估器 key 已存在")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"id": new_id}
+
+
+@app.put("/evaluators/{evaluator_id}")
+def update_evaluator(evaluator_id: int, payload: EvaluatorUpdatePayload, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            db.update_evaluator(conn, evaluator_id, payload.model_dump(exclude_unset=True))
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail="评估器 key 已存在")
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "未找到评估器" in message else 400
+            raise HTTPException(status_code=status, detail=message)
+        return {"id": evaluator_id}
+
+
+@app.delete("/evaluators/{evaluator_id}")
+def remove_evaluator(evaluator_id: int, user: dict = Depends(_require_user)) -> dict:
+    if int(user.get("is_admin", 0)) != 1:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    with db.get_conn() as conn:
+        try:
+            db.delete_evaluator(conn, evaluator_id)
+        except ValueError as exc:
+            message = str(exc)
+            status = 404 if "未找到评估器" in message else 400
+            raise HTTPException(status_code=status, detail=message)
+        return {"ok": True}
+
+
 @app.post("/feishu/chats")
 def list_feishu_chats(payload: FeishuChatRequest) -> dict:
     app_id = payload.app_id.strip()
@@ -1277,7 +1416,10 @@ async def create_pipeline(payload: PipelinePayload, request: Request, user: dict
                     normalized = _parse_weekday_string(raw_weekdays)
             result_pipeline = result.setdefault("pipeline", {})
             result_pipeline["weekdays_json"] = normalized
-        new_id = db.create_or_update_pipeline(conn, result, owner_user_id=owner_id)
+        try:
+            new_id = db.create_or_update_pipeline(conn, result, owner_user_id=owner_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return {"id": new_id}
 
 
@@ -1342,7 +1484,10 @@ async def update_pipeline(pid: int, payload: PipelinePayload, request: Request, 
                 print(f"[DEBUG] update_pipeline pid={pid} model_dump_after_merge={result}")
             except Exception:
                 pass
-        db.create_or_update_pipeline(conn, result, pid=pid)
+        try:
+            db.create_or_update_pipeline(conn, result, pid=pid)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
         return {"id": pid}
 
 
