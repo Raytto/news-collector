@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Button, Popconfirm, Space, Switch, Table, Tag, message } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button, Modal, Popconfirm, Progress, Space, Steps, Switch, Table, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
@@ -14,6 +14,13 @@ import {
 } from '../api'
 import { useAuth } from '../auth'
 
+const PUSH_STAGES = [
+  { key: 'collect', label: '源爬取', threshold: 20 },
+  { key: 'evaluate', label: 'AI评估', threshold: 50 },
+  { key: 'write', label: '撰写', threshold: 80 },
+  { key: 'deliver', label: '发送', threshold: 100 }
+]
+
 export default function PipelineList() {
   const { user } = useAuth()
   const isAdmin = (user?.is_admin || 0) === 1
@@ -22,6 +29,22 @@ export default function PipelineList() {
   const [pushingId, setPushingId] = useState<number | null>(null)
   const [duplicatingId, setDuplicatingId] = useState<number | null>(null)
   const [cooling, setCooling] = useState<Record<number, number>>({})
+  const [pushProgress, setPushProgress] = useState<{
+    visible: boolean
+    pipelineName: string
+    percent: number
+    stageIndex: number
+    status: 'active' | 'success' | 'exception'
+    error: string
+  }>({
+    visible: false,
+    pipelineName: '',
+    percent: 0,
+    stageIndex: 0,
+    status: 'active',
+    error: ''
+  })
+  const progressTimer = useRef<number | null>(null)
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
@@ -40,6 +63,78 @@ export default function PipelineList() {
     // 用户变化（例如刚登录成功）时自动刷新列表
     load()
   }, [load])
+
+  useEffect(
+    () => () => {
+      if (progressTimer.current) {
+        window.clearInterval(progressTimer.current)
+      }
+    },
+    []
+  )
+
+  const stageIndexFromPercent = (percent: number) => {
+    for (let i = 0; i < PUSH_STAGES.length; i += 1) {
+      if (percent < PUSH_STAGES[i].threshold) return i
+    }
+    return PUSH_STAGES.length - 1
+  }
+
+  const clearProgressTimer = () => {
+    if (progressTimer.current) {
+      window.clearInterval(progressTimer.current)
+      progressTimer.current = null
+    }
+  }
+
+  const startPushProgress = (name: string) => {
+    clearProgressTimer()
+    setPushProgress({
+      visible: true,
+      pipelineName: name,
+      percent: 6,
+      stageIndex: 0,
+      status: 'active',
+      error: ''
+    })
+    progressTimer.current = window.setInterval(() => {
+      setPushProgress((prev) => {
+        if (!prev.visible || prev.status !== 'active') return prev
+        const increment = Math.random() * 6 + 2
+        const nextPercent = Math.min(prev.percent + increment, 92)
+        return {
+          ...prev,
+          percent: nextPercent,
+          stageIndex: stageIndexFromPercent(nextPercent)
+        }
+      })
+    }, 700)
+  }
+
+  const finishPushProgress = (ok: boolean, errorMsg?: string) => {
+    clearProgressTimer()
+    setPushProgress((prev) => {
+      const finalPercent = ok ? 100 : Math.max(prev.percent, 45)
+      const finalStage = ok ? PUSH_STAGES.length - 1 : stageIndexFromPercent(finalPercent)
+      return {
+        ...prev,
+        percent: finalPercent,
+        stageIndex: finalStage,
+        status: ok ? 'success' : 'exception',
+        error: errorMsg || ''
+      }
+    })
+    if (ok) {
+      window.setTimeout(() => {
+        setPushProgress((prev) => ({ ...prev, visible: false }))
+      }, 1400)
+    }
+  }
+
+  const closeProgressModal = () => {
+    clearProgressTimer()
+    setPushProgress((prev) => ({ ...prev, visible: false }))
+  }
 
   const onToggleDebug = async (item: PipelineListItem, enabled: boolean) => {
     try {
@@ -82,6 +177,7 @@ export default function PipelineList() {
 
   const onPushNow = async (item: PipelineListItem) => {
     setPushingId(item.id)
+    startPushProgress(item.name)
     try {
       const res = await pushPipelineNow(item.id)
       const cooldownMs = Math.max((res?.cooldown_seconds ?? 10) * 1000, 0)
@@ -94,8 +190,10 @@ export default function PipelineList() {
           return next
         })
       }, cooldownMs)
+      finishPushProgress(true)
     } catch (e: any) {
       const detail = e?.response?.data?.detail
+      finishPushProgress(false, detail || '触发失败')
       message.error(detail || '触发失败')
     } finally {
       setPushingId(null)
@@ -270,6 +368,54 @@ export default function PipelineList() {
           )
         }}
       />
+      <Modal
+        width={560}
+        title={pushProgress.status === 'exception' ? '推送失败' : '正在推送'}
+        open={pushProgress.visible}
+        onCancel={closeProgressModal}
+        footer={
+          pushProgress.status === 'exception'
+            ? [
+                <Button key="close" onClick={closeProgressModal}>
+                  关闭
+                </Button>
+              ]
+            : null
+        }
+        maskClosable={false}
+      >
+        <div style={{ marginBottom: 12, fontWeight: 600 }}>{pushProgress.pipelineName || '正在执行推送'}</div>
+        <Progress
+          percent={Math.round(pushProgress.percent)}
+          status={pushProgress.status === 'exception' ? 'exception' : pushProgress.status === 'success' ? 'success' : 'active'}
+          style={{ marginBottom: 16 }}
+        />
+        <Steps
+          size="small"
+          current={pushProgress.stageIndex}
+          items={PUSH_STAGES.map((stage, idx) => ({
+            title: stage.label,
+            status:
+              pushProgress.status === 'exception'
+                ? idx === pushProgress.stageIndex
+                  ? 'error'
+                  : idx < pushProgress.stageIndex
+                  ? 'finish'
+                  : 'wait'
+                : pushProgress.status === 'success'
+                ? 'finish'
+                : idx < pushProgress.stageIndex
+                ? 'finish'
+                : idx === pushProgress.stageIndex
+                ? 'process'
+                : 'wait'
+          }))}
+        />
+        <div style={{ marginTop: 14, color: '#6b7280' }}>执行进度为预计过程，后台将依次完成上述步骤。</div>
+        {pushProgress.status === 'exception' && (
+          <div style={{ marginTop: 8, color: '#b91c1c' }}>{pushProgress.error || '推送触发失败，请稍后重试。'}</div>
+        )}
+      </Modal>
     </div>
   )
 }

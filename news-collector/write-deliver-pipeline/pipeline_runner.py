@@ -510,16 +510,11 @@ def deliver_feishu(md_file: Path, pipeline_id: int, delivery: Dict[str, Any]) ->
     subprocess.run(cmd, check=True, env=env)
 
 
-def run_one(conn: sqlite3.Connection, p: Pipeline, debug_only: bool = False, skip_debug: bool = False) -> None:
+def run_one(conn: sqlite3.Connection, p: Pipeline, debug_only: bool = False) -> None:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     date_zh = datetime.now().strftime("%Y年%m月%d日")
     out_dir = ensure_output_dir(p.id)
     cur = conn.cursor()
-
-    # Debug gating: only skip when caller opts in (e.g., scheduled all-run)
-    if skip_debug and int(p.debug_enabled or 0) == 1 and not debug_only:
-        print(f"[SKIP] {p.name}: debug_enabled=1")
-        return
 
     # Load class maps and validate evaluator/writer/category compatibility
     class_cats, class_evals, class_writers = _load_class_maps(conn)
@@ -709,7 +704,7 @@ def main() -> None:
                     print(f"[DEBUG] {p.name}: {why}", flush=True)
             print(f"[RUN] {p.name} (id={p.id})", flush=True)
             try:
-                run_one(conn, p, debug_only=debug_only, skip_debug=not single_target)
+                run_one(conn, p, debug_only=debug_only)
                 print(f"[DONE] {p.name}", flush=True)
             except SystemExit as e:
                 print(f"[FAIL] {p.name}: {e}", flush=True)

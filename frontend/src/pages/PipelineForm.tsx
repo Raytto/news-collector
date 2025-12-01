@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { MinusCircleOutlined, PlusOutlined } from '@ant-design/icons'
 import { Alert, AutoComplete, Button, Card, Checkbox, Form, Input, InputNumber, Radio, Select, Space, Table, Tabs, Tree, Typography, message } from 'antd'
 import { useNavigate, useParams } from 'react-router-dom'
@@ -250,6 +250,7 @@ export default function PipelineForm() {
   const [fetchingFeishuChats, setFetchingFeishuChats] = useState(false)
   const [optionsReady, setOptionsReady] = useState(false)
   const [sourcesReady, setSourcesReady] = useState(false)
+  const writerSnapshotRef = useRef<any>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [treeCheckedKeys, setTreeCheckedKeys] = useState<string[]>([])
@@ -781,6 +782,7 @@ export default function PipelineForm() {
       writer: writerPatched,
       delivery: patchedDelivery
     })
+    writerSnapshotRef.current = writerPatched
     const computedKeys = buildCheckedKeysFromFilters(data.filters || {})
     setTreeCheckedKeys(computedKeys)
     if (deliveryForForm?.kind === 'feishu') {
@@ -873,6 +875,15 @@ export default function PipelineForm() {
   }, [allTreeKeys, editing, form, optionsReady, sourcesReady])
 
   useEffect(() => {
+    if (writerSnapshotRef.current == null && pageReady) {
+      const current = form.getFieldValue(["writer"]) ?? form.getFieldsValue(true)?.writer
+      if (current) {
+        writerSnapshotRef.current = current
+      }
+    }
+  }, [form, pageReady, optionsReady, sourcesReady, editing])
+
+  useEffect(() => {
     if (deliveryKind !== 'feishu') {
       setFeishuChats([])
     }
@@ -922,6 +933,10 @@ export default function PipelineForm() {
 
   const onSubmit = async () => {
     const values = await form.validateFields()
+    const allValues = form.getFieldsValue(true)
+    const writerSnapshot = writerSnapshotRef.current || {}
+    const writerFromForm = (allValues?.writer || {}) as any
+    const writerFromValues = (values?.writer || {}) as any
     // Debug log to inspect weekday values
     // eslint-disable-next-line no-console
     console.log('debug weekdays', values?.pipeline?.weekdays_json, form.getFieldValue(["pipeline", "weekdays_json"]))
@@ -940,7 +955,41 @@ export default function PipelineForm() {
       } else {
         delete pipelinePayload.weekdays_json
       }
-      const writerValues = { ...(values.writer || {}) } as any
+      // Merge with snapshot to ensure untouched writer fields persist; prefer snapshot values when editing
+      const baseWriter = editing ? writerSnapshot : {}
+      const writerValues = { ...baseWriter, ...writerFromForm, ...writerFromValues } as any
+      writerValues.weights_entries =
+        writerFromForm?.weights_entries ??
+        writerFromValues?.weights_entries ??
+        baseWriter?.weights_entries ??
+        writerValues.weights_entries
+      writerValues.bonus_entries =
+        writerFromForm?.bonus_entries ??
+        writerFromValues?.bonus_entries ??
+        baseWriter?.bonus_entries ??
+        writerValues.bonus_entries
+      writerValues.limit_per_category_overrides =
+        writerFromForm?.limit_per_category_overrides ??
+        writerFromValues?.limit_per_category_overrides ??
+        baseWriter?.limit_per_category_overrides ??
+        writerValues.limit_per_category_overrides
+      const fallbackLimitDefault = editing ? baseWriter?.limit_per_category_default : CATEGORY_LIMIT_DEFAULT
+      writerValues.limit_per_category_default =
+        toNumber(writerFromForm?.limit_per_category_default) ??
+        toNumber(writerFromValues?.limit_per_category_default) ??
+        toNumber(fallbackLimitDefault) ??
+        CATEGORY_LIMIT_DEFAULT
+      writerValues.per_source_cap =
+        toNumber(writerFromForm?.per_source_cap) ??
+        toNumber(writerFromValues?.per_source_cap) ??
+        toNumber(baseWriter?.per_source_cap) ??
+        writerValues.per_source_cap
+      const fallbackHours = editing ? toNumber(baseWriter?.hours) : 24
+      writerValues.hours =
+        toNumber(writerFromForm?.hours) ??
+        toNumber(writerFromValues?.hours) ??
+        fallbackHours ??
+        24
       writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type, allowedWriterTypes)
       const limitMap = buildLimitPayload(
         toNumber(writerValues.limit_per_category_default),
@@ -1148,7 +1197,16 @@ export default function PipelineForm() {
       : null
 
   return (
-    <Form form={form} layout="vertical" initialValues={initialFormValues}>
+    <Form
+      form={form}
+      layout="vertical"
+      initialValues={initialFormValues}
+      onValuesChange={(_, all) => {
+        if (all?.writer) {
+          writerSnapshotRef.current = all.writer
+        }
+      }}
+    >
       <Card loading={pageLoading}>
         {fetchError ? (
           <Alert
