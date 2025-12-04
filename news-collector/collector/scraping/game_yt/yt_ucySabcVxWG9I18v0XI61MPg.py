@@ -360,6 +360,7 @@ class StoreMeta:
     title: str
     description: str
     screenshots: List[str]
+    creator: str = ""
 
 
 def _fetch_itunes_meta(store_url: str) -> Optional[StoreMeta]:
@@ -370,6 +371,7 @@ def _fetch_itunes_meta(store_url: str) -> Optional[StoreMeta]:
     title = ""
     description = ""
     screenshots: List[str] = []
+    creator = ""
     if app_id:
         try:
             r = requests.get(
@@ -384,6 +386,7 @@ def _fetch_itunes_meta(store_url: str) -> Optional[StoreMeta]:
                     res = data["results"][0]
                     title = str(res.get("trackName") or title)
                     description = str(res.get("description") or description)
+                    creator = str(res.get("sellerName") or res.get("artistName") or creator)
                     screenshots = (
                         list(res.get("screenshotUrls") or [])
                         or list(res.get("ipadScreenshotUrls") or [])
@@ -401,21 +404,27 @@ def _fetch_itunes_meta(store_url: str) -> Optional[StoreMeta]:
                 md = re.search(r'"description"\s*:\s*"([^"]+)"', html_txt)
                 if md:
                     description = md.group(1)
+            if not creator:
+                mc = re.search(r'"sellerName"\s*:\s*"([^"]+)"', html_txt)
+                if mc:
+                    creator = mc.group(1)
             if not screenshots:
                 screenshots = _pick_html_screenshots(html_txt)
         except Exception:
             pass
     title = title.strip()
     description = description.strip()
+    creator = creator.strip()
     if not title:
         return None
-    return StoreMeta(title=title, description=description, screenshots=screenshots)
+    return StoreMeta(title=title, description=description, screenshots=screenshots, creator=creator)
 
 
 def _fetch_gp_meta(store_url: str) -> Optional[StoreMeta]:
     title = ""
     description = ""
     screenshots: List[str] = []
+    creator = ""
     try:
         html_txt = requests.get(store_url, headers={"User-Agent": UA}, timeout=TIMEOUT).text
         m_title = re.search(r'<h1[^>]*><span[^>]*>([^<]+)</span>', html_txt)
@@ -428,6 +437,17 @@ def _fetch_gp_meta(store_url: str) -> Optional[StoreMeta]:
                 description = json.loads(f'"{desc_raw}"')
             except Exception:
                 description = desc_raw
+        m_creator = re.search(r'"developerName"\s*:\s*"([^"]+)"', html_txt)
+        if m_creator:
+            creator = m_creator.group(1)
+        if not creator:
+            alt_creator = re.search(r'"name"\s*:\s*"([^"]+)"\s*,\s*"@type"\s*:\s*"Organization"', html_txt)
+            if alt_creator:
+                creator = alt_creator.group(1)
+        if not creator:
+            link_creator = re.search(r'developer[^>]*>\s*<span>([^<]+)</span>', html_txt, re.IGNORECASE)
+            if link_creator:
+                creator = link_creator.group(1)
         if not description:
             m_alt = re.search(r'itemprop="description"[^>]*>(.*?)</div>', html_txt, re.S)
             if m_alt:
@@ -437,23 +457,34 @@ def _fetch_gp_meta(store_url: str) -> Optional[StoreMeta]:
         return None
     title = title.strip()
     description = _clean_description(description)
+    creator = creator.strip()
     if not title:
         return None
-    return StoreMeta(title=title, description=description, screenshots=screenshots)
+    return StoreMeta(title=title, description=description, screenshots=screenshots, creator=creator)
 
 
 def _fetch_store_meta(store_url: str, platform: str) -> Optional[StoreMeta]:
     key = f"{platform}:{store_url}"
     if key in _STORE_CACHE:
         meta = _STORE_CACHE[key]
-        return StoreMeta(meta.get("title", ""), meta.get("description", ""), meta.get("screenshots", []))
+        return StoreMeta(
+            meta.get("title", ""),
+            meta.get("description", ""),
+            meta.get("screenshots", []),
+            meta.get("creator", ""),
+        )
     meta: Optional[StoreMeta] = None
     if platform == "gp":
         meta = _fetch_gp_meta(store_url)
     else:
         meta = _fetch_itunes_meta(store_url)
     if meta:
-        _STORE_CACHE[key] = {"title": meta.title, "description": meta.description, "screenshots": meta.screenshots}
+        _STORE_CACHE[key] = {
+            "title": meta.title,
+            "description": meta.description,
+            "screenshots": meta.screenshots,
+            "creator": meta.creator,
+        }
     return meta
 
 
@@ -555,6 +586,7 @@ def collect_latest() -> List[Dict[str, str]]:
             items.append(
                 {
                     "title": meta.title or entry.get("title", "") or "",
+                    "creator": meta.creator or "",
                     "url": article_link,
                     "published": published,
                     "img": img_path or _extract_thumbnail(entry, vid),

@@ -347,6 +347,8 @@ def ensure_db() -> None:
             info_cols = {row[1] for row in cur.fetchall()}
             if info_cols and "store_link" not in info_cols:
                 cur.execute("ALTER TABLE info ADD COLUMN store_link TEXT")
+            if info_cols and "creator" not in info_cols:
+                cur.execute("ALTER TABLE info ADD COLUMN creator TEXT")
         except sqlite3.OperationalError:
             pass
         # Backfill defaults when new columns were added

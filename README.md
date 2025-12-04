@@ -19,15 +19,18 @@
 - `docs/` 运行手册与规格；`slg-scout-&-analyst/` 为独立的 AI Studio 前端示例。
 
 ## 环境准备
+0) 环境文件  
+部署/本地均先 `cp environment-template.yml environment.yml`，按实际密钥/域名修改，避免提交真实值。服务器可直接以此文件作为 conda 环境定义。
+
 1) Python 3.11  
-`python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`  
-后台开发可额外安装 `pip install -r backend/requirements.txt`。
+`python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`。  
+或使用 conda：`conda env create -f environment.yml && conda activate news-collector && pip install -r requirements.txt`（environment.yml 只声明 Python 与 env vars，依赖仍需 pip 安装；更新时可用 `conda env update -f environment.yml`）。后台开发可额外安装 `pip install -r backend/requirements.txt`。
 
 2) 前端（可选）  
 需 Node.js 18+（脚本会自动拉起 v20 LTS）；`cd frontend && npm install`。
 
 3) 环境变量  
-复制并修改 `environment-template.yml` 或 `.env`，切勿提交真实密钥。
+如未用 conda，可改用 `.env` 管理，内容与 `environment-template.yml` 对齐。
 
 ## 核心配置（环境变量）
 - AI：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`、`AI_API_TIMEOUT`、`AI_REQUEST_INTERVAL`。

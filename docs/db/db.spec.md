@@ -15,6 +15,7 @@ This document describes the SQLite schema used by the project to persist scraped
     - Writers: `news-collector/writer/email_writer.py`, `news-collector/writer/feishu_writer.py`
     - Deliveries: `news-collector/deliver/mail_deliver.py`, `news-collector/deliver/feishu_deliver.py`
 - De-duplication: unique on `link` in `info` (for new databases). Existing DBs may keep older indexes unless migrated.
+- Collector-level de-dup: when both `title` 与 `creator` 均存在（如 GP/iTunes 抓取到游戏名+发行商），若 DB 已有同一组合，则跳过入库。
 
 ## Schema
 
@@ -32,6 +33,7 @@ CREATE TABLE IF NOT EXISTS info (
   title    TEXT NOT NULL,
   link     TEXT NOT NULL,
   store_link TEXT,
+  creator  TEXT,
   category TEXT,
   detail   TEXT,
   img_link TEXT,
@@ -51,11 +53,13 @@ Columns (`info`):
 - `title` (TEXT): Article title.
 - `link` (TEXT): Absolute URL; unique de‑dup key.
 - `store_link` (TEXT, nullable): Store/product page URL (e.g., App Store/TapTap/官网落地页) when available from the scraper.
+- `creator` (TEXT, nullable): 发布者/发行商/作者；用于 App Store/GP 抓取的发行商去重等。
 - `category` (TEXT, nullable): High‑level category such as `game`, `tech`; constrained to `categories.key`.
 - `detail` (TEXT, nullable): Plain‑text content fetched from detail pages when available.
 - `img_link` (TEXT, nullable): Teaser image URL captured by collectors when available.
 
 Existing databases can add the new column via `python scripts/migrations/202513_add_store_link.py`.
+Existing databases can add the new column via `python scripts/migrations/202514_add_creator.py`.
 
 ### Sources and Categories
 
@@ -671,6 +675,7 @@ Weights semantics (clean rebuild):
 - 2025‑11 C: Pipelines cleanup：`pipelines.name` 不再唯一，新增 `owner_user_id` 索引；`pipeline_filters` 增加 `all_src` 且一管线一行；`pipeline_writers` 仅允许一行配置。
 - 2025‑12 A: 移除退订记录表（`unsubscribed_emails`、`pipeline_unsubscribed`），退订仅将管线 `enabled` 置 0。
 - 2025‑12 B: `info` 增加 `store_link`（可选的商店/落地页链接）。
+- 2025‑12 C: `info` 增加 `creator`（发行商/作者；用于去重）。
 
 ## Maintenance
 

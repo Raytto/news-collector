@@ -167,6 +167,7 @@ class Entry:
     title: str
     link: str
     store_link: str = ""
+    creator: str = ""
     category: str = ""
     img_link: str = ""
     detail: str = ""
@@ -387,6 +388,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
         or item.get("store")
         or ""
     ).strip()
+    creator = str(item.get("creator") or "").strip()
     detail = str(item.get("detail") or "").strip()
     if not (title and link):
         return None
@@ -410,6 +412,7 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
         title=title,
         link=link,
         store_link=store_link,
+        creator=creator,
         category=category,
         img_link=img_link,
         detail=detail,
@@ -447,6 +450,7 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             title TEXT NOT NULL,
             link TEXT NOT NULL,
             store_link TEXT,
+            creator TEXT,
             category TEXT,
             detail TEXT,
             img_link TEXT
@@ -464,6 +468,8 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE info ADD COLUMN img_link TEXT")
         if "store_link" not in cols:
             conn.execute("ALTER TABLE info ADD COLUMN store_link TEXT")
+        if "creator" not in cols:
+            conn.execute("ALTER TABLE info ADD COLUMN creator TEXT")
     except Exception:
         pass
     # New dedup rule for new DBs: unique by link only (no migration performed)
@@ -534,26 +540,65 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
 
 def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> list[Entry]:
     cur = conn.cursor()
+    existing_title_creator: set[tuple[str, str]] = set()
+    try:
+        rows = cur.execute(
+            "SELECT lower(trim(title)), lower(trim(creator)) FROM info WHERE creator IS NOT NULL AND trim(creator) != ''"
+        ).fetchall()
+        for t, c in rows:
+            if t and c:
+                existing_title_creator.add((str(t), str(c)))
+    except sqlite3.OperationalError:
+        existing_title_creator = set()
     newly_added: list[Entry] = []
     for e in entries:
+        normalized_tc: Optional[tuple[str, str]] = None
+        if e.creator and e.title:
+            normalized_tc = (e.title.strip().lower(), e.creator.strip().lower())
+            if normalized_tc in existing_title_creator:
+                continue
         try:
             cur.execute(
                 """
-                INSERT INTO info (source, publish, title, link, store_link, category, detail, img_link)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO info (source, publish, title, link, store_link, creator, category, detail, img_link)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(link) DO NOTHING
                 """,
-                (e.source, e.publish, e.title, e.link, e.store_link or None, e.category, e.detail or None, e.img_link or None),
+                (
+                    e.source,
+                    e.publish,
+                    e.title,
+                    e.link,
+                    e.store_link or None,
+                    e.creator or None,
+                    e.category,
+                    e.detail or None,
+                    e.img_link or None,
+                ),
             )
             if cur.rowcount:
+                if normalized_tc:
+                    existing_title_creator.add(normalized_tc)
                 newly_added.append(e)
         except sqlite3.OperationalError:
             # For older SQLite lacking DO NOTHING, emulate via IGNORE
             cur.execute(
-                "INSERT OR IGNORE INTO info (source, publish, title, link, store_link, category, detail, img_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (e.source, e.publish, e.title, e.link, e.store_link or None, e.category, e.detail or None, e.img_link or None),
+                "INSERT OR IGNORE INTO info (source, publish, title, link, store_link, creator, category, detail, img_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    e.source,
+                    e.publish,
+                    e.title,
+                    e.link,
+                    e.store_link or None,
+                    e.creator or None,
+                    e.category,
+                    e.detail or None,
+                    e.img_link or None,
+                ),
             )
             if cur.rowcount:
+                if normalized_tc:
+                    existing_title_creator.add(normalized_tc)
                 newly_added.append(e)
     conn.commit()
     return newly_added
