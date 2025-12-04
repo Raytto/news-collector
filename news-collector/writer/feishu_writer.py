@@ -454,6 +454,7 @@ def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_eva
                 i.publish,
                 i.title,
                 i.link,
+                i.store_link,
                 r.ai_summary,
                 m.key,
                 s.score
@@ -477,12 +478,13 @@ def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_eva
                 "publish": str(row[3] or ""),
                 "title": str(row[4] or ""),
                 "link": str(row[5] or ""),
-                "ai_summary": str(row[6] or ""),
+                "store_link": str(row[6] or ""),
+                "ai_summary": str(row[7] or ""),
                 "scores": {},
             },
         )
-        metric_key = str(row[7])
-        score = int(row[8])
+        metric_key = str(row[8])
+        score = int(row[9])
         article["scores"][metric_key] = score
     return list(articles.values())
 

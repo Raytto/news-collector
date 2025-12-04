@@ -234,6 +234,33 @@ cleanup_old_outputs() {
   fi
 }
 
+cleanup_old_temp() {
+  local temp_dir="$ROOT_DIR/data/temp"
+  local ttl_days=7
+  local removed=0
+
+  if [ ! -d "$temp_dir" ]; then
+    echo "[INFO] Temp directory not found at $temp_dir; skipping cleanup." >&2
+    return 0
+  fi
+
+  echo "[INFO] Cleaning temp files older than ${ttl_days} days in $temp_dir (ctime)" >&2
+  while IFS= read -r file; do
+    if rm -- "$file"; then
+      echo "[INFO] Removed stale temp file: $file" >&2
+      removed=$((removed + 1))
+    else
+      echo "[WARN] Failed to remove stale temp file: $file" >&2
+    fi
+  done < <(find "$temp_dir" -type f -ctime +"$ttl_days" -print 2>/dev/null)
+
+  if [ "$removed" -gt 0 ]; then
+    echo "[INFO] Removed $removed stale temp file(s) from $temp_dir" >&2
+  else
+    echo "[INFO] No stale temp files found (older than ${ttl_days} days)." >&2
+  fi
+}
+
 run_once() {
   if ! activate_runtime; then
     return 1
@@ -243,7 +270,7 @@ run_once() {
   echo "[INFO] Applying AI metrics migration (idempotent)..." >&2
   $PYTHON "$ROOT_DIR/scripts/migrations/202510_ai_metrics_refactor.py" --db "$ROOT_DIR/data/info.db" || true
   echo "[INFO] Applying pipeline refactor migration (idempotent)..." >&2
-  $PYTHON -c "import sqlite3,sys;from pathlib import Path;sql=Path('$ROOT_DIR/scripts/migrations/pipeline_refactor.sql');conn=sqlite3.connect('$ROOT_DIR/data/info.db');conn.executescript(sql.read_text());conn.commit();conn.close()" || true
+  $PYTHON "$ROOT_DIR/scripts/migrations/pipeline_refactor.py" --db "$ROOT_DIR/data/info.db" || true
 
   check_pipeline_config
 
@@ -255,4 +282,5 @@ while true; do
   sleep_until_next_0930
   run_once || true
   cleanup_old_outputs || true
+  cleanup_old_temp || true
 done

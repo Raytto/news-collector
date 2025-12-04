@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS info (
   publish  TEXT NOT NULL,
   title    TEXT NOT NULL,
   link     TEXT NOT NULL,
+  store_link TEXT,
   category TEXT,
   detail   TEXT,
   img_link TEXT,
@@ -49,9 +50,12 @@ Columns (`info`):
 - `publish` (TEXT): Publication time; prefer ISO‑8601 UTC (e.g., `2025-10-24T14:27:00+00:00`). May be coarse strings when precise time is unavailable.
 - `title` (TEXT): Article title.
 - `link` (TEXT): Absolute URL; unique de‑dup key.
+- `store_link` (TEXT, nullable): Store/product page URL (e.g., App Store/TapTap/官网落地页) when available from the scraper.
 - `category` (TEXT, nullable): High‑level category such as `game`, `tech`; constrained to `categories.key`.
 - `detail` (TEXT, nullable): Plain‑text content fetched from detail pages when available.
 - `img_link` (TEXT, nullable): Teaser image URL captured by collectors when available.
+
+Existing databases can add the new column via `python scripts/migrations/202513_add_store_link.py`.
 
 ### Sources and Categories
 
@@ -65,6 +69,7 @@ CREATE TABLE IF NOT EXISTS categories (
   key        TEXT NOT NULL UNIQUE,
   label_zh   TEXT NOT NULL,
   enabled    INTEGER NOT NULL DEFAULT 1,
+  allow_parallel INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -74,6 +79,7 @@ Semantics:
 
 - `key` is a stable identifier used in `info.category` (e.g., `game`, `tech`).
 - Disable a category by setting `enabled=0` (writers may still filter by explicit lists).
+- `allow_parallel` controls collector scheduling: `1` uses the normal parallel fetch pool; `0` forces all sources in the category to run serially.
 
 #### Table: `sources`
 
@@ -563,8 +569,8 @@ CREATE TABLE IF NOT EXISTS source_runs (
 The collector skips duplicates via upsert:
 
 ```sql
-INSERT INTO info (source, publish, title, link, category, detail, img_link)
-VALUES (?, ?, ?, ?, ?, NULL, ?)
+INSERT INTO info (source, publish, title, link, store_link, category, detail, img_link)
+VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
 ON CONFLICT(link) DO NOTHING;
 ```
 
@@ -582,6 +588,7 @@ Notes on collector behavior (with `sources` table):
 
 - `info.source` is always set from `sources.key`; `info.category` is set from `sources.category_key` (overrides script-provided values if any).
 - `img_link` 会在抓取到封面图时落库，否则为 NULL。
+- `store_link` 会在采集数据包含时落库（例如 App Store / TapTap / 官网下载页）；缺失时为 NULL。
 - The collector iterates `sources` where `enabled=1`; if a `script_path` does not exist or cannot be imported, it logs an error for that source and continues.
 
 ## Typical Queries
@@ -663,6 +670,7 @@ Weights semantics (clean rebuild):
 - 2025‑11 B: Added evaluator registry tables：`evaluators`、`evaluator_metrics`。
 - 2025‑11 C: Pipelines cleanup：`pipelines.name` 不再唯一，新增 `owner_user_id` 索引；`pipeline_filters` 增加 `all_src` 且一管线一行；`pipeline_writers` 仅允许一行配置。
 - 2025‑12 A: 移除退订记录表（`unsubscribed_emails`、`pipeline_unsubscribed`），退订仅将管线 `enabled` 置 0。
+- 2025‑12 B: `info` 增加 `store_link`（可选的商店/落地页链接）。
 
 ## Maintenance
 

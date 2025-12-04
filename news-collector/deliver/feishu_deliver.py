@@ -158,62 +158,132 @@ def _extract_md_items_with_images(md_text: str) -> tuple[str, list[dict]]:
     return header, items
 
 
-CROP_RATIO = 0.15  # crop 15% from top and bottom to reduce black bars
+CROP_RATIO = 0.13  # crop 13% from top and bottom to reduce black bars
 HEADERS_DOWNLOAD = {
     "User-Agent": "Mozilla/5.0 (compatible; FeishuUploader/1.0)",
     "Accept": "*/*",
 }
 
 
-def _upload_image_and_get_key(cfg: FeishuConfig, token: str, img_url: str) -> str:
-    """Download remote image, crop to remove top/bottom bars, and upload to Feishu."""
-    if not img_url:
-        return ""
+def _scale_image_bytes(content: bytes, factor: float = 1.5, max_side: int = 2200) -> tuple[bytes, str]:
+    """Scale image bytes by factor while capping the longest side."""
+    if factor <= 1.0:
+        return content, "application/octet-stream"
     try:
-        resp = requests.get(img_url, headers=HEADERS_DOWNLOAD, timeout=TIMEOUT)
-        resp.raise_for_status()
-        content = resp.content
-        ctype = resp.headers.get("Content-Type") or "application/octet-stream"
-    except Exception as exc:
-        print(f"[WARN] 下载图片失败: {img_url} - {exc}")
-        return ""
+        from PIL import Image, ImageFile  # type: ignore
 
-    # Crop top/bottom to reduce black bars when possible
-    try:
-        from PIL import Image  # type: ignore
-
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
         with Image.open(BytesIO(content)) as im:
             w, h = im.size
-            if h > 20 and w > 1:
-                strip = int(h * CROP_RATIO)
-                if strip * 2 < h:  # ensure positive height remains
-                    box = (0, strip, w, h - strip)
-                    cropped = im.crop(box)
-                    buf = BytesIO()
-                    fmt = im.format or "JPEG"
-                    save_kwargs = {"format": fmt}
-                    if fmt.upper() == "JPEG":
-                        save_kwargs["quality"] = 90
-                    cropped.save(buf, **save_kwargs)
-                    content = buf.getvalue()
-                    if fmt.upper() == "JPEG":
-                        ctype = "image/jpeg"
-                    elif fmt.upper() == "PNG":
-                        ctype = "image/png"
+            if w <= 0 or h <= 0:
+                return content, "application/octet-stream"
+            new_w = min(max(1, int(w * factor)), max_side)
+            new_h = min(max(1, int(h * factor)), max_side)
+            if w >= h:
+                new_h = max(1, int(h * new_w / w))
+            else:
+                new_w = max(1, int(w * new_h / h))
+            if new_w == w and new_h == h:
+                return content, "application/octet-stream"
+            buf = BytesIO()
+            im.resize((new_w, new_h)).save(buf, format=im.format or "JPEG", quality=90)
+            ctype = "image/png" if (im.format or "").upper() == "PNG" else "image/jpeg"
+            return buf.getvalue(), ctype
     except Exception:
-        # Fallback to original content when PIL is unavailable or crop fails
-        pass
+        return content, "application/octet-stream"
+
+
+def _upload_image_and_get_key(cfg: FeishuConfig, token: str, img_url: str) -> str:
+    """Download remote image or read local file, process, and upload to Feishu."""
+    if not img_url:
+        return ""
+
+    content: bytes | None = None
+    ctype = "application/octet-stream"
+    filename = "image.jpg"
+
+    parsed = urlparse(img_url)
+    is_local = False
+    local_path: Path | None = None
+    if parsed.scheme in ("", "file"):
+        candidate = Path(parsed.path if parsed.scheme == "file" else img_url).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        if candidate.exists():
+            is_local = True
+            local_path = candidate
+
+    if is_local and local_path:
+        try:
+            content = local_path.read_bytes()
+            suffix = local_path.suffix.lower() or ".jpg"
+            if suffix in {".jpg", ".jpeg"}:
+                ctype = "image/jpeg"
+            elif suffix == ".png":
+                ctype = "image/png"
+            filename = local_path.name
+
+        except Exception as exc:
+            print(f"[WARN] 读取本地图片失败: {local_path} - {exc}")
+            return ""
+    else:
+        try:
+            resp = requests.get(img_url, headers=HEADERS_DOWNLOAD, timeout=TIMEOUT)
+            resp.raise_for_status()
+            content = resp.content
+            ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+            filename = Path(urlparse(img_url).path).name or filename
+        except Exception as exc:
+            print(f"[WARN] 下载图片失败: {img_url} - {exc}")
+            return ""
+
+    if content is None:
+        return ""
+
+    # Crop top/bottom to reduce black bars only for remote images
+    if not is_local:
+        try:
+            from PIL import Image, ImageFile  # type: ignore
+
+            ImageFile.LOAD_TRUNCATED_IMAGES = True  # tolerate slightly broken thumbnails
+            with Image.open(BytesIO(content)) as im:
+                orig_w, orig_h = im.size
+                if orig_h > 20 and orig_w > 1:
+                    strip = max(1, int(orig_h * CROP_RATIO))
+                    if strip * 2 < orig_h:  # ensure positive height remains
+                        box = (0, strip, orig_w, orig_h - strip)
+                        cropped = im.crop(box)
+                        buf = BytesIO()
+                        fmt = im.format or "JPEG"
+                        save_kwargs = {"format": fmt}
+                        if fmt.upper() == "JPEG":
+                            save_kwargs["quality"] = 90
+                        cropped.save(buf, **save_kwargs)
+                        content = buf.getvalue()
+                        new_w, new_h = cropped.size
+                        if fmt.upper() == "JPEG":
+                            ctype = "image/jpeg"
+                        elif fmt.upper() == "PNG":
+                            ctype = "image/png"
+                        if (new_w, new_h) != (orig_w, orig_h):
+                            print(f"[INFO] 裁剪图片 {orig_w}x{orig_h} -> {new_w}x{new_h} (上下各去掉 {strip}px)")
+        except Exception as exc:
+            # Fallback to original content when PIL is unavailable or crop fails
+            print(f"[WARN] 图片裁剪失败，使用原图: {img_url} - {exc}")
+
+    # Uniform scaling for Feishu display (apply after any crop)
+    content, scaled_ctype = _scale_image_bytes(content, factor=1.5, max_side=2200)
+    if scaled_ctype != "application/octet-stream":
+        ctype = scaled_ctype
 
     # Guess a filename for Feishu API; fall back to jpg
     path = urlparse(img_url).path
-    suffix = ".jpg"
     if path:
         parts = path.rsplit("/", 1)
         if parts and "." in parts[-1]:
             suf = "." + parts[-1].split(".")[-1]
             if len(suf) <= 6:
-                suffix = suf
-    filename = f"image{suffix}"
+                filename = f"image{suf}"
 
     upload_url = f"{cfg.api_base}/open-apis/im/v1/images"
     headers = {"Authorization": f"Bearer {token}"}
@@ -259,29 +329,10 @@ def send_card_md(cfg: FeishuConfig, token: str, chat_id: str, md_text: str, titl
                 if img_key:
                     elements.append(
                         {
-                            "tag": "column_set",
-                            "flex_mode": "none",
-                            "columns": [
-                                {
-                                    "tag": "column",
-                                    "width": "weighted",
-                                    "weight": 1,
-                                    "elements": [
-                                        {
-                                            "tag": "img",
-                                            "mode": "fit_horizontal",
-                                            "img_key": img_key,
-                                            "alt": {"tag": "plain_text", "content": "封面"},
-                                        }
-                                    ],
-                                },
-                                {
-                                    "tag": "column",
-                                    "width": "weighted",
-                                    "weight": 1,
-                                    "elements": [{"tag": "markdown", "content": " "}],
-                                },
-                            ],
+                            "tag": "img",
+                            "mode": "fit_horizontal",
+                            "img_key": img_key,
+                            "alt": {"tag": "plain_text", "content": "封面"},
                         }
                     )
                 else:

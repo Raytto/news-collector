@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS categories (
   key        TEXT NOT NULL UNIQUE,
   label_zh   TEXT NOT NULL,
   enabled    INTEGER NOT NULL DEFAULT 1,
+  allow_parallel INTEGER NOT NULL DEFAULT 1,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -312,6 +313,11 @@ def ensure_db() -> None:
             cur.execute("ALTER TABLE pipeline_writers ADD COLUMN limit_per_category TEXT")
         if "per_source_cap" not in existing_cols:
             cur.execute("ALTER TABLE pipeline_writers ADD COLUMN per_source_cap INTEGER")
+        # Add allow_parallel to categories when missing
+        cur.execute("PRAGMA table_info(categories)")
+        cat_cols = {row[1] for row in cur.fetchall()}
+        if "allow_parallel" not in cat_cols:
+            cur.execute("ALTER TABLE categories ADD COLUMN allow_parallel INTEGER NOT NULL DEFAULT 1")
         # Add owner_user_id to pipelines if missing
         cur.execute("PRAGMA table_info(pipelines)")
         p_cols = {row[1] for row in cur.fetchall()}
@@ -335,6 +341,14 @@ def ensure_db() -> None:
             cur.execute("ALTER TABLE pipelines ADD COLUMN pipeline_class_id INTEGER")
         if "evaluator_key" not in p_cols:
             cur.execute("ALTER TABLE pipelines ADD COLUMN evaluator_key TEXT")
+        # Add store_link to info when table already exists
+        try:
+            cur.execute("PRAGMA table_info(info)")
+            info_cols = {row[1] for row in cur.fetchall()}
+            if info_cols and "store_link" not in info_cols:
+                cur.execute("ALTER TABLE info ADD COLUMN store_link TEXT")
+        except sqlite3.OperationalError:
+            pass
         # Backfill defaults when new columns were added
         try:
             row_general = cur.execute(
@@ -2112,19 +2126,31 @@ def delete_pipeline_class(conn: sqlite3.Connection, cid: int) -> None:
 
 
 def fetch_categories(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT id, key, label_zh, enabled, created_at, updated_at
-        FROM categories
-        ORDER BY id
-        """
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, key, label_zh, enabled, allow_parallel, created_at, updated_at
+            FROM categories
+            ORDER BY id
+            """
+        ).fetchall()
+        has_parallel = True
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            """
+            SELECT id, key, label_zh, enabled, created_at, updated_at
+            FROM categories
+            ORDER BY id
+            """
+        ).fetchall()
+        has_parallel = False
     return [
         {
             "id": int(row["id"]),
             "key": row["key"],
             "label_zh": row["label_zh"],
             "enabled": int(row["enabled"]),
+            "allow_parallel": int(row["allow_parallel"]) if has_parallel and row["allow_parallel"] is not None else 1,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -2133,14 +2159,26 @@ def fetch_categories(conn: sqlite3.Connection) -> list[dict]:
 
 
 def fetch_category(conn: sqlite3.Connection, cid: int) -> Optional[dict]:
-    row = conn.execute(
-        """
-        SELECT id, key, label_zh, enabled, created_at, updated_at
-        FROM categories
-        WHERE id=?
-        """,
-        (cid,),
-    ).fetchone()
+    try:
+        row = conn.execute(
+            """
+            SELECT id, key, label_zh, enabled, allow_parallel, created_at, updated_at
+            FROM categories
+            WHERE id=?
+            """,
+            (cid,),
+        ).fetchone()
+        has_parallel = True
+    except sqlite3.OperationalError:
+        row = conn.execute(
+            """
+            SELECT id, key, label_zh, enabled, created_at, updated_at
+            FROM categories
+            WHERE id=?
+            """,
+            (cid,),
+        ).fetchone()
+        has_parallel = False
     if not row:
         return None
     return {
@@ -2148,6 +2186,7 @@ def fetch_category(conn: sqlite3.Connection, cid: int) -> Optional[dict]:
         "key": row["key"],
         "label_zh": row["label_zh"],
         "enabled": int(row["enabled"]),
+        "allow_parallel": int(row["allow_parallel"]) if has_parallel and row["allow_parallel"] is not None else 1,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -2158,13 +2197,14 @@ def create_category(conn: sqlite3.Connection, payload: dict) -> int:
     key = str(payload.get("key") or "").strip()
     label = str(payload.get("label_zh") or "").strip()
     enabled = 1 if int(payload.get("enabled", 1) or 0) else 0
+    allow_parallel = 1 if int(payload.get("allow_parallel", 1) or 0) else 0
     if not key:
         raise ValueError("类别 key 不能为空")
     if not label:
         raise ValueError("类别名称不能为空")
     cur.execute(
-        "INSERT INTO categories (key, label_zh, enabled) VALUES (?, ?, ?)",
-        (key, label, enabled),
+        "INSERT INTO categories (key, label_zh, enabled, allow_parallel) VALUES (?, ?, ?, ?)",
+        (key, label, enabled, allow_parallel),
     )
     conn.commit()
     return int(cur.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -2180,6 +2220,7 @@ def update_category(conn: sqlite3.Connection, cid: int, payload: dict) -> None:
     if not new_label:
         raise ValueError("类别名称不能为空")
     new_enabled = 1 if int(payload.get("enabled", existing["enabled"]) or 0) else 0
+    new_allow_parallel = 1 if int(payload.get("allow_parallel", existing.get("allow_parallel", 1)) or 0) else 0
     if new_key != existing["key"]:
         ref_count = cur.execute(
             "SELECT COUNT(1) FROM sources WHERE category_key=?",
@@ -2190,10 +2231,10 @@ def update_category(conn: sqlite3.Connection, cid: int, payload: dict) -> None:
     cur.execute(
         """
         UPDATE categories
-        SET key=?, label_zh=?, enabled=?, updated_at=CURRENT_TIMESTAMP
+        SET key=?, label_zh=?, enabled=?, allow_parallel=?, updated_at=CURRENT_TIMESTAMP
         WHERE id=?
         """,
-        (new_key, new_label, new_enabled, cid),
+        (new_key, new_label, new_enabled, new_allow_parallel, cid),
     )
     conn.commit()
 
@@ -2469,6 +2510,7 @@ def fetch_info_list(
                COALESCE(cat.label_zh, i.category) AS category_label,
                i.publish,
                i.link,
+                i.store_link,
                r.final_score,
                r.updated_at AS review_updated_at
         FROM info AS i
@@ -2491,6 +2533,7 @@ def fetch_info_list(
             "category_label": row["category_label"],
             "publish": row["publish"],
             "link": row["link"],
+            "store_link": row["store_link"],
             "final_score": float(row["final_score"]) if row["final_score"] is not None else None,
             "review_updated_at": row["review_updated_at"],
         }
@@ -2502,7 +2545,7 @@ def fetch_info_list(
 def fetch_info_detail(conn: sqlite3.Connection, info_id: int) -> Optional[dict]:
     row = conn.execute(
         """
-        SELECT i.id, i.title, i.source, i.category, i.publish, i.link, i.detail,
+        SELECT i.id, i.title, i.source, i.category, i.publish, i.link, i.store_link, i.detail,
                COALESCE(src.label_zh, i.source) AS source_label,
                COALESCE(cat.label_zh, i.category) AS category_label
         FROM info AS i
@@ -2523,6 +2566,7 @@ def fetch_info_detail(conn: sqlite3.Connection, info_id: int) -> Optional[dict]:
         "category_label": row["category_label"],
         "publish": row["publish"],
         "link": row["link"],
+        "store_link": row["store_link"],
         "detail": row["detail"],
     }
 

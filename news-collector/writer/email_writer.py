@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import escape
@@ -411,6 +412,7 @@ def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_eva
                 i.publish,
                 i.title,
                 i.link,
+                i.store_link,
                 r.ai_comment,
                 r.ai_summary,
                 r.ai_key_concepts,
@@ -436,6 +438,7 @@ def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_eva
                     i.publish,
                     i.title,
                     i.link,
+                    i.store_link,
                     r.ai_comment,
                     r.ai_summary,
                     m.key,
@@ -461,15 +464,16 @@ def load_article_scores(conn: sqlite3.Connection, evaluator_key: str = "news_eva
                 "publish": str(row[3] or ""),
                 "title": str(row[4] or ""),
                 "link": str(row[5] or ""),
-                "ai_comment": str(row[6] or ""),
-                "ai_summary": str(row[7] or ""),
-                "ai_key_concepts": (row[8] if extended else None),
-                "ai_summary_long": (str(row[9] or "") if extended else ""),
+                "store_link": str(row[6] or ""),
+                "ai_comment": str(row[7] or ""),
+                "ai_summary": str(row[8] or ""),
+                "ai_key_concepts": (row[9] if extended else None),
+                "ai_summary_long": (str(row[10] or "") if extended else ""),
                 "scores": {},
             },
         )
-        metric_key = str(row[10] if extended else row[8])
-        score = int(row[11] if extended else row[9])
+        metric_key = str(row[11] if extended else row[9])
+        score = int(row[12] if extended else row[10])
         article["scores"][metric_key] = score
     return list(articles.values())
 
@@ -740,6 +744,7 @@ def main() -> None:
     weights_cli_override = args.weights
     bonus_cli_override = args.source_bonus
     categories_filter: List[str] = []
+    all_categories_flag = 1
     limit_map: Dict[str, int] = {}
     limit_default = DEFAULT_LIMIT_PER_CATEGORY
     per_source_cap = DEFAULT_PER_SOURCE_CAP
@@ -791,7 +796,9 @@ def main() -> None:
                 ).items():
                     source_bonus[str(key)] = value
 
-            all_cats = int(cfg.get("all_categories", 1) or 1)
+            raw_all_cats = cfg.get("all_categories", 1)
+            all_cats = 1 if raw_all_cats is None else int(raw_all_cats)
+            all_categories_flag = all_cats
             if all_cats == 0:
                 try:
                     cats = json.loads(cfg.get("categories_json") or "[]")
@@ -818,6 +825,12 @@ def main() -> None:
             recipient_email = _load_delivery_email(conn, pid)
 
         print(f"[WRITER] pipeline={pid} using hours={effective_hours}")
+        if str(os.getenv("DEBUG_PIPELINE_FILTER", "")).strip().lower() in {"1", "true", "yes"}:
+            print(
+                f"[WRITER-DEBUG] pipeline={pid} all_categories={all_categories_flag} "
+                f"categories={categories_filter} include_sources={sorted(include_sources)} cfg={cfg}",
+                file=sys.stderr,
+            )
         allowed_metric_keys = load_allowed_metric_keys(conn, evaluator_key)
         metrics = load_active_metrics(
             conn,
@@ -836,6 +849,7 @@ def main() -> None:
                 source_bonus[str(key)] = value
         if args.categories.strip():
             categories_filter = [c.strip() for c in args.categories.split(",") if c.strip()]
+            all_categories_flag = 0
         if args.limit_per_cat and args.limit_per_cat.strip():
             limit_map, limit_default = parse_limit_config(args.limit_per_cat)
         if args.per_source_cap is not None:
@@ -860,8 +874,15 @@ def main() -> None:
         if not dt or dt < cutoff:
             continue
         category = article.get("category", "")
-        if categories_filter and category not in categories_filter and article.get("source", "") not in include_sources:
-            continue
+        source = article.get("source", "")
+        if all_categories_flag == 0:
+            allowed = False
+            if categories_filter and category in categories_filter:
+                allowed = True
+            if not allowed and source in include_sources:
+                allowed = True
+            if not allowed:
+                continue
         link = article.get("link", "").strip()
         if not link:
             continue

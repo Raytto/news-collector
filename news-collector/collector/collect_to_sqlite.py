@@ -55,7 +55,7 @@ GLOBAL_HTTP_CONCURRENCY = _get_int("COLLECTOR_GLOBAL_HTTP_CONCURRENCY", 16)
 PER_HOST_MIN_INTERVAL_MS = _get_int("COLLECTOR_PER_HOST_MIN_INTERVAL_MS", 500)
 TIMEOUT_CONNECT = _get_float("COLLECTOR_TIMEOUT_CONNECT", 5.0)
 TIMEOUT_READ = _get_float("COLLECTOR_TIMEOUT_READ", 10.0)
-SOURCE_TIMEOUT_SEC = _get_float("COLLECTOR_SOURCE_TIMEOUT_SEC", 15.0)
+SOURCE_TIMEOUT_SEC = _get_float("COLLECTOR_SOURCE_TIMEOUT_SEC", 40.0)
 RETRY_MAX = _get_int("COLLECTOR_RETRY_MAX", 3)
 RETRY_BACKOFF_BASE = _get_float("COLLECTOR_RETRY_BACKOFF_BASE", 0.6)
 DISABLE_CONCURRENCY = os.getenv("COLLECTOR_DISABLE_CONCURRENCY", "").strip().lower() in {"1", "true", "yes"}
@@ -166,8 +166,10 @@ class Entry:
     publish: str
     title: str
     link: str
+    store_link: str = ""
     category: str = ""
     img_link: str = ""
+    detail: str = ""
 
 
 @dataclass
@@ -176,6 +178,7 @@ class SourceSpec:
     source: str
     category: str
     path: Path
+    allow_parallel: bool = True
 
 
 DEFAULT_CATEGORY_LABELS = {
@@ -193,6 +196,8 @@ def _load_module(path: Path):
     if spec is None or spec.loader is None:
         raise ImportError(f"无法加载模块: {path}")
     mod = importlib.util.module_from_spec(spec)
+    # Ensure dataclass and other decorators can resolve module via sys.modules during exec
+    sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
 
@@ -376,6 +381,13 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     source = str(item.get("source") or "").strip()
     category = str(item.get("category") or "").strip()
     img_link = str(item.get("img") or item.get("image") or item.get("thumbnail") or "").strip()
+    store_link = str(
+        item.get("store_link")
+        or item.get("store_url")
+        or item.get("store")
+        or ""
+    ).strip()
+    detail = str(item.get("detail") or "").strip()
     if not (title and link):
         return None
     # Try to normalize publish to seconds if it looks like a YYYY-MM-DD HH:MM
@@ -392,7 +404,16 @@ def _coerce_entry(item: Dict[str, Any]) -> Optional[Entry]:
     except Exception:
         # Keep original string
         pass
-    return Entry(source=source, publish=publish, title=title, link=link, category=category, img_link=img_link)
+    return Entry(
+        source=source,
+        publish=publish,
+        title=title,
+        link=link,
+        store_link=store_link,
+        category=category,
+        img_link=img_link,
+        detail=detail,
+    )
 
 
 ISO_PATTERN = re.compile(
@@ -425,6 +446,7 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             publish TEXT NOT NULL,
             title TEXT NOT NULL,
             link TEXT NOT NULL,
+            store_link TEXT,
             category TEXT,
             detail TEXT,
             img_link TEXT
@@ -440,6 +462,8 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE info ADD COLUMN detail TEXT")
         if "img_link" not in cols:
             conn.execute("ALTER TABLE info ADD COLUMN img_link TEXT")
+        if "store_link" not in cols:
+            conn.execute("ALTER TABLE info ADD COLUMN store_link TEXT")
     except Exception:
         pass
     # New dedup rule for new DBs: unique by link only (no migration performed)
@@ -457,11 +481,18 @@ def _ensure_db(conn: sqlite3.Connection) -> None:
             key        TEXT NOT NULL UNIQUE,
             label_zh   TEXT NOT NULL,
             enabled    INTEGER NOT NULL DEFAULT 1,
+            allow_parallel INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
+    try:
+        cat_cols = {row[1] for row in conn.execute("PRAGMA table_info(categories)")}
+        if "allow_parallel" not in cat_cols:
+            conn.execute("ALTER TABLE categories ADD COLUMN allow_parallel INTEGER NOT NULL DEFAULT 1")
+    except Exception:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sources (
@@ -508,19 +539,19 @@ def _insert_entries(conn: sqlite3.Connection, entries: Iterable[Entry]) -> list[
         try:
             cur.execute(
                 """
-                INSERT INTO info (source, publish, title, link, category, detail, img_link)
-                VALUES (?, ?, ?, ?, ?, NULL, ?)
+                INSERT INTO info (source, publish, title, link, store_link, category, detail, img_link)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(link) DO NOTHING
                 """,
-                (e.source, e.publish, e.title, e.link, e.category, e.img_link or None),
+                (e.source, e.publish, e.title, e.link, e.store_link or None, e.category, e.detail or None, e.img_link or None),
             )
             if cur.rowcount:
                 newly_added.append(e)
         except sqlite3.OperationalError:
             # For older SQLite lacking DO NOTHING, emulate via IGNORE
             cur.execute(
-                "INSERT OR IGNORE INTO info (source, publish, title, link, category, detail, img_link) VALUES (?, ?, ?, ?, ?, NULL, ?)",
-                (e.source, e.publish, e.title, e.link, e.category, e.img_link or None),
+                "INSERT OR IGNORE INTO info (source, publish, title, link, store_link, category, detail, img_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (e.source, e.publish, e.title, e.link, e.store_link or None, e.category, e.detail or None, e.img_link or None),
             )
             if cur.rowcount:
                 newly_added.append(e)
@@ -538,7 +569,18 @@ def _resolve_script_path(script_path: str) -> Path:
 
 def _load_sources_from_db(conn: sqlite3.Connection, allow_keys: Optional[set[str]] = None) -> list[SourceSpec]:
     cursor = conn.cursor()
+    fallback_allow_parallel = False
     try:
+        rows = cursor.execute(
+            """
+            SELECT s.id, s.key, s.category_key, s.script_path, COALESCE(c.allow_parallel, 1) AS allow_parallel
+            FROM sources AS s
+            LEFT JOIN categories AS c ON c.key = s.category_key
+            WHERE s.enabled = 1
+            ORDER BY s.id
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
         rows = cursor.execute(
             """
             SELECT id, key, category_key, script_path
@@ -547,11 +589,15 @@ def _load_sources_from_db(conn: sqlite3.Connection, allow_keys: Optional[set[str
             ORDER BY id
             """
         ).fetchall()
-    except sqlite3.OperationalError:
-        return []
+        fallback_allow_parallel = True
 
     specs: list[SourceSpec] = []
-    for sid, key, category_key, script_path in rows:
+    for row in rows:
+        if fallback_allow_parallel:
+            sid, key, category_key, script_path = row
+            allow_parallel = 1
+        else:
+            sid, key, category_key, script_path, allow_parallel = row
         key_str = str(key or "").strip()
         script_path_str = str(script_path or "").strip()
         if not (key_str and script_path_str):
@@ -562,12 +608,17 @@ def _load_sources_from_db(conn: sqlite3.Connection, allow_keys: Optional[set[str
             resolved = _resolve_script_path(script_path_str)
         except Exception:
             continue
+        try:
+            allow_parallel_flag = 1 if int(allow_parallel or 0) else 0
+        except Exception:
+            allow_parallel_flag = 1
         specs.append(
             SourceSpec(
                 id=int(sid),
                 source=key_str,
                 category=str(category_key or "").strip(),
                 path=resolved,
+                allow_parallel=bool(allow_parallel_flag),
             )
         )
     return specs
@@ -850,23 +901,34 @@ def main() -> None:
         _install_http_limits()
 
         total_new = 0
-        if DISABLE_CONCURRENCY or SOURCE_CONCURRENCY <= 1:
-            for spec in source_specs:
+        parallel_specs = [s for s in source_specs if s.allow_parallel]
+        serial_specs = [s for s in source_specs if not s.allow_parallel]
+
+        def _run_serial(specs: list[SourceSpec]) -> None:
+            nonlocal total_new
+            for spec in specs:
                 _, added = _run_source_with_timeout(spec, SOURCE_TIMEOUT_SEC)
                 total_new += added
+
+        if DISABLE_CONCURRENCY or SOURCE_CONCURRENCY <= 1:
+            _run_serial(source_specs)
         else:
-            with ThreadPoolExecutor(max_workers=SOURCE_CONCURRENCY) as pool:
-                future_map = {
-                    pool.submit(_run_source_with_timeout, spec, SOURCE_TIMEOUT_SEC): spec
-                    for spec in source_specs
-                }
-                for fut in as_completed(future_map):
-                    try:
-                        _src, added = fut.result()
-                        total_new += added
-                    except Exception as exc:
-                        spec = future_map[fut]
-                        print(f"{spec.path.name}({spec.source or 'unknown'}): 并发执行失败 - {exc}")
+            if parallel_specs:
+                with ThreadPoolExecutor(max_workers=SOURCE_CONCURRENCY) as pool:
+                    future_map = {
+                        pool.submit(_run_source_with_timeout, spec, SOURCE_TIMEOUT_SEC): spec
+                        for spec in parallel_specs
+                    }
+                    for fut in as_completed(future_map):
+                        try:
+                            _src, added = fut.result()
+                            total_new += added
+                        except Exception as exc:
+                            spec = future_map[fut]
+                            print(f"{spec.path.name}({spec.source or 'unknown'}): 并发执行失败 - {exc}")
+            if serial_specs:
+                print(f"检测到 {len(serial_specs)} 个串行类别来源，按顺序执行...")
+                _run_serial(serial_specs)
 
         print(f"完成，数据库: {DB_PATH}，新增总计 {total_new} 条")
     finally:

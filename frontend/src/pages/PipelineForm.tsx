@@ -28,6 +28,7 @@ type WeightEntry = { metric?: string; weight?: number }
 type BonusEntry = { source?: string; bonus?: number }
 
 const CATEGORY_LIMIT_DEFAULT = 10
+const GENERAL_NEWS_CLASS_KEY = 'general_news'
 
 const FALLBACK_METRICS: MetricOption[] = [
   { key: 'timeliness', label_zh: '时效性', default_weight: 0.14, sort_order: 10 },
@@ -122,23 +123,42 @@ function normalizeLimitForForm(limit: unknown): { defaultValue: number; override
   return { defaultValue, overrides }
 }
 
-function normalizeWeightsForForm(weights: unknown, metrics: MetricOption[]): WeightEntry[] {
+function normalizeWeightsForForm(
+  weights: unknown,
+  metrics: MetricOption[],
+  options?: { addMissingMetrics?: boolean }
+): WeightEntry[] {
   const result: WeightEntry[] = []
-  const provided = weights && typeof weights === 'object' ? (weights as Record<string, unknown>) : {}
+  const provided =
+    weights && typeof weights === 'object' && !Array.isArray(weights) ? (weights as Record<string, unknown>) : {}
+  const addMissingMetrics =
+    typeof options?.addMissingMetrics === 'boolean'
+      ? options.addMissingMetrics
+      : Object.keys(provided).length === 0
   const seen = new Set<string>()
 
   metrics.forEach(({ key, default_weight }) => {
-    const numeric = toNumber(provided[key])
-    const fallback = typeof default_weight === 'number' ? default_weight : 0
-    result.push({ metric: key, weight: typeof numeric === 'number' ? numeric : fallback })
-    seen.add(key)
+    const metricKey = typeof key === 'string' ? key.trim() : ''
+    if (!metricKey || seen.has(metricKey)) return
+    const numeric = toNumber(provided[metricKey])
+    if (typeof numeric === 'number') {
+      result.push({ metric: metricKey, weight: numeric })
+      seen.add(metricKey)
+      return
+    }
+    if (addMissingMetrics) {
+      const fallback = typeof default_weight === 'number' ? default_weight : 0
+      result.push({ metric: metricKey, weight: fallback })
+      seen.add(metricKey)
+    }
   })
 
   Object.entries(provided).forEach(([key, value]) => {
-    if (seen.has(key)) return
+    const metricKey = typeof key === 'string' ? key.trim() : ''
+    if (!metricKey || seen.has(metricKey)) return
     const numeric = toNumber(value)
     if (typeof numeric !== 'number') return
-    result.push({ metric: key, weight: numeric })
+    result.push({ metric: metricKey, weight: numeric })
   })
 
   return result
@@ -251,6 +271,7 @@ export default function PipelineForm() {
   const [optionsReady, setOptionsReady] = useState(false)
   const [sourcesReady, setSourcesReady] = useState(false)
   const writerSnapshotRef = useRef<any>(null)
+  const deliverySnapshotRef = useRef<any>(null)
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [treeCheckedKeys, setTreeCheckedKeys] = useState<string[]>([])
@@ -258,6 +279,7 @@ export default function PipelineForm() {
   const pipelineClassIdValue = Form.useWatch<number | undefined>(["pipeline", "pipeline_class_id"], form)
   const toAllChatValue = Form.useWatch<number | undefined>(["delivery", "to_all_chat"], form)
   const chatIdValue = Form.useWatch<string | undefined>(["delivery", "chat_id"], form)
+  const filtersValue = Form.useWatch(["filters"], form)
   const allowedMetricKeys = useMemo(() => {
     if (!pipelineClassIdValue) return null
     const cls = options.pipeline_classes.find((item) => Number(item.id) === Number(pipelineClassIdValue))
@@ -299,19 +321,21 @@ export default function PipelineForm() {
       seen.add(key)
       cleaned.push({ metric: key, weight: entry?.weight })
     })
-    metrics.forEach((m) => {
-      if (seen.has(m.key)) return
-      cleaned.push({
-        metric: m.key,
-        weight: typeof m.default_weight === 'number' ? m.default_weight : undefined
+    if (!editing) {
+      metrics.forEach((m) => {
+        if (seen.has(m.key)) return
+        cleaned.push({
+          metric: m.key,
+          weight: typeof m.default_weight === 'number' ? m.default_weight : undefined
+        })
+        seen.add(m.key)
       })
-      seen.add(m.key)
-    })
+    }
     const changed = JSON.stringify(cleaned) !== JSON.stringify(existing)
     if (changed) {
       form.setFieldValue(["writer", "weights_entries"], cleaned)
     }
-  }, [form, metrics])
+  }, [editing, form, metrics])
   const [weekdaySelection, setWeekdaySelection] = useState<number[] | null>(null)
   const weekdayOptions = useMemo(
     () => [
@@ -341,7 +365,7 @@ export default function PipelineForm() {
         limit_per_category_overrides: [],
         per_source_cap: 3,
         weights_entries: normalizeWeightsForForm(undefined, metrics),
-        bonus_entries: normalizeBonusForForm(DEFAULT_BONUS_VALUES)
+        bonus_entries: normalizeBonusForForm({}, { includeSuggestions: false })
       },
       delivery: {
         to_all_chat: 1
@@ -364,8 +388,8 @@ export default function PipelineForm() {
     if (!Number.isFinite(numeric)) return undefined
     return pipelineClassMap.get(numeric)
   }, [pipelineClassIdValue, pipelineClassMap])
-  const isLegouMinigameClass = useMemo(
-    () => selectedPipelineClass?.key === 'legou_minigame',
+  const isGeneralNewsClass = useMemo(
+    () => selectedPipelineClass?.key === GENERAL_NEWS_CLASS_KEY,
     [selectedPipelineClass]
   )
   const allowedWriterTypes = useMemo(() => {
@@ -390,10 +414,10 @@ export default function PipelineForm() {
   )
   const defaultBonusEntries = useMemo(
     () =>
-      isLegouMinigameClass
-        ? normalizeBonusForForm({}, { includeSuggestions: false })
-        : normalizeBonusForForm(DEFAULT_BONUS_VALUES),
-    [isLegouMinigameClass]
+      isGeneralNewsClass
+        ? normalizeBonusForForm(DEFAULT_BONUS_VALUES)
+        : normalizeBonusForForm({}, { includeSuggestions: false }),
+    [isGeneralNewsClass]
   )
   const allowedCategorySet = useMemo(() => {
     const set = new Set<string>()
@@ -422,6 +446,15 @@ export default function PipelineForm() {
     () => (allowedCategorySet.size ? sources.filter((item) => allowedCategorySet.has(item.category_key)) : sources),
     [allowedCategorySet, sources]
   )
+  const visibleSourceMap = useMemo(() => {
+    const map = new Map<string, SourceItem>()
+    visibleSources.forEach((src) => {
+      if (src?.key) {
+        map.set(src.key, src)
+      }
+    })
+    return map
+  }, [visibleSources])
   const treeData = useMemo<TreeNode[]>(() => {
     const categoryNodes = visibleCategories.map((cat) => {
       const children = visibleSources
@@ -526,13 +559,52 @@ export default function PipelineForm() {
       })),
     [metrics]
   )
+  const selectedBonusSourceKeys = useMemo(() => {
+    const filters = filtersValue || {}
+    const keys: string[] = []
+    const seen = new Set<string>()
+    const allCategoriesSelected =
+      Number(filters.all_categories ?? 1) === 1 || String(filters.all_categories ?? '').trim() === 'true'
+    if (allCategoriesSelected) {
+      visibleSources.forEach((src) => {
+        if (src?.key && !seen.has(src.key)) {
+          seen.add(src.key)
+          keys.push(src.key)
+        }
+      })
+      return keys
+    }
+    const categories = normalizeStringArray(filters.categories_json || [])
+    const includeSrc = normalizeStringArray(filters.include_src_json || [])
+    const categorySet = new Set(categories)
+    visibleSources.forEach((src) => {
+      if (src?.key && categorySet.has(src.category_key) && !seen.has(src.key)) {
+        seen.add(src.key)
+        keys.push(src.key)
+      }
+    })
+    includeSrc.forEach((srcKey) => {
+      if (visibleSourceMap.has(srcKey) && !seen.has(srcKey)) {
+        seen.add(srcKey)
+        keys.push(srcKey)
+      }
+    })
+    return keys
+  }, [filtersValue, visibleSourceMap, visibleSources])
   const bonusSuggestions = useMemo(
-    () =>
-      BONUS_SUGGESTIONS.map((item) => ({
+    () => {
+      const options = selectedBonusSourceKeys.map((key) => {
+        const src = visibleSourceMap.get(key)
+        const label = src?.label_zh ? `${src.label_zh} (${key})` : key
+        return { value: key, label }
+      })
+      if (options.length) return options
+      return BONUS_SUGGESTIONS.map((item) => ({
         value: item.key,
         label: `${item.label} (${item.key})`
-      })),
-    []
+      }))
+    },
+    [selectedBonusSourceKeys, visibleSourceMap]
   )
   const feishuChatColumns = useMemo<ColumnsType<FeishuChat>>(
     () => [
@@ -744,10 +816,14 @@ export default function PipelineForm() {
       pipelinePatched.pipeline_class_id != null
         ? pipelineClassMap.get(Number(pipelinePatched.pipeline_class_id))
         : undefined
-    const includeSuggestedBonus = pipelineClassFromData?.key !== 'legou_minigame'
-    const bonusSeed = includeSuggestedBonus ? w?.bonus_json ?? DEFAULT_BONUS_VALUES : w?.bonus_json ?? {}
+    const bonusFromDb =
+      w?.bonus_json && typeof w.bonus_json === 'object' && !Array.isArray(w.bonus_json) ? w.bonus_json : undefined
+    const shouldIncludeSuggestedBonus =
+      pipelineClassFromData?.key === GENERAL_NEWS_CLASS_KEY &&
+      (bonusFromDb === undefined || bonusFromDb === null)
+    const bonusSeed = shouldIncludeSuggestedBonus ? DEFAULT_BONUS_VALUES : bonusFromDb ?? {}
     writerPatched.bonus_entries = normalizeBonusForForm(bonusSeed, {
-      includeSuggestions: includeSuggestedBonus
+      includeSuggestions: shouldIncludeSuggestedBonus
     })
     delete writerPatched.limit_per_category
     delete writerPatched.weights_json
@@ -783,6 +859,7 @@ export default function PipelineForm() {
       delivery: patchedDelivery
     })
     writerSnapshotRef.current = writerPatched
+    deliverySnapshotRef.current = patchedDelivery
     const computedKeys = buildCheckedKeysFromFilters(data.filters || {})
     setTreeCheckedKeys(computedKeys)
     if (deliveryForForm?.kind === 'feishu') {
@@ -934,7 +1011,10 @@ export default function PipelineForm() {
   const onSubmit = async () => {
     const values = await form.validateFields()
     const allValues = form.getFieldsValue(true)
+    const normalizedCheckedKeys = treeCheckedKeys.filter((key) => allTreeKeys.includes(key))
+    const filtersPayload = deriveFiltersFromChecked(normalizedCheckedKeys)
     const writerSnapshot = writerSnapshotRef.current || {}
+    const deliverySnapshot = deliverySnapshotRef.current || {}
     const writerFromForm = (allValues?.writer || {}) as any
     const writerFromValues = (values?.writer || {}) as any
     // Debug log to inspect weekday values
@@ -944,6 +1024,10 @@ export default function PipelineForm() {
     try {
       // Normalize weekdays for payload (source of truth = component state)
       const pipelinePayload: any = { ...(values?.pipeline || {}) }
+      if (pipelinePayload?.pipeline_class_id != null) {
+        const parsedClassId = Number(pipelinePayload.pipeline_class_id)
+        pipelinePayload.pipeline_class_id = Number.isFinite(parsedClassId) ? parsedClassId : undefined
+      }
       if (Array.isArray(weekdaySelection)) {
         const sorted = [...weekdaySelection]
           .map((n: any) => Number(n))
@@ -990,7 +1074,8 @@ export default function PipelineForm() {
         toNumber(writerFromValues?.hours) ??
         fallbackHours ??
         24
-      writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type, allowedWriterTypes)
+      const allowedWriterTypesForPayload = getAllowedWriterTypes(pipelinePayload?.pipeline_class_id)
+      writerValues.type = writerTypeForDelivery(deliveryKind, writerValues.type, allowedWriterTypesForPayload)
       const limitMap = buildLimitPayload(
         toNumber(writerValues.limit_per_category_default),
         writerValues.limit_per_category_overrides
@@ -1020,21 +1105,56 @@ export default function PipelineForm() {
       )
       if (bonusRecord) {
         writerValues.bonus_json = bonusRecord
+      } else {
+        writerValues.bonus_json = {}
       }
       delete writerValues.bonus_entries
 
-      let deliveryValues = values.delivery ? { ...values.delivery } : undefined
-      if (deliveryKind === 'email') {
+      const deliveryFromForm = (values?.delivery || {}) as any
+      const deliveryAllValues = (allValues?.delivery || {}) as any
+      let deliveryValues: any = {
+        ...(editing ? deliverySnapshot : {}),
+        ...deliveryAllValues,
+        ...deliveryFromForm
+      }
+      if (deliveryValues && typeof deliveryValues.kind !== 'undefined') {
+        delete deliveryValues.kind
+      }
+      if (deliveryKind === 'email' && !deliveryValues?.email && deliverySnapshot?.email) {
+        deliveryValues.email = deliverySnapshot.email
+      }
+      const emailValue =
+        deliveryValues && typeof deliveryValues.email !== 'undefined'
+          ? String(deliveryValues.email ?? '').trim()
+          : ''
+      const hasDeliveryPayload =
+        deliveryKind === 'email'
+          ? emailValue !== ''
+          : deliveryValues &&
+            Object.values(deliveryValues).some((val) =>
+              typeof val === 'string' ? val.trim() !== '' : val !== undefined && val !== null
+            )
+      if (!hasDeliveryPayload) {
+        deliveryValues = undefined
+      }
+      if (deliveryKind === 'email' && deliveryValues) {
         const subject = buildEmailSubject(writerValues.hours)
-        if (deliveryValues) {
-          deliveryValues.subject_tpl = subject
-        } else {
-          deliveryValues = { subject_tpl: subject }
-        }
+        deliveryValues = { ...deliveryValues, subject_tpl: subject }
+        delete deliveryValues.app_id
+        delete deliveryValues.app_secret
+        delete deliveryValues.chat_id
+        delete deliveryValues.to_all_chat
+        delete deliveryValues.to_all
+        delete deliveryValues.content_json
+        delete deliveryValues.title_tpl
+      } else if (deliveryKind === 'feishu' && deliveryValues) {
+        delete deliveryValues.email
+        delete deliveryValues.subject_tpl
       }
 
       const payload = {
         ...values,
+        filters: filtersPayload,
         pipeline: pipelinePayload,
         writer: writerValues,
         delivery: deliveryValues ? { kind: deliveryKind, ...deliveryValues } : undefined
@@ -1204,6 +1324,9 @@ export default function PipelineForm() {
       onValuesChange={(_, all) => {
         if (all?.writer) {
           writerSnapshotRef.current = all.writer
+        }
+        if (all?.delivery) {
+          deliverySnapshotRef.current = all.delivery
         }
       }}
     >
@@ -1726,9 +1849,10 @@ export default function PipelineForm() {
                             }
                           ]
                           const handleAddSource = () => {
-                            const suggestion = BONUS_SUGGESTIONS.find((item) => !selectedSources.has(item.key))
+                            const suggestion = bonusSuggestions.find((item) => !selectedSources.has(item.value))
                             if (suggestion) {
-                              add({ source: suggestion.key, bonus: suggestion.defaultValue })
+                              const defaultBonus = DEFAULT_BONUS_VALUES[suggestion.value] ?? 1
+                              add({ source: suggestion.value, bonus: defaultBonus })
                             } else {
                               add({ bonus: 1 })
                             }

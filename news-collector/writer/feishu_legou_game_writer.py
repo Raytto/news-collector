@@ -147,7 +147,7 @@ def load_articles(
         params.extend(categories)
     rows = conn.execute(
         f"""
-        SELECT i.id, i.title, i.link, i.source, i.category, i.publish, i.img_link,
+        SELECT i.id, i.title, i.link, i.store_link, i.source, i.category, i.publish, i.img_link,
                r.ai_summary, r.ai_comment, r.final_score
         FROM info AS i
         JOIN info_ai_review AS r ON r.info_id = i.id
@@ -159,31 +159,45 @@ def load_articles(
     items: List[Dict[str, Any]] = []
     seen_sources: Dict[Tuple[str, str], int] = {}
     for row in rows:
+        (
+            info_id,
+            title,
+            link,
+            store_link,
+            source,
+            category,
+            publish,
+            img_link,
+            ai_summary,
+            ai_comment,
+            final_score,
+        ) = row
         publish_dt = None
         try:
-            publish_dt = datetime.fromisoformat(str(row[5]).replace("Z", "+00:00"))
+            publish_dt = datetime.fromisoformat(str(publish).replace("Z", "+00:00"))
         except Exception:
             publish_dt = None
         if publish_dt and publish_dt.tzinfo is None:
             publish_dt = publish_dt.replace(tzinfo=timezone.utc)
         if publish_dt and publish_dt < cutoff:
             continue
-        src = str(row[3] or "")
-        cat = str(row[4] or "")
+        src = str(source or "")
+        cat = str(category or "")
         if categories and cat not in categories and src not in include_sources:
             continue
         items.append(
             {
-                "id": int(row[0]),
-                "title": str(row[1] or ""),
-                "link": str(row[2] or ""),
+                "id": int(info_id),
+                "title": str(title or ""),
+                "link": str(link or ""),
+                "store_link": str(store_link or ""),
                 "source": src,
                 "category": cat,
-                "publish": str(row[5] or ""),
-                "img_link": str(row[6] or ""),
-                "ai_summary": str(row[7] or ""),
-                "ai_comment": str(row[8] or ""),
-                "final_score": float(row[9]) if row[9] is not None else 0.0,
+                "publish": str(publish or ""),
+                "img_link": str(img_link or ""),
+                "ai_summary": str(ai_summary or ""),
+                "ai_comment": str(ai_comment or ""),
+                "final_score": float(final_score) if final_score is not None else 0.0,
             }
         )
     return items

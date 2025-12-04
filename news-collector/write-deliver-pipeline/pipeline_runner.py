@@ -554,7 +554,9 @@ def run_one(conn: sqlite3.Connection, p: Pipeline, debug_only: bool = False) -> 
         raise SystemExit(f"pipeline {p.name}: evaluator_key 不在管线类别允许列表中")
 
     # Compute selected categories and sources
-    all_categories_flag = int(filters.get("all_categories", 1) or 1)
+    all_categories_flag = (
+        int(filters["all_categories"]) if ("all_categories" in filters and filters.get("all_categories") is not None) else 1
+    )
     categories_json = _json_list(filters.get("categories_json"))
     include_src_json = _json_list(filters.get("include_src_json"))
     categories_selected = list(allowed_cats) if all_categories_flag == 1 and allowed_cats else categories_json

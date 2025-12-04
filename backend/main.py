@@ -114,12 +114,14 @@ class CategoryPayload(BaseModel):
     key: str
     label_zh: str
     enabled: int = Field(1, ge=0, le=1)
+    allow_parallel: int = Field(1, ge=0, le=1)
 
 
 class CategoryUpdatePayload(BaseModel):
     key: Optional[str] = None
     label_zh: Optional[str] = None
     enabled: Optional[int] = Field(None, ge=0, le=1)
+    allow_parallel: Optional[int] = Field(None, ge=0, le=1)
 
 
 class SourcePayload(BaseModel):

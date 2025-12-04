@@ -1,91 +1,72 @@
 # News Collector / 情报聚合与投递系统
 
-一个可配置的资讯采集、AI 评价与投递系统：从多源抓取 RSS/网页，去重入库到 SQLite，经大模型打分与摘要后，按管线配置生成飞书 Markdown 或邮件 HTML 摘要，并通过飞书开放平台或 SMTP 投递。
+可配置的资讯采集、AI 评价与投递流水线：多源抓取 → SQLite 去重入库 → 大模型打分与摘要 → 按 DB 管线生成飞书 Markdown / 邮件 HTML 并投递。配套 FastAPI + React 管理台（邮箱验证码登录、管线/来源/指标/用户管理、手动推送、退订页）。
 
-## 功能概览
-- 采集：支持游戏/科技/人文等多站点脚本，统一写入 `data/info.db`。
-- 评价：调用大模型为文章多维度打分并生成摘要（表：`ai_metrics`、`info_ai_scores`、`info_ai_review`）。
-- 写作：根据打分与权重生成飞书 Markdown 或邮件 HTML 摘要。
-- 投递：飞书卡片/富文本或邮件（本地 sendmail / SMTP）。
-- 管线：基于 SQLite 的可视/可导入配置（分类/来源筛选、时间窗、权重、配额、投递目标）。
-- 自动化：一键脚本与可选的后台 + 前端管理界面。
+## 数据流与模块
+- 采集：`news-collector/collector/collect_to_sqlite.py` 按数据库 `sources.enabled=1` 执行脚本（首次运行自动从 `collector/scraping` 扫描并注册 `SOURCE`/`CATEGORY`）；支持明细回填、并发与限速控制，写入 `data/info.db`。
+- AI 评价：`news-collector/evaluator/ai_evaluate.py` 为资讯多维度打分与摘要，支持按 `--pipeline-id` 读取 `evaluators/ai_metrics` 配置。
+- 写作：`writer/email_writer.py`（HTML digest）、`writer/feishu_writer.py`（飞书 Markdown）、`writer/feishu_legou_game_writer.py`（小游戏场景）；按管线配置的权重/加成/配额生成文件，输出到 `data/output/pipeline-<id>/<ts>.{html,md}`。
+- 投递：`deliver/mail_deliver.py`（Resend / SMTP / sendmail，自动附管理/退订链接）、`deliver/feishu_deliver.py`（卡片）。
+- 管线：`write-deliver-pipeline/pipeline_admin.py` 管理 SQLite 管线表（含管线类别/评估器/指标权重），`pipeline_runner.py` 负责按 DB 筛选来源、2 小时内自动跳过重复采集、调用 AI 评价、写作并投递。
+- 管理台：`backend/` FastAPI 提供邮箱验证码登录、用户/管线/来源/类别/指标/评估器/管线类别 CRUD、手动推送（冷却与日额度）、退订；`frontend/` React + Ant Design 管理界面，默认通过 `/api` 反代。
 
-## 目录结构
-- `news-collector/collector/scraping/` 各来源采集脚本（`game/`、`tech/`、`humanities/`）。
-- `news-collector/collector/collect_to_sqlite.py` 采集入口，去重写入 `data/info.db`。
-- `news-collector/collector/backfill_details.py` 按需回填文章详情（调用脚本内 `fetch_article_detail`）。
-- `news-collector/evaluator/ai_evaluate.py` 大模型打分/摘要，产出 AI 相关表。
-- `news-collector/writer/feishu_writer.py` 生成飞书 Markdown 摘要。
-- `news-collector/writer/email_writer.py` 生成邮件 HTML 摘要。
-- `news-collector/deliver/feishu_deliver.py` 飞书消息/卡片发送。
-- `news-collector/deliver/mail_deliver.py` 邮件发送（sendmail/SMTP）。
-- `news-collector/write-deliver-pipeline/` 管线表管理与执行器：
-  - `pipeline_admin.py` 初始化/导入/导出/列出/启禁用管线。
-  - `pipeline_runner.py` 顺序执行启用的管线（写作→投递）。
-- `data/` SQLite 数据库、输出目录与示例管线 JSON。
-- `docs/` 运行手册与规格说明（如 `docs/pipelines-guide.md`、`docs/config/email-smtp.md`）。
-- `scripts/` 自动化与启动脚本（如 `auto-pipelines-930.sh`、`start-backend.sh`）。
-- `backend/` FastAPI 管理 API；`frontend/` 前端（可选）。
+## 目录
+- `news-collector/collector/scraping/` 采集脚本（`game/`、`tech/`、`humanities/` 等）。
+- `news-collector/evaluator/` AI 评价脚本。
+- `news-collector/writer/`/`deliver/` 写作与投递工具。
+- `news-collector/write-deliver-pipeline/` 管线表、运行器与星期限制工具。
+- `backend/` FastAPI；`frontend/` 管理前端；`scripts/` 自动化/启动/迁移脚本。
+- `docs/` 运行手册与规格；`slg-scout-&-analyst/` 为独立的 AI Studio 前端示例。
 
-## 快速开始（本地）
-1) 准备 Python 3.11 环境
-- `python -m venv .venv && source .venv/bin/activate`
-- `pip install -r requirements.txt`
-- 若需后台 API：`pip install -r backend/requirements.txt`
+## 环境准备
+1) Python 3.11  
+`python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`  
+后台开发可额外安装 `pip install -r backend/requirements.txt`。
 
-2) 配置必要环境变量（最少需要 AI 与飞书/邮件其一）
-- AI 评价：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`
-- 飞书：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`（可选 `FEISHU_DEFAULT_CHAT_ID`）
-- 邮件（可选）：`SMTP_HOST`、`SMTP_PORT`、`SMTP_USER`、`SMTP_PASS`、`SMTP_USE_SSL/TLS`、`MAIL_FROM`
-- 建议复制并修改 `environment-template.yml` 或使用 `.env`（参见 `docs/config/email-smtp.md`）。请勿将真实密钥提交到版本库。
+2) 前端（可选）  
+需 Node.js 18+（脚本会自动拉起 v20 LTS）；`cd frontend && npm install`。
 
-3) 初始化管线表（一次）
-- `python news-collector/write-deliver-pipeline/pipeline_admin.py init`
-- 可导入示例管线：
-  - `python news-collector/write-deliver-pipeline/pipeline_admin.py import --input data/pipelines/all_settings.json --mode replace`
+3) 环境变量  
+复制并修改 `environment-template.yml` 或 `.env`，切勿提交真实密钥。
 
-4) 采集 → 评价 → 写作/投递
-- 采集：`python news-collector/collector/collect_to_sqlite.py`
-- 可选回填详情：`python news-collector/collector/backfill_details.py --limit 200`
-- AI 评价（示例处理最近 24 小时 50 条）：
-  - `python news-collector/evaluator/ai_evaluate.py --limit 50 --hours 24`
-- 执行全部启用管线（生成并投递）：
-  - `python news-collector/write-deliver-pipeline/pipeline_runner.py --all`
+## 核心配置（环境变量）
+- AI：`AI_API_BASE_URL`、`AI_API_MODEL`、`AI_API_KEY`、`AI_API_TIMEOUT`、`AI_REQUEST_INTERVAL`。
+- 飞书：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_DEFAULT_CHAT_ID`（可选）、`FEISHU_API_BASE`。
+- 邮件/验证码：`RESEND_API_KEY`、`RESEND_FROM`，或 `SMTP_HOST/PORT/USER/PASS/SMTP_USE_SSL/SMTP_USE_TLS`；`MAIL_FROM`、`MAIL_SUBJECT_PREFIX`。
+- 认证与手动推送：`AUTH_SESSION_DAYS`、`AUTH_CODE_TTL_MINUTES`、`AUTH_CODE_LENGTH`、`AUTH_CODE_COOLDOWN_SECONDS`、`AUTH_HOURLY_PER_EMAIL`、`AUTH_DAILY_PER_EMAIL`、`AUTH_HOURLY_PER_IP`、`AUTH_COOKIE_SECURE`、`MANUAL_PUSH_COOLDOWN_SECONDS`、`MANUAL_PUSH_DAILY_LIMIT`。
+- 采集并发：`COLLECTOR_SOURCE_CONCURRENCY`、`COLLECTOR_PER_SOURCE_CONCURRENCY`、`COLLECTOR_GLOBAL_HTTP_CONCURRENCY`、`COLLECTOR_PER_HOST_MIN_INTERVAL_MS`、`COLLECTOR_TIMEOUT_CONNECT/READ`、`COLLECTOR_RETRY_MAX`、`COLLECTOR_RETRY_BACKOFF_BASE`、`COLLECTOR_DISABLE_CONCURRENCY`。
+- 其他：`BACKEND_PORT`（默认 8000）、`FRONTEND_PORT`（默认 5180 dev）、`FRONTEND_BASE_URL`（邮件页脚管理/退订链接）、`FRONTEND_SITE_ICON`。
 
-5) 一键运行脚本（可选）
-- 单次：`scripts/auto-pipelines-once.sh`（采集→评价→按管线投递）
-- 每日 09:30 循环：`scripts/auto-pipelines-930.sh`（建议放到 tmux/screen 或 systemd）
+## 数据库初始化与迁移
+- 采集脚本首次运行会创建 `info/categories/sources` 等表并自动注册 scraping 目录；后续新增来源需在 DB `sources` 表维护（可通过后台“信息源”页面或 SQL），否则不会执行。
+- 管线表初始化：`python news-collector/write-deliver-pipeline/pipeline_admin.py init`。示例：`python news-collector/write-deliver-pipeline/pipeline_admin.py seed` 或 `import --input data/pipelines/all_settings.json --mode replace`。
+- 迁移：旧库请按需运行 `scripts/migrations/202510_ai_metrics_refactor.py --db data/info.db`、`scripts/migrations/pipeline_refactor.sql`、`scripts/migrations/202512_remove_unsubscribe_tables.py` 等（均幂等）。
+- 后台注册新用户时会自动为其创建 2 条默认邮件管线（按周几+时长+默认权重）。
 
-## 后台与前端（可选）
-- 启动后台 API：`scripts/start-backend.sh`（默认端口 8000；读取 `.env`）
-- 启动前端：`scripts/start-frontend.sh`
-- 管线表结构、运行器与完整操作命令详见 `docs/pipelines-guide.md`。
+## 采集与 AI 评价
+- 采集：`python news-collector/collector/collect_to_sqlite.py [--sources game,tech]`，去重写入 `data/info.db`；支持 `backfill_details.py --limit 200`、`backfill_publish.py` 补充详情/时间。
+- AI 评价：`python news-collector/evaluator/ai_evaluate.py --hours 24 --limit 50 [--category game --source openai.research --pipeline-id 3]`，写入 `ai_metrics`、`info_ai_scores`、`info_ai_review`（含长摘要/关键词）。
 
-### 前端构建与部署（当前线上方式）
-- 本地/服务器构建：`cd frontend && npm install && npm run build`，产物在 `frontend/dist/`。
-- Nginx 静态目录：`/var/www/news-collector-jp`（`sites-enabled/jp.pangruitao.com` 中的 `root`），只需同步静态文件，无需常驻 Node 进程。
-- 部署更新：`rsync -av --delete frontend/dist/ /var/www/news-collector-jp/`，然后强制刷新浏览器/清缓存（文件名带 hash，便于长缓存）。
-- 开发调试：`scripts/start-frontend.sh` 会起 Vite dev server（当前监听 5180），仅用于本地调试，线上访问走上述静态目录。
+## 写作与投递管线
+- 管线管理：`pipeline_admin.py list/enable/disable/clone/export/import`，支持管线类别（`pipeline_classes`）限制允许的类别/评估器/Writer。
+- 运行：`python news-collector/write-deliver-pipeline/pipeline_runner.py --all` 或 `--name/--id`，支持 `--debug-only`（只跑 `debug_enabled=1`）、`--ignore-weekday` 或设置 `FORCE_RUN=1` 忽略周几限制。Runner 会筛选来源、2 小时内跳过重复采集，并按 `pipeline_writers` / `pipeline_deliveries_*` 自动写作与投递。
+- Writer/Delivery 细节：`PIPELINE_ID` 由 runner 注入，Writer 自动读取 `weights_json` / `pipeline_writer_metric_weights`、`bonus_json`、`limit_per_category`、`per_source_cap`；邮件投递支持 `MAIL_PLAIN_ONLY=1` 纯文本、副本落盘 `MAIL_DUMP_MSG=path.eml`；邮件页脚依赖 `FRONTEND_BASE_URL` 生成管理/退订链接。
 
-## 关键环境变量
-- 采集限速与并发（可按站点限流、全局并发、重试等）：
-  - `COLLECTOR_SOURCE_CONCURRENCY`、`COLLECTOR_PER_SOURCE_CONCURRENCY`、`COLLECTOR_GLOBAL_HTTP_CONCURRENCY`
-  - `COLLECTOR_PER_HOST_MIN_INTERVAL_MS`、`COLLECTOR_TIMEOUT_CONNECT/READ`、`COLLECTOR_RETRY_MAX`、`COLLECTOR_RETRY_BACKOFF_BASE`
-- 写作/投递细节：
-  - `PIPELINE_ID`（由运行器自动传入，写作/投递脚本据此自取 DB 配置）
-  - `MAIL_PLAIN_ONLY=1`（仅发送 text/plain，且旁写 `.txt` 副本）
-  - `MAIL_DUMP_MSG=path.eml`（发送前导出 RFC822 邮件包）
+## 自动化脚本
+- 单次全链路：`scripts/auto-pipelines-once.sh`（采集→评价→全部管线写作+投递，日志写入 `log/<ts>-auto-once-log.txt`）。
+- 每日 09:30 循环：`scripts/auto-pipelines-930.sh`（包含过期输出清理）。
+- 仅采集+评价：`scripts/collect-evalue.sh`。
 
-## 安全与合规
-- 不要在仓库中提交真实 `API_KEY`、`FEISHU_APP_SECRET` 等敏感信息。
-- 采集遵守各站点 robots.txt，合理设置并发/限速，避免触发封禁。
-- 投递前请确认邮箱/飞书应用权限与速率限制，注意群发频率。
+## 后台与前端管理
+- 后台：`scripts/start-backend.sh`（默认 8000，自动加载 `.env`，邮箱验证码登录/注册；Resend→SMTP→sendmail 逐级兜底）。功能：用户与权限、管线 CRUD、来源/类别/评估器/指标管理、手动推送（限流）、查找飞书群列表、退订接口。
+- 前端：`scripts/start-frontend-dev.sh` 本地调试（Vite dev server，默认 5180，通过 `/api` 代理后台）；`scripts/start-frontend.sh` 构建并部署到 `/var/www/news-collector-jp`（可用 `FRONTEND_DEPLOY_DIR` 覆盖）。生产环境 Nginx 静态目录同上，刷新缓存即可。
 
 ## 参考文档
 - 管线与运行器：`docs/pipelines-guide.md`
-- 邮件 SMTP 配置：`docs/config/email-smtp.md`
-- 采集并发/节流：`docs/report/collector-concurrency.md`
-- Nginx/部署建议：`docs/nginx-guide.md`
+- 新增来源：`docs/add-new-souce.md`
+- 新增 Writer：`docs/add-new-writer.md`
+- 邮件 SMTP：`docs/config/email-smtp.md`
+- 并发/节流：`docs/report/collector-concurrency.md`
+- Nginx/部署：`docs/nginx-guide.md`
 
----
-如需新增采集脚本或扩展管线，请参考现有模块命名与函数风格，保持纯函数与可复用性，并在 `docs/` 中补充相应说明或样例。
+如需新增采集脚本或扩展管线，请遵循现有命名与函数风格，并在 `docs/` 中补充说明。

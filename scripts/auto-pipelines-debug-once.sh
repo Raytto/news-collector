@@ -181,7 +181,7 @@ run_once() {
   echo "[INFO] Applying AI metrics migration (idempotent)..." >&2
   $PYTHON "$ROOT_DIR/scripts/migrations/202510_ai_metrics_refactor.py" --db "$ROOT_DIR/data/info.db" || true
   echo "[INFO] Applying pipeline refactor migration (idempotent)..." >&2
-  $PYTHON -c "import sqlite3,sys;from pathlib import Path;sql=Path('$ROOT_DIR/scripts/migrations/pipeline_refactor.sql');conn=sqlite3.connect('$ROOT_DIR/data/info.db');conn.executescript(sql.read_text());conn.commit();conn.close()" || true
+  $PYTHON "$ROOT_DIR/scripts/migrations/pipeline_refactor.py" --db "$ROOT_DIR/data/info.db" || true
 
   check_pipeline_config_debug
 

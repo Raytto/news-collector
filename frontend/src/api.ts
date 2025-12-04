@@ -132,6 +132,7 @@ export type CategoryItem = {
   key: string
   label_zh: string
   enabled: number
+  allow_parallel: number
   created_at?: string
   updated_at?: string
 }
@@ -369,14 +370,19 @@ export async function fetchCategories(): Promise<CategoryItem[]> {
   return data
 }
 
-export async function createCategory(payload: { key: string; label_zh: string; enabled?: number }) {
+export async function createCategory(payload: {
+  key: string
+  label_zh: string
+  enabled?: number
+  allow_parallel?: number
+}) {
   const { data } = await http.post('/categories', payload)
   return data
 }
 
 export async function updateCategory(
   id: number,
-  payload: Partial<{ key: string; label_zh: string; enabled: number }>
+  payload: Partial<{ key: string; label_zh: string; enabled: number; allow_parallel: number }>
 ) {
   const { data } = await http.put(`/categories/${id}`, payload)
   return data

@@ -173,8 +173,10 @@ CREATE TABLE IF NOT EXISTS info (
   publish  TEXT NOT NULL,
   title    TEXT NOT NULL,
   link     TEXT NOT NULL,
+  store_link TEXT,                      -- 可选的商店/落地页链接
   category TEXT,                         -- FK to categories.key
   detail   TEXT,
+  img_link TEXT,
   FOREIGN KEY (category) REFERENCES categories(key)
 );
 

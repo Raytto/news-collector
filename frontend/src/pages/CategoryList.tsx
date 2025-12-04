@@ -9,6 +9,7 @@ type CategoryFormValues = {
   key: string
   label_zh: string
   enabled: boolean
+  allow_parallel: boolean
 }
 
 function getErrorMessage(err: unknown): string {
@@ -50,7 +51,7 @@ export default function CategoryList() {
   const openCreate = () => {
     setEditing(null)
     setModalVisible(true)
-    form.setFieldsValue({ key: '', label_zh: '', enabled: true })
+    form.setFieldsValue({ key: '', label_zh: '', enabled: true, allow_parallel: true })
   }
 
   const openEdit = (item: CategoryItem) => {
@@ -59,7 +60,8 @@ export default function CategoryList() {
     form.setFieldsValue({
       key: item.key,
       label_zh: item.label_zh,
-      enabled: item.enabled === 1
+      enabled: item.enabled === 1,
+      allow_parallel: item.allow_parallel === 1
     })
   }
 
@@ -67,6 +69,16 @@ export default function CategoryList() {
     try {
       await updateCategory(item.id, { enabled: enabled ? 1 : 0 })
       message.success('已更新启用状态')
+      await load()
+    } catch (err) {
+      message.error(getErrorMessage(err))
+    }
+  }
+
+  const handleParallelToggle = async (item: CategoryItem, allowed: boolean) => {
+    try {
+      await updateCategory(item.id, { allow_parallel: allowed ? 1 : 0 })
+      message.success('已更新并行抓取设置')
       await load()
     } catch (err) {
       message.error(getErrorMessage(err))
@@ -87,7 +99,8 @@ export default function CategoryList() {
     const payload = {
       key: values.key.trim(),
       label_zh: values.label_zh.trim(),
-      enabled: values.enabled ? 1 : 0
+      enabled: values.enabled ? 1 : 0,
+      allow_parallel: values.allow_parallel ? 1 : 0
     }
     if (!payload.key) {
       message.error('请填写类别 key')
@@ -126,6 +139,18 @@ export default function CategoryList() {
       width: 120,
       render: (value, record) => (
         <Switch checked={value === 1} onChange={(checked) => handleToggle(record, checked)} disabled={!isAdmin} />
+      )
+    },
+    {
+      title: '并行抓取',
+      dataIndex: 'allow_parallel',
+      width: 140,
+      render: (value, record) => (
+        <Switch
+          checked={value === 1}
+          onChange={(checked) => handleParallelToggle(record, checked)}
+          disabled={!isAdmin}
+        />
       )
     },
     { title: '更新时间', dataIndex: 'updated_at' },
@@ -175,6 +200,9 @@ export default function CategoryList() {
             <Input placeholder="例如: 游戏" />
           </Form.Item>
           <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="allow_parallel" label="允许并行抓取" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>
